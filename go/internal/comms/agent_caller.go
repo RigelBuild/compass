@@ -30,20 +30,8 @@ func (noActorError) Error() string {
 	return "comms: agent-initiated call requires a resolved account; refusing to attribute to the bootstrap admin"
 }
 
-// errNotAgentAccount is the fail-closed cause when an agent-initiated call
-// resolves to an account that is NOT an agent — a user account, whose
-// Account.Agent is nil (scanAccount sets the subtype only for the side of the
-// join that populated, store/accounts.go:313-322). Only an agent account has a
-// home channel, so there is no channel to default to and nothing to post into.
-//
-// It maps to CodeFailedPrecondition, NOT CodeInvalidArgument, and the difference
-// is load-bearing at the relay. The RunnerHub classifies a sink error by its
-// Connect code: InvalidArgument is a routine per-frame refusal, counted among
-// the frames a healthy relay occasionally rejects, while FailedPrecondition is a
-// CONTRACT DEFECT — counted separately and logged as a misconfiguration
-// (runnerhub/hub.go, isContractDefect). A session bound to a user account is the
-// latter: no retry and no better-formed frame can fix it, and every frame from
-// that session will fail identically, so it must not read as routine garbage.
+// errNotAgentAccount rejects agent-initiated calls resolved to a non-agent; only agent accounts have home channels.
+// FailedPrecondition makes the hub count a bad binding as a contract defect, not a routine frame refusal.
 var errNotAgentAccount = connect.NewError(
 	connect.CodeFailedPrecondition,
 	notAgentAccountError{}.Error(),
@@ -408,23 +396,8 @@ func (c *Comms) defaultListChannel(ctx context.Context, account store.AccountID,
 	return c.homeChannel(ctx, account)
 }
 
-// homeChannel resolves the account's home channel id. An agent account always
-// has one, minted at CreateAgent (store/accounts.go:156-158); a store failure
-// surfaces mapped to its Connect code, never leaked verbatim.
-//
-// A NON-AGENT account is refused rather than dereferenced. scanAccount populates
-// Account.Agent only for the agent side of the join (store/accounts.go:313-322),
-// so for a user account it is nil and reading acc.Agent.HomeChannelID panicked —
-// inside the RunnerHub's PublishEvents handler goroutine, where a panic takes the
-// relay down and no error ever reaches the classification the hub does on the
-// return value (rule://go-no-panic-in-lib). Failing closed with
-// errNotAgentAccount both keeps the process up and gives the hub a code it can
-// route: FailedPrecondition marks it a contract defect, so a bad binding is
-// reported as the wiring fault it is instead of hiding among per-frame refusals.
-//
-// This is the call-site guard only. The deeper question — that a container can be
-// bound to a non-agent account at all, i.e. the ordering of bindContainer's
-// validation against RecordAgentContainer — belongs to that flow, not here.
+// homeChannel resolves an agent account's home channel and preserves Connect error codes.
+// User accounts have no Agent field; refuse them with FailedPrecondition rather than panic in the relay goroutine.
 func (c *Comms) homeChannel(ctx context.Context, account store.AccountID) (string, error) {
 	acc, err := c.store.GetAccount(ctx, account)
 	if err != nil {

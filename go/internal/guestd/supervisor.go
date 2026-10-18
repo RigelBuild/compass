@@ -25,15 +25,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
-// maxCapture caps each captured stream (stdout, stderr) of a one-shot Exec at
-// 8 MiB (OQ-E). A command that overruns it is an explicit ResourceExhausted
-// error, not a silent truncation — the caller must not mistake a clipped tail
-// for the whole output. The buffer stops growing at the cap so a runaway child
-// cannot exhaust guest memory before the error surfaces.
+// maxCapture bounds stdout and stderr separately for one-shot Exec; overflow returns ResourceExhausted.
 const maxCapture = 8 << 20
 
-// execState is the supervisor's fail-closed gate: exec is served ONLY in the
-// provisioned state, so no exec can run before Provision succeeds (§(b)).
+// execState gates execution until provisioning succeeds.
 type execState int
 
 const (
@@ -69,12 +64,9 @@ const armTimeout = 120 * time.Second
 // failed-arm error so a runaway script cannot balloon the RPC error.
 const armStderrTail = 4 << 10
 
-// runNftScript is the production armFunc (§(d)): it spawns the egress script as
-// guestd's own root — a spawn path deliberately SEPARATE from exec children,
-// with NO syscall.Credential (it never passes through resolveUID/newCredential)
-// and never entered in the exec table. The arm is bounded by armTimeout and the
-// caller's ctx. On a non-zero exit, timeout, or spawn failure it returns an
-// error carrying the exit status and a bounded tail of the combined output.
+// runNftScript runs the egress script as guest root, outside the exec child path and table.
+// Command failures include the exit error and a bounded output tail when present.
+// Spawn errors return directly; execution is bounded by armTimeout and ctx.
 func runNftScript(ctx context.Context, script string) error {
 	ctx, cancel := context.WithTimeout(ctx, armTimeout)
 	defer cancel()
@@ -120,11 +112,8 @@ func (c *childExec) signalGroup(sig syscall.Signal) {
 	_ = syscall.Kill(-c.cmd.Process.Pid, sig)
 }
 
-// supervisor is the full GuestControl handler (§(b)): the booting -> ready ->
-// provisioned gate, the session's default exec uid + base env recorded by
-// Provision, and the exec table (exec_id -> running child). It replaces V2a's
-// Health-only healthService; a successful Health handshake still proves bringup,
-// and exec is fail-closed behind Provision.
+// supervisor gates GuestControl execution on provisioning and owns the session's exec defaults and child table.
+// Health proves bringup, while exec remains closed until Provision succeeds.
 type supervisor struct {
 	// Immutable boot state, set at construction — safe to read lock-free.
 	version          string
@@ -178,13 +167,8 @@ type supervisor struct {
 
 	mu    sync.Mutex
 	state execState
-	// gatewayProxyCloser holds the running unix→vsock forwarder started by
-	// Provision (§(d)); it is nil when no gateway port was configured. Written
-	// once under mu at Provision. Production teardown is serveCtx-cancellation-
-	// driven — run cancels serveCtx on shutdown and the forwarder's accept loop
-	// and per-conn splices tear down via their ctx AfterFuncs — so run never
-	// calls Close; the closer is retained as an ownership handle whose
-	// deterministic <-done drain is exercised by tests.
+	// gatewayProxyCloser owns the forwarder started at Provision; nil means no gateway port was configured.
+	// Shutdown cancels serveCtx, which drains accepts and splices; tests exercise the closer's completion.
 	gatewayProxyCloser io.Closer
 	defaultExecUID     uint32
 	baseEnv            map[string]string
@@ -635,12 +619,7 @@ func (s *supervisor) buildChild(ctx context.Context, argv []string, uid uint32, 
 	return cmd, nil
 }
 
-// defaultGuestPATH is floored into an exec's environment when neither the
-// session base env nor the exec's own env supplies a PATH. It mirrors the PATH
-// a container image bakes in (podman resolves a bare command against the image
-// PATH): the guest rootfs userland lives under these directories
-// (guest-image/default.nix), so a bare `sh`/`echo`/`compass-agent` resolves
-// without every caller having to spell out a PATH.
+// defaultGuestPATH mirrors the guest image's userland directories so bare commands resolve without caller PATH settings.
 const defaultGuestPATH = "/bin:/usr/bin:/sbin:/usr/sbin"
 
 // resolveProgram selects a regular executable from PATH, matching shell lookup.

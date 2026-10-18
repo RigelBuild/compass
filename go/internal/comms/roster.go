@@ -13,23 +13,9 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// roster computes the caller's view of the vantage agent's roster for one scope,
-// joining ALL THREE sources (design.md T2:426-452): the durable tree (store), the
-// live presence enum (in-memory, via the presence source — absent → OFFLINE), and
-// the durable activity string (agent_activity table — absent → empty). The raw
-// tree read is UNSCOPED (agent_tree.go warns each caller must clip), so the
-// result is intersected with the CALLER's account-visible set (D9,
-// accountVisibleFromWhere via ListAccounts): a non-visible agent never appears,
-// even one structurally in the vantage's tree. Tree order (by account id) is
-// preserved.
-//
-// vantage defaults to the caller when the vantage handle is empty — an agent
-// caller is session-resolved to itself (actorFromContext), a human/UI caller
-// names a vantage explicitly. A non-empty vantageHandle is a `@handle` the
-// server resolves via resolveAgentAccount: unknown → NOT_FOUND, and (roster's
-// DEFINED error posture, not inherited) a real-but-caller-invisible vantage maps
-// to the SAME NOT_FOUND an unknown handle gets — closing the
-// NOT_FOUND-vs-empty-success vantage-probe oracle.
+// roster joins the durable tree, in-memory presence, and durable activity.
+// The unscope tree is intersected with the caller-visible set; tree order is preserved.
+// The vantage defaults to the caller; invisible named vantages return NOT_FOUND like unknown handles.
 func (c *Comms) roster(
 	ctx context.Context,
 	caller store.AccountID,
@@ -235,11 +221,8 @@ func (c *Comms) treeForScope(
 	}
 }
 
-// ownerOf resolves the owning user for the OWNER-scope tree read. When vantage is
-// an agent, its owner is agent_accounts.owner_user_id; when vantage is a user
-// (a human caller naming itself), the vantage IS the owner, so AgentOwner's
-// not-found is the signal to use vantage directly. Any other store error surfaces
-// mapped.
+// ownerOf returns an agent's owner; for a user vantage, AgentOwner's not-found means the vantage is the owner.
+// Other errors retain their mapped Connect code.
 func (c *Comms) ownerOf(ctx context.Context, vantage store.AccountID) (store.AccountID, error) {
 	owner, err := c.store.AgentOwner(ctx, vantage)
 	if err != nil {

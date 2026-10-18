@@ -54,15 +54,8 @@ const (
 // delivery degrades to a cache miss that re-reads Postgres, which is the
 // arbiter.
 type BindingChange struct {
-	// Tenant is the owning tenant id, and also the tenant token of the subject
-	// the change rides.
-	//
-	// It is carried in the payload as well as the subject because
-	// SubscribeBindingChanges is a TENANT-WILDCARD subscribe whose callback
-	// receives the decoded change and no subject (RoutingFabric) — so without
-	// this field a receiver watching every tenant could not scope the cache
-	// entry it is being told to drop. Publish requires it to equal the tenant
-	// it publishes under, so the two can never disagree on the wire.
+	// Tenant scopes the invalidation and subject; receivers subscribe across tenants, so it must travel in the payload.
+	// Publish validates that it matches the tenant token in the subject.
 	Tenant string `json:"tenant"`
 	// SessionID names the session whose binding changed. It is the cache key
 	// the receiver invalidates.
@@ -71,11 +64,8 @@ type BindingChange struct {
 	Op BindingOp `json:"op"`
 }
 
-// encode marshals the change for the wire as JSON, for the same reasons
-// EventRef.encode does: the payload is three short strings, so the size
-// difference against a packed encoding is noise, while `nats sub
-// 'compass.routing.binding.*'` on a live system stays readable and a later
-// additive field is forward-compatible with an older subscriber.
+// encode uses JSON so operators can inspect NATS traffic; the short payload makes packed encoding unnecessary.
+// JSON also keeps additive fields forward-compatible.
 func (b BindingChange) encode() ([]byte, error) {
 	data, err := json.Marshal(b)
 	if err != nil {
@@ -84,13 +74,8 @@ func (b BindingChange) encode() ([]byte, error) {
 	return data, nil
 }
 
-// valid reports whether the change is publishable. Checked publish-side, like
-// EventRef.valid, because this plane has no ack, no retry and no DLQ: a change
-// that decodes but names no session is invisible on the wire — the receiver
-// would invalidate cache key "" and see nothing wrong — so the only place it can
-// be caught with the caller's stack is at its origin.
-//
-// Tenant must be a valid subject token because it IS a subject token.
+// valid rejects empty session IDs at publish time; core NATS cannot redeliver a bad invalidation.
+// Tenant must be a valid subject token.
 func (b BindingChange) valid() error {
 	if err := ValidSubjectToken("tenant", b.Tenant); err != nil {
 		return err
@@ -107,26 +92,10 @@ func (b BindingChange) valid() error {
 	return nil
 }
 
-// decodeBindingChange parses a wire payload back into a BindingChange,
-// rejecting one that decodes but names nothing: a change naming no session
-// would invalidate cache key "" and read as "nothing changed".
-//
-// Deliberately NOT as strict as the publish side on Op. The publish side
-// rejects an unknown op because a caller minting one is a bug with a stack;
-// a RECEIVER seeing one is talking to a newer publisher, and dropping that
-// message would leave a genuinely-changed binding cached as stale — with no
-// ack, no retry and no DLQ to reveal it. So an unrecognized op is carried
-// through and the receiver treats it as "invalidate and re-read", which is the
-// conservative action and stays correct for every op this type can grow.
-// decodeEventRef takes the same position on an unknown EventKind.
-//
-// Tenant is still checked as a subject token, because handleBindingChange
-// rebuilds the subject from it to cross-check the delivery.
-//
-// A rejection here is LOGGED AND DROPPED by the caller, never retried: core
-// NATS has no ack, so there is nothing to Nak and nowhere to park. That is the
-// visible difference from the JetStream path, where an undecodable payload goes
-// to DLQSubject.
+// decodeBindingChange rejects missing sessions but preserves unknown ops for forward compatibility.
+// Receivers invalidate and re-read rather than discard an update they may not understand.
+// Tenant remains validated because the handler rebuilds the subject from it.
+// Core NATS logs and drops decode failures; unlike JetStream, it has no ack or DLQ.
 func decodeBindingChange(data []byte) (BindingChange, error) {
 	var b BindingChange
 	if err := json.Unmarshal(data, &b); err != nil {

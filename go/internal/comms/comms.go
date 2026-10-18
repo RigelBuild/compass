@@ -35,12 +35,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// commsBus is the comms event bus instantiation: a second bus instance distinct
-// from CompassService's SubscribeEvents bus, with its own seq space and its own
-// per-boot instance_epoch (design.md:1198-1208). Like the landed busPayload
-// (server/service.go:33-37) it carries the whole wire response with only the
-// payload oneof set, so the bus generic needs no domain sum type; the stream
-// edge stamps Seq/AtUnixMs/InstanceEpoch onto a copy.
+// commsBus is separate from SubscribeEvents and has its own sequence space and boot epoch.
+// It carries the full response; the stream edge stamps position metadata onto a copy.
 type commsBus = *events.Bus[*compassv1.SubscribeCommsResponse]
 
 const instrumentationScope = "github.com/RigelBuild/compass/go/internal/comms"
@@ -56,16 +52,10 @@ type Comms struct {
 	fabric                fabric.EventFabric
 	fabricPublishFailures metric.Int64Counter
 	boardForges           board.Forges
-	// adminID attributes every RPC on the local-socket door (the door has no
-	// interceptor yet). The T3 interceptor overrides this per-request by setting
-	// a caller on the context; adminID is the fallback when none is set.
+	// adminID is the local-socket fallback identity; the token interceptor overrides it per request.
 	adminID store.AccountID
-	// presence is the in-memory presence enum source GetRoster joins the durable
-	// tree + activity against (RIG-1721 T2). Nil until SetPresenceSource wires it
-	// (comms<->hub is a construction cycle, broken by a post-construction setter
-	// exactly like hub.SetSettleSink). Set once at server assembly BEFORE any RPC
-	// is served, so it needs no lock. Nil-safe: a Comms with no presence source
-	// (a unit test, or an un-wired path) reports every agent OFFLINE.
+	// presence joins durable roster data with in-memory status and is set before serving RPCs.
+	// Nil is safe: every agent reports OFFLINE.
 	presence   PresenceSource
 	mirrorer   Mirrorer
 	driver     MirrorDriver
@@ -785,11 +775,8 @@ func (c *Comms) OpenDM(
 	}, nil
 }
 
-// applyBoardOp maps the request's op oneof to its store call: a plain pin
-// (PinMessage, replace ""), a compare-and-swap repoint (PinMessage, replace set),
-// or an unpin (UnpinMessage). An unset oneof is a malformed request
-// (CodeInvalidArgument). Store errors map through edgeError to their Connect
-// codes: a message from another channel or a stale CAS surface in-band.
+// applyBoardOp dispatches the pin, CAS repoint, or unpin oneof; an unset op is INVALID_ARGUMENT.
+// Store errors retain their Connect codes.
 func (c *Comms) applyBoardOp(
 	ctx context.Context,
 	channelID store.ChannelID,
@@ -845,12 +832,8 @@ func (c *Comms) driveCommittedAsks(ctx context.Context, msg store.Message) {
 
 // SubscribeComms is implemented in subscribe.go.
 
-// actorFromContext returns the authenticated caller for this request. The T3
-// interceptor sets it on the context; on the shipped socket door no interceptor
-// runs, so it falls back to the bootstrap admin (the socket is the local
-// credential). It never returns empty — an unattributed request on a door that
-// should have set an identity is a server fault, but the socket path always has
-// the admin fallback.
+// actorFromContext returns the authenticated caller, falling back to the bootstrap admin on the local socket.
+// An empty result indicates a server fault.
 func (c *Comms) actorFromContext(ctx context.Context) store.AccountID {
 	if actor, ok := actorFrom(ctx); ok && actor != "" {
 		return actor

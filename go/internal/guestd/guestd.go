@@ -63,23 +63,14 @@ type config struct {
 // ordering/fail-closed tests supply fakes and assert the gate.
 type bootSteps struct {
 	mountAPIFilesystems func() error
-	// readCmdline returns the kernel command line. It is a step, not a
-	// pre-computed value, because /proc/cmdline is only readable AFTER
-	// mountAPIFilesystems mounts /proc — §(d) step 1 fixes that order, and the
-	// initramfs hands over a bare root with no /proc. Injectable so a test can
-	// assert the read happens after the api-mount step, not before.
+	// readCmdline reads /proc only after mountAPIFilesystems mounts it; fakes verify this order.
 	readCmdline func() ([]byte, error)
 	net         netProvisioner
 	workspace   workspaceMounter
-	// serve receives the fully-provisioned supervisor and serves it until ctx
-	// is cancelled. It is the LAST step: reaching it is the proof that net and
-	// mount both succeeded.
+	// serve is last; reaching it proves networking and mount succeeded.
 	serve func(ctx context.Context, port uint32, svc *supervisor) error
-	// powerOff performs the PID-1-legal reboot(RB_POWER_OFF) that ends an
-	// RPC-driven Stop (§(d)): a bare PID-1 exit panics the kernel, which
-	// cloud-hypervisor never observes as a VMM exit, so guestd must power the
-	// guest off explicitly. Injectable so the hermetic boot tests assert the
-	// trigger without actually rebooting the test host.
+	// powerOff ends RPC-driven Stop without PID-1 exit, which panics the guest kernel.
+	// Tests inject it instead of rebooting the host.
 	powerOff func() error
 }
 
@@ -98,15 +89,8 @@ func Run(ctx context.Context, log *slog.Logger) error {
 	return run(ctx, config{guestdVersion: Version, log: log}, steps)
 }
 
-// run executes the fail-closed boot sequence in the exact order §(d) fixes:
-// (1) API filesystems, (2) read the vsock port + optional boot nonce from the
-// now-readable kernel cmdline, (3) networking, (4) virtio-fs workspace,
-// (5) serve the vsock GuestControl surface, (6) idle inside serve until ctx is
-// cancelled — by a Unix signal (V2a path) or an RPC Stop (§(d)). Any step error
-// aborts the sequence before the next one runs, so Health is served only after
-// net and mount both succeed. When serve returns because an RPC Stop cancelled
-// it, run ends in reboot(RB_POWER_OFF): a bare PID-1 exit panics the kernel,
-// which the VMM never observes as a guest exit.
+// run aborts setup errors before Health is served; serving faults can still occur afterward.
+// RPC Stop powers off because exiting PID 1 panics the guest kernel.
 func run(ctx context.Context, cfg config, steps bootSteps) error {
 	// log is the guestd logger threaded from Run; a nil (test-constructed config)
 	// falls back to the default handler, which writes to os.Stderr (ttyS0) — the
@@ -165,14 +149,8 @@ func run(ctx context.Context, cfg config, steps bootSteps) error {
 	}
 	serveErr := steps.serve(serveCtx, port, svc)
 
-	// An RPC-driven Stop cancels serveCtx from inside the supervisor while ctx
-	// stays live. The guest is going down UNCONDITIONALLY, so guestd powers off
-	// explicitly (§(d)) — a PID-1 exit would panic the kernel.
-	//
-	// Gated on rpcStop alone, NOT a clean serveErr: a graceful drain that overran
-	// its deadline still returns non-nil, but the guest must STILL power off so
-	// the VMM observes a real shutdown within the host timeout. A serve fault or
-	// Unix-signal cancel returns as before, letting the host observe the failure.
+	// RPC Stop powers off even if the graceful serve drain hits its deadline; the VMM must observe shutdown.
+	// Serve faults and Unix-signal cancellation still surface to the host.
 	svc.mu.Lock()
 	rpcStop := svc.rpcStop
 	svc.mu.Unlock()

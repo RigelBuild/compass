@@ -36,17 +36,8 @@ var apiFilesystems = []apiFilesystem{
 	{source: "devtmpfs", target: "/dev", fstype: "devtmpfs"},
 }
 
-// mountAPIFilesystems mounts the API pseudo-filesystems (§(d) step 1). The mount
-// point directories are created if missing (the bare root may lack them), then
-// mounted. An already-mounted target (EBUSY) is tolerated — a re-exec or an
-// initramfs that pre-mounted one must not hard-fail the boot — but any other
-// mount failure is fatal.
-//
-// The mounts pass flags=0 deliberately: nosuid/nodev/noexec harden a privilege
-// boundary, and this single-tenant guest has none — the agent already runs as
-// root and guestd is PID 1, so there is nothing those flags would defend
-// against. Adding them to an as-yet-unbooted path (T4 proves the boot) would be
-// risk without benefit.
+// mountAPIFilesystems creates API pseudo-filesystems; EBUSY is tolerated for pre-mounted targets.
+// The agent runs non-root without capabilities; these kernel API mounts use default flags.
 func mountAPIFilesystems() error {
 	for _, fs := range apiFilesystems {
 		if err := os.MkdirAll(fs.target, 0o750); err != nil {

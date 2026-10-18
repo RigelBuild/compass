@@ -136,11 +136,7 @@ func SnapshotRevision(snap *ArtifactSnapshot) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// canonicalJSON renders a snapshot to its canonical bytes: comment keys sort via
-// encoding/json's map ordering; the checks slice is sorted defensively by
-// (Name, URL) so a snapshot built in any order digests identically. It is the
-// meeting-point contract the T4 apply and the T5 rebuild both marshal through;
-// an empty diff between two states is byte equality of their canonicalJSON.
+// canonicalJSON sorts map keys and checks so equal snapshots hash identically regardless of construction order.
 func canonicalJSON(snap *ArtifactSnapshot) []byte {
 	c := ArtifactSnapshot{
 		State:           snap.State,
@@ -194,11 +190,8 @@ func checksFromSummary(cs *compassv1.ChecksSummary) *ChecksSnapshot {
 	return out
 }
 
-// summaryFromChecks is the inverse projection: rebuild a gen ChecksSummary from
-// the snapshot's stored checks half. The router uses it to carry a prior
-// combined roll-up forward as the notification payload when a CHECKS roll-up
-// comes back NotModified (304) — the checks are unchanged, so the last stored
-// combined truth is what the notification must carry.
+// summaryFromChecks rebuilds the prior combined roll-up when a CHECKS fetch returns 304.
+// Unchanged checks must carry forward the stored notification payload.
 func summaryFromChecks(cs *ChecksSnapshot) *compassv1.ChecksSummary {
 	if cs == nil {
 		return nil

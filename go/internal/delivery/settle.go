@@ -75,15 +75,9 @@ func (c *Consumer) OnSessionStarted(sessionID string, account store.AccountID) {
 	}
 }
 
-// firesHeldDelivers reports whether a settle to state fires an author's held
-// delivers (design.md:148-168, 312-315):
-//   - READY (agent_end, the normal WORKING->READY turn-end) fires from the
-//     message's current (settled) blocks.
-//   - STOPPED / ERRORED fire from stored blocks. ERRORED may come from the
-//     Runner after an unexpected exit, even when the agent is silent.
-//   - DISCONNECTED is NOT a settle — it is the bounded-reattach window; firing on
-//     it would collapse DISCONNECTED to ERRORED, which the design forbids.
-//   - STARTING / WORKING / UNSPECIFIED are not settle edges.
+// firesHeldDelivers fires READY from settled blocks and STOPPED/ERRORED from stored blocks.
+// DISCONNECTED is not a settle; firing then would collapse the bounded reattach window to ERRORED.
+// STARTING, WORKING, and UNSPECIFIED are not settle edges.
 func firesHeldDelivers(state compassv1.AgentSessionState) bool {
 	switch state {
 	case compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
@@ -122,14 +116,8 @@ func (c *Consumer) drainSettles(ctx context.Context) {
 	}
 }
 
-// drainStarts sweeps every queued session-start edge under the loop's ctx. Each
-// edge redelivers the freshly-live session's owed messages via the EXISTING
-// sweepSession (holding the recipient session's dispatch gate for the whole
-// ordered re-dispatch, so live events for that session queue behind the
-// sweep — design.md:220-225). The sweep is at-least-once; agent-side message_id
-// dedup (T5) makes an already-acked message a no-op, and the contiguous+sparse
-// cursor omits it from UndeliveredMessages, so a message is not re-swept after
-// ack (design.md:360-365).
+// drainStarts replays each new session's owed messages under its dispatch gate, so live events queue behind the sweep.
+// Agent-side message-ID dedup makes retries safe; acked messages are absent from UndeliveredMessages.
 func (c *Consumer) drainStarts(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -154,25 +142,10 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 	}
 }
 
-// sweepPins injects a freshly-live session's current pins — the session-start
-// pin step (design.md T7), a sibling of sweepSession. For every channel the
-// agent sweeps (SweepChannels, the D1 disjunct), each PinnedEntry's message is
-// re-read and dispatched as a DeliverControl REGARDLESS of cursor position, so a
-// pin below the delivery cursor (acked_seq ≥ its seq) still reaches a fresh
-// session. All reads (SweepChannels, PinnedEntries, message re-reads) happen
-// BEFORE the gate is taken; the recipient session's dispatch gate is then held
-// only across the ordered dispatch of the pre-built ops, mirroring sweepSession,
-// so live events for the session queue behind it (design.md:220-225).
-//
-// It does NOT change cursor-advance semantics: a pin-sweep deliver is acked like
-// any deliver (an ack for an already-below-cursor seq is the existing no-op,
-// design.md:338, :658-660). Per-session message_id dedup (agent-side, DL-073/T5)
-// absorbs the overlap when the cursor sweep already delivered the same message
-// this session, so no server-side dedup is applied here.
-//
-// Errors resolving the channel set are returned (the caller logs them); a single
-// unreadable pin (its message vanished) is logged and skipped so the rest of the
-// board still injects.
+// sweepPins injects current pins regardless of cursor, including already-acked messages, on session start.
+// It reads channels, pins, and messages before taking the gate; live events then queue behind ordered dispatch.
+// Normal ack semantics apply; agent-side message-ID dedup absorbs overlap with the cursor sweep.
+// Channel-set failures return; unreadable pins log and skip without blocking the rest.
 func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, sessionID string) error {
 	// Root a per-pass span: the sweep runs on the settle/start drain ctx, which
 	// carries no live span, so the swept delivers link to this span's trace.
@@ -217,14 +190,9 @@ func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, session
 	return nil
 }
 
-// sweepOwedMentions dispatches every owed mention for a freshly-live session as
-// a STEER (OQ-4: a woken mention keeps its mention→steer semantics for the
-// mention-gap population), regardless of subscription or cursor. Mirrors
-// sweepPins: reads happen before the gate; the recipient session's dispatch gate
-// is held only across the ordered dispatch. Unlike sweepPins' skip-and-log of an
-// unreadable pin, a permanently-unreadable owed message is CLEAR-and-log — a
-// vanished message is undeliverable by construction, so its owed row is cleared
-// rather than re-logged on every start (an every-start re-log loop otherwise).
+// sweepOwedMentions sends owed mentions as STEERs regardless of subscription or cursor.
+// Reads precede the recipient dispatch gate, held only for ordered sends.
+// Missing messages are clear-and-log, avoiding a permanent error on every session start.
 func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID, sessionID string) error {
 	// Root a per-pass span (see sweepPins): the swept steers link to its trace.
 	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "delivery.sweep.owedMentions")

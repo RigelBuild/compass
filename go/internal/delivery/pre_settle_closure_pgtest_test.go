@@ -16,11 +16,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// openDeliveryStore opens a Store against a freshly-migrated database, SKIPPING
-// (via pgtest.RequireDSN) when no DSN and no opted-in container runtime are
-// available — the delivery package's own store construction, mirroring the store
-// package's openStore (harness_test.go) since that helper is unexported to this
-// package. context.Background() is the test root (thread-context exemption).
+// openDeliveryStore opens a freshly migrated store or skips when no live database is available.
+// It mirrors the store package's helper because that helper is unexported.
 func openDeliveryStore(t *testing.T) *store.Store {
 	t.Helper()
 	dsn := pgtest.RequireDSN(t)
@@ -153,11 +150,8 @@ func unroutedContains(t *testing.T, ctx context.Context, s *store.Store, message
 	return false
 }
 
-// waitMarked blocks until messageID leaves the committed-but-unmarked set — the
-// recovery scan records the owed row (routeMentionsFor) BEFORE it marks the
-// message (scan.go), so a waitOwed return can precede the mark by a window;
-// gating the mark assertion on its own durable effect keeps the leg deterministic
-// without a sleep.
+// waitMarked waits for the durable mention marker; waiting for the owed row can return before the mark.
+// This gates on the mark itself without a sleep.
 func waitMarked(t *testing.T, ctx context.Context, s *store.Store, messageID string) {
 	t.Helper()
 	deadline := time.After(testTimeout)

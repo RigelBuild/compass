@@ -134,12 +134,8 @@ func (f *Fabric) SubscribeBindingChanges(ctx context.Context, fn func(BindingCha
 	return stop, nil
 }
 
-// handleBindingChange runs one delivery: decode, cross-check the payload's
-// tenant against the subject it arrived on, then invoke fn under a panic guard.
-// Split out of SubscribeBindingChanges so the drop decision is readable on its
-// own — and so it is visibly the WHOLE of it: there is no ack, no
-// retry-or-park branch and no DLQ republish after this point, because core NATS
-// offers nowhere to put a message it could not process.
+// handleBindingChange decodes and verifies the tenant before invoking fn under a panic guard.
+// Core NATS has no ack, retry, or DLQ; malformed messages are logged and dropped.
 func (f *Fabric) handleBindingChange(ctx context.Context, msg *nats.Msg, fn func(BindingChange)) {
 	b, err := decodeBindingChange(msg.Data)
 	if err != nil {

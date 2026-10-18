@@ -64,12 +64,8 @@ func (c *Comms) openDMTx(ctx context.Context, owner, callerOwner, peerOwner stor
 	return channelID, created, nil
 }
 
-// emitDMCreated fans a best-effort ChannelChanged after a DM open COMMITTED and
-// only when the channel was created this call — the coordination hook's
-// post-commit emit posture (coordination.go:158-171): a resume (created=false)
-// is a no-op event-wise (nothing changed). It takes the channel the caller
-// already read for the response, so the create path does not re-read the same row
-// a second time. NEVER call before the commit.
+// emitDMCreated publishes ChannelChanged only for a newly committed DM; resuming an existing channel changes nothing.
+// It reuses the response channel and must run after commit.
 func (c *Comms) emitDMCreated(ctx context.Context, ch store.Channel, created bool) {
 	if !created {
 		return

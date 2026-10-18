@@ -9,11 +9,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// actorContextKey is the private context key under which the authenticated
-// caller's AccountID is carried. The T3 network door's token interceptor sets it
-// per request; the shipped local-socket door sets nothing, so actorFromContext
-// falls back to the bootstrap admin. Unexported so only this package can set or
-// read it — the caller identity can never be spoofed through a request field.
+// actorContextKey stores the authenticated caller set by the network interceptor.
+// It is private so request fields cannot spoof identity.
 type actorContextKey struct{}
 
 // WithActor returns a context carrying actor as the authenticated caller. The

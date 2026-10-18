@@ -15,10 +15,7 @@ import (
 // contract dimension. Nil-safe: a Consumer with no waker wired does not wake (a
 // unit test with no hub still routes).
 type AgentWaker interface {
-	// WakeAgent best-effort resumes agent's most recent session (fresh start
-	// only when none exists) so an owed mention or subscribed deliver can reach
-	// it. No-op when the agent is live or has no placement. Void: a fault is
-	// logged in the implementing layer, never surfaced — mention routing can
-	// never fail a post (design.md established contract).
+	// WakeAgent resumes an offline agent so owed work can reach it; implementations log failures.
+	// Delivery never fails a post because wake is best-effort.
 	WakeAgent(ctx context.Context, agent store.AccountID)
 }

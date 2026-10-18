@@ -22,33 +22,11 @@ const (
 	// instance (§Q3, "delivery queue groups": the three-hop model's hop 2).
 	RunnerEventsQueue = "compass-runner-events"
 
-	// routingBindingPrefix roots the binding-invalidation plane (§T4):
-	// compass.routing.binding.<tenant>, built by RoutingBindingSubject.
-	//
-	// The literal "binding" precedes the tenant token DELIBERATELY, and the
-	// token order is a correctness requirement rather than a style choice. The
-	// COMPASS_COMMS stream captures commsStreamSubjects — compass.*.comms.* —
-	// which matches any four-token subject whose THIRD token is "comms". Under
-	// the other order, compass.routing.<tenant>.binding, a tenant literally
-	// named "comms" yields compass.routing.comms.binding, which that wildcard
-	// captures.
-	//
-	// A stream is an ordinary subscriber in the account's sublist, so that
-	// capture is ADDITIVE, not exclusive: the hubs would still receive the
-	// message. The harm is that a best-effort core-NATS invalidation would ALSO
-	// be persisted into a durable stream specified to carry only EventRefs,
-	// burning its file storage and MaxAge budget with traffic that no comms
-	// consumer can use (every consumer's FilterSubject fixes a concrete kind,
-	// and no EventKind is "binding"). Pinning "binding" to token 3 makes that
-	// unrepresentable for EVERY tenant value, because the comms wildcard
-	// requires token 3 == "comms" and this grammar's token 3 is never variable.
+	// routingBindingPrefix keeps the binding plane outside the comms stream wildcard.
 	routingBindingPrefix = subjectPrefix + ".routing.binding"
 
-	// DLQSubject is where a comms event that exhausted its delivery attempts is
-	// parked. JetStream has no native dead-letter queue, so the fabric
-	// implements the app-level pattern: publish to this subject, then Term() the
-	// message so the server stops redelivering it. Parking is a diagnostic, not
-	// a recovery path — recovery is always the Postgres row.
+	// DLQSubject holds exhausted comms events; JetStream has no native DLQ.
+	// It is diagnostic only; recovery always uses the Postgres row.
 	DLQSubject = subjectPrefix + ".dlq.comms"
 )
 
@@ -89,15 +67,8 @@ func CommsWildcardSubject(kind EventKind) (string, error) {
 	return subjectPrefix + "." + wildcardToken + ".comms." + string(kind), nil
 }
 
-// validCommsSubject checks a whole comms subject against the grammar:
-// exactly compass.<tenant>.comms.<kind>, with both variable tokens valid.
-//
-// Subscribe takes a subject string, not a (tenant, kind) pair, so this is the
-// only place the grammar can be enforced on that path — and a subject that is
-// merely rooted at "compass" would otherwise reach CreateOrUpdateConsumer with
-// a FilterSubject the COMPASS_COMMS stream does not capture, producing a
-// consumer that silently never delivers. Publish gets the same guarantee for
-// free by deriving the subject from the ref.
+// validCommsSubject enforces the four-token comms grammar for Subscribe's string input.
+// Without this check, an uncaptured subject could create a durable consumer that never receives messages.
 func validCommsSubject(subject string) error {
 	tokens := strings.Split(subject, ".")
 	if len(tokens) != commsSubjectTokens {

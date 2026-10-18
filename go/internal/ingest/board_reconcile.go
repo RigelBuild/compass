@@ -163,11 +163,8 @@ func (rc *BoardReconciler) sweep(ctx context.Context) {
 	}
 }
 
-// reconcileRepo conditionally lists one repo's updated-order rows since its
-// stored watermark, sinks them, and advances the watermark AFTER the sink. A 304
-// costs no sink and leaves the watermark untouched (the stored ETag remains the
-// truth). A zero/absent watermark lists everything (cold-start/backfill). The
-// PR backfill runs after the walk, whether or not it was a 304.
+// reconcileRepo lists updates since the watermark, sinks them, then advances it; 304 leaves it unchanged.
+// Cold starts list all rows, and PR backfill always runs afterward.
 func (rc *BoardReconciler) reconcileRepo(ctx context.Context, repo string) error {
 	since, etag, err := rc.store.LoadRepoWatermark(ctx, repo)
 	if err != nil {
@@ -186,18 +183,9 @@ func (rc *BoardReconciler) reconcileRepo(ctx context.Context, repo string) error
 	return rc.backfillPRs(ctx, repo, since, pullsFailed)
 }
 
-// sinkRows sinks one listed window, isolating each row so a poison row is
-// skipped and counted, and advances the watermark only past the rows that sank.
-// A PR hydrate that runs out of budget is not poison: the watermark stays at
-// since with no ETag, so the next sweep re-lists the whole window. It returns
-// the count of PR rows that failed to hydrate.
-//
-// Tradeoff (deliberate, do not "fix"): the watermark advances to the max
-// timestamp over the HEALTHY rows, so a row that fails only TRANSIENTLY while
-// co-batched with a newer healthy row is left below the advanced watermark and
-// is dropped until its next forge update re-lists it. Capping the advance below
-// the min failed-row timestamp instead would re-introduce the poison-pin
-// livelock this isolation exists to prevent.
+// sinkRows isolates poison rows and advances only past successful rows; budget exhaustion leaves the watermark unchanged.
+// It advances to the max healthy timestamp, so a transient failure co-batched with a newer success waits for a future forge update.
+// Advancing below the minimum failure instead would reintroduce poison-row livelock.
 func (rc *BoardReconciler) sinkRows(ctx context.Context, repo string, since time.Time, res forge.ConditionalResult[forge.UpdatedRows]) (int, error) {
 	var maxMark time.Time
 	poison, pullsFailed := 0, 0

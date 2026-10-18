@@ -160,12 +160,8 @@ func channelPostPolicyFromWire(p compassv1.ChannelPostPolicy) store.ChannelPostP
 	}
 }
 
-// pinnedEntriesToWire maps the store-native pinned board onto the wire
-// PinnedEntry repeated field (T6), mirroring the store-native->wire edge every
-// other projection uses (the store depends on no generated code). Order is
-// preserved: the store returns entries sorted ascending by position, and the
-// wire slice keeps that order. Nil in, nil out (an empty board is an unset
-// repeated field, not an empty non-nil slice).
+// pinnedEntriesToWire preserves store position order.
+// An empty board maps to nil, not a non-nil empty repeated field.
 func pinnedEntriesToWire(entries []store.PinnedEntry) []*compassv1.PinnedEntry {
 	if len(entries) == 0 {
 		return nil
@@ -323,22 +319,9 @@ func channelKindFromWire(k compassv1.ChannelKind) store.ChannelKind {
 	}
 }
 
-// memberUpdatesFromWire resolves the UpdateChannelMembers request's four
-// parallel HANDLE lists (add / remove / subscribe / unsubscribe) to account ids,
-// then collapses them into the store's per-member MemberUpdate set (RT-1). A
-// removed member is one update with Remove; an added member and a
-// subscribe-toggle for an existing member merge onto the same MemberUpdate so
-// one member never yields two conflicting rows.
-//
-// Merge is keyed POST-resolution (by resolved account id), so two distinct
-// spellings of the SAME handle (e.g. `matt/ux` and a bare `ux` from one of
-// matt's agents) collapse onto one MemberUpdate rather than yielding two
-// conflicting rows. Resolution is ATOMIC across all four lists (OQ-2): the four
-// lists resolve in ONE store call, so any unresolved handle fails the whole
-// request with NOT_FOUND naming EVERY unresolved handle across all four lists in
-// its submitted spelling — not just the first failing list's misses. No store
-// mutation runs unless every handle in every list resolved. All four lists
-// resolve in the caller's namespace/visibility scope.
+// memberUpdatesFromWire resolves all four handle lists atomically and merges updates by resolved account ID.
+// Equivalent spellings collapse into one update; any miss fails with every submitted spelling.
+// No mutation runs unless all handles resolve in the caller's visibility scope.
 func (c *Comms) memberUpdatesFromWire(ctx context.Context, caller store.AccountID, req *compassv1.UpdateChannelMembersRequest) ([]store.MemberUpdate, error) {
 	addH := req.GetAddMemberHandles()
 	subscribeH := req.GetSubscribeHandles()
@@ -520,11 +503,7 @@ func (c *Comms) publishChannelGroupChanged(ctx context.Context, g store.ChannelG
 	})
 }
 
-// publishChannelChanged emits a ChannelChanged carrying the channel's current
-// state plus the accounts this change removed (nil on a create or pure add), so
-// the stream edge can deliver a departing member its one final event before the
-// channel goes silent to it (the removed member no longer matches the
-// membership-visibility filter on the channel's current member set).
+// publishChannelChanged emits current channel state plus removed accounts so departing members receive one final event.
 func (c *Comms) publishChannelChanged(ctx context.Context, ch store.Channel, removed []store.AccountID) {
 	c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_ChannelChanged{

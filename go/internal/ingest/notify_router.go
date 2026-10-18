@@ -88,21 +88,12 @@ type NotifyStore interface {
 	// opened=true adds the container-scope subs (project-matched); opened=false
 	// is the exact-coordinate subs only (no fan-in).
 	SubscribersForArtifact(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, number uint64, project string, opened bool) ([]NotifySubscriber, error)
-	// ListNotifyTargets enumerates every subscribed coordinate — the reconcile
-	// sweep's (T5) work list. Declared on the shared seam; unused by the router.
+	// ListNotifyTargets supplies the reconciliation sweep's work list; the router does not call it.
 	ListNotifyTargets(ctx context.Context) ([]NotifyTarget, error)
-	// UpsertArtifactCursor writes the coordinate's shared FETCH cursor (the new
-	// snapshot + revision), BEFORE notify (fetch-side truth advances
-	// unconditionally, DL-053's split).
+	// UpsertArtifactCursor advances shared fetch truth before notification.
 	UpsertArtifactCursor(ctx context.Context, cur ArtifactCursor) error
-	// AdvanceDeliveredRevisionCAS advances one subscriber's delivered_revision
-	// from prior to next as a compare-and-set — the write lands only when the
-	// stored value still equals prior, so a concurrent route cannot erase a gap
-	// it did not observe. Reports whether the row advanced (a lost CAS is
-	// advanced=false with a nil error, distinct from a store fault). The suppress
-	// path is the SOLE caller (amending W3); a caught-up self-suppressed
-	// subscriber advances so the reconcile sweep does not resurrect the
-	// suppressed self-notification as a synthetic UPDATE.
+	// AdvanceDeliveredRevisionCAS advances one subscriber only if its stored revision still matches prior.
+	// The suppress path is its sole caller; it advances caught-up self-suppressed subscribers to avoid synthetic updates.
 	AdvanceDeliveredRevisionCAS(ctx context.Context, agentAccountID, subscriptionID, prior, next string) (bool, error)
 }
 
@@ -371,31 +362,8 @@ func (r *NotifyRouter) SynthesizeUpdate(ctx context.Context, sub NotifySubscribe
 	}
 }
 
-// advanceOnSuppress advances a self-origin-suppressed subscriber's
-// delivered_revision to the route's revision — the one router-side advance
-// (amending W3), because a suppressed notification is never acked and the
-// reconcile sweep would otherwise resurrect it as a synthetic UPDATE every
-// sweep. It is CONDITIONAL and SCOPED:
-//
-//   - Scope: ARTIFACT only. A CONTAINER-scope subscriber's delivered_revision
-//     lives on its number=0 row and the sweep compares it against the CONTAINER
-//     cursor's revision; writing this ARTIFACT revision there would poison that
-//     row (the container sweep would then synthesize an UPDATE every sweep). So
-//     a container-scope suppressed sub is skipped but NEVER advanced.
-//   - Caught up (Go gate): advance only when this subscriber was already caught
-//     up to the PRIOR cursor revision — sub.DeliveredRevision == priorRevision.
-//     A trailing subscriber has a genuinely-missed earlier event (E1); advancing
-//     would erase that gap and the sweep would never recover it, silently losing
-//     work-relevant signal. So a trailing sub is skipped, and the next sweep's
-//     synthetic UPDATE is the correct recovery for its missed event.
-//   - Concurrency (SQL CAS): the write itself is a compare-and-set keyed on
-//     prior = sub.DeliveredRevision, so a concurrent route that advanced the row
-//     between step 5 and here cannot be clobbered — the CAS then lands zero rows
-//     (advanced=false) and we degrade open.
-//
-// A lost CAS (advanced=false) or any store fault degrades OPEN — logged and
-// swallowed, worst case one synthetic UPDATE on the next sweep — never a route
-// failure.
+// advanceOnSuppress advances a caught-up artifact subscriber; CAS/store failures do not fail Route.
+// Reconciliation retries with synthetic updates until the subscriber acknowledges the revision.
 func (r *NotifyRouter) advanceOnSuppress(ctx context.Context, ev forge.ForgeEvent, sub NotifySubscriber, priorRevision, next string) {
 	if sub.Scope != compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_ARTIFACT {
 		return
@@ -420,18 +388,9 @@ func (r *NotifyRouter) advanceOnSuppress(ctx context.Context, ev forge.ForgeEven
 	}
 }
 
-// actorHandle resolves the event's owner-qualified ACTOR handle per the
-// suppress/keep matrix. A zero Handle means no actor evidence or an unresolvable
-// one — the caller fails open. A nil identity seam short-circuits every arm to
-// the zero Handle, so suppression is disabled wholesale.
-//
-// COMMENT/REVIEW read the actor straight off the header-stamped CommentRef
-// (unset for a human commenter -> zero Handle). OPENED resolves the DL-055
-// ownership row's recorded author, which IS the actor by construction. STATE's
-// actor rides RIG-3331's forge_state_transitions memo, which is not reachable
-// through this two-method seam, so STATE resolves the zero Handle here and
-// delivers (the safe interim documented in §STATE) until the memo consumer is
-// wired. CHECKS and UPDATE carry no actor and never suppress.
+// actorHandle resolves qualified actors for suppression; absent evidence, faults, and unsupported changes fail open.
+// Comments/reviews use header attribution; opened events use the ownership row. State lacks a reachable memo here.
+// Checks and updates have no actor and never suppress.
 func (r *NotifyRouter) actorHandle(ctx context.Context, ev forge.ForgeEvent) Handle {
 	if r.identities == nil {
 		return Handle{}
@@ -455,12 +414,8 @@ func (r *NotifyRouter) actorHandle(ctx context.Context, ev forge.ForgeEvent) Han
 	}
 }
 
-// selfOrigin reports whether dispatch to sub must be skipped: the event's actor
-// and this subscriber's handles are both fully owner-qualified and equal. An
-// unqualified actor short-circuits before any store read (the common no-actor
-// path). The subscriber handle is resolved through the identity seam, memoized
-// per route by account id; a resolver fault is logged and treated as a miss
-// (fail open — deliver).
+// selfOrigin skips dispatch only when actor and subscriber handles are both owner-qualified and equal.
+// It memoizes subscriber resolution; faults become a miss so notification delivery fails open.
 func (r *NotifyRouter) selfOrigin(ctx context.Context, actor Handle, sub NotifySubscriber, memo map[string]Handle) bool {
 	if !actor.qualified() {
 		return false
