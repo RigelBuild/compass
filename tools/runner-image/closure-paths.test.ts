@@ -86,11 +86,16 @@ describe("P6 paired main tags", () => {
 
 	test("D8 pattern matches and its Flux extract yields n", () => {
 		const tag = mainTag(1638, "abcdef0123456789abcdef0123456789abcdef01");
-		const pattern = /^main-(?<n>[1-9][0-9]*)-[0-9a-f]{12}$/;
+		// D8's Flux ImagePolicy pattern, verbatim in Go RE2 syntax.
+		const goPattern = "^main-(?P<n>[1-9][0-9]*)-[0-9a-f]{12}$";
+		const pattern = new RegExp(goPattern.replace("(?P<", "(?<"));
 		const extract = "$n";
-		const match = tag.match(pattern);
-		expect(match?.groups?.n).toBe("1638");
-		expect(extract.replace("$n", match?.groups?.n ?? "")).toBe("1638");
+		expect(tag).toMatch(pattern);
+		expect(tag.replace(pattern, extract.replace(/\$(\w+)/g, "$<$1>"))).toBe(
+			"1638",
+		);
+		expect("main-0-abcdef012345").not.toMatch(pattern);
+		expect("main-1638-abcdefg12345").not.toMatch(pattern);
 	});
 });
 

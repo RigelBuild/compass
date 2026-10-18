@@ -1728,9 +1728,10 @@ jobs:
   tag-main-images:
     name: tag-main-images
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     needs: [publish-runner-image, publish-server-image]
     if: >-
-      always() &&
+      !cancelled() &&
       contains(fromJSON('["push"]'), github.event_name) &&
       contains(fromJSON('["refs/heads/main"]'), github.ref) &&
       contains(fromJSON('["success", "skipped"]'), needs.publish-runner-image.result) &&
