@@ -2958,7 +2958,7 @@ jobs:
 
       # A GITHUB_TOKEN-opened PR gets no pull_request CI (GitHub's recursion
       # guard), so open it with the same per-run App token release.yml mints.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
         with:
           client-id: ${{ vars.CI_APP_CLIENT_ID }}
@@ -3119,7 +3119,7 @@ jobs:
         run: bunx playwright test e2e/visual-smoke.spec.ts --update-snapshots=all
 
       # App token for the same reason as the forge lane: a GITHUB_TOKEN PR gets no CI.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
         with:
           client-id: ${{ vars.CI_APP_CLIENT_ID }}

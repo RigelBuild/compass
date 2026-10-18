@@ -141,7 +141,7 @@ jobs:
       # key as an Actions secret, and the Client ID — a public App identifier
       # that appears in OAuth URLs — as an Actions variable (RIG-2995).
       # Registering the App itself is a manual step with no IaC rail.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
         with:
           client-id: ${{ vars.CI_APP_CLIENT_ID }}
@@ -1064,7 +1064,7 @@ jobs:
           nix build --no-link $stores
           for store in $stores; do echo "$store/bin" >>"$GITHUB_PATH"; done
 
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: tap-token
         with:
           client-id: ${{ vars.CI_APP_CLIENT_ID }}
