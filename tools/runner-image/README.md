@@ -27,6 +27,12 @@ CLI with `--lane runner`. `release-runner-image` calls the shared retag CLI with
 `--lane runner`. The latter needs full git history and
 `RUNNER_IMAGE_CLOSURE_PATHS` from the workflow environment.
 
+On every main push, `tag-main-images` waits for the runner and server publish
+jobs, resolves each lane's newest published ancestor, and copies both images by
+digest to `main-<n>-<sha12>`. Here `n` is the head commit's first-parent count.
+The job needs full git history and both closure path sets; it uses
+`REGISTRY_AUTH_FILE` for destination writes.
+
 ## Credentials
 
 `publish.ts` reads `DOCKER_CONFIG/config.json` for BuildKit and `skopeo` GHCR

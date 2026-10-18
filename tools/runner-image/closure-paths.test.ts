@@ -1,12 +1,27 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { closureChanges } from "./retag-core.ts";
+import { closureChanges, mainTag } from "./retag-core.ts";
 
 const root = join(import.meta.dir, "..", "..");
 const workflow = Bun.YAML.parse(
 	readFileSync(join(root, ".github/workflows/release.yml"), "utf8"),
-) as { env: Record<string, string> };
+) as {
+	env: Record<string, string>;
+	jobs: Record<
+		string,
+		{
+			needs?: string[];
+			permissions?: Record<string, string>;
+			concurrency?: {
+				group: string;
+				"cancel-in-progress": boolean;
+				queue: string;
+			};
+			steps?: { uses?: string; with?: Record<string, unknown> }[];
+		}
+	>;
+};
 
 // One file per top-level go/ dir that `go list -deps ./cmd/compass-runner`
 // reports. flake.nix builds from all of ./go, so each must republish the image.
@@ -27,6 +42,55 @@ describe("RUNNER_IMAGE_CLOSURE_PATHS in release.yml", () => {
 				"runner",
 			),
 		).toEqual(RUNNER_GO_SOURCES);
+	});
+});
+
+describe("P6 paired main tags", () => {
+	test("generated Go source changes both image closures", () => {
+		const source = "go/gen/compass/v1/compass.pb.go";
+		expect(
+			closureChanges(
+				workflow.env.RUNNER_IMAGE_CLOSURE_PATHS ?? "",
+				[source],
+				"runner",
+			),
+		).toEqual([source]);
+		expect(
+			closureChanges(
+				workflow.env.SERVER_IMAGE_CLOSURE_PATHS ?? "",
+				[source],
+				"server",
+			),
+		).toEqual([source]);
+	});
+	test("tag-main-images waits for both publishers and checks out full history", () => {
+		const job = workflow.jobs["tag-main-images"];
+		expect(job?.needs).toEqual([
+			"publish-runner-image",
+			"publish-server-image",
+		]);
+		expect(job?.permissions).toEqual({ contents: "read", packages: "write" });
+		expect(job?.concurrency).toEqual({
+			group: "tag-main-images",
+			"cancel-in-progress": false,
+			queue: "max",
+		});
+		expect(
+			job?.steps?.some(
+				(step) =>
+					step.uses?.startsWith("actions/checkout@") &&
+					step.with?.["fetch-depth"] === 0,
+			),
+		).toBe(true);
+	});
+
+	test("D8 pattern matches and its Flux extract yields n", () => {
+		const tag = mainTag(1638, "abcdef0123456789abcdef0123456789abcdef01");
+		const pattern = /^main-(?<n>[1-9][0-9]*)-[0-9a-f]{12}$/;
+		const extract = "$n";
+		const match = tag.match(pattern);
+		expect(match?.groups?.n).toBe("1638");
+		expect(extract.replace("$n", match?.groups?.n ?? "")).toBe("1638");
 	});
 });
 

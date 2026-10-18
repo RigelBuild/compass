@@ -1725,6 +1725,83 @@ jobs:
         run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-server:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
 
 
+  tag-main-images:
+    name: tag-main-images
+    runs-on: ubuntu-latest
+    needs: [publish-runner-image, publish-server-image]
+    if: >-
+      always() &&
+      contains(fromJSON('["push"]'), github.event_name) &&
+      contains(fromJSON('["refs/heads/main"]'), github.ref) &&
+      contains(fromJSON('["success", "skipped"]'), needs.publish-runner-image.result) &&
+      contains(fromJSON('["success", "skipped"]'), needs.publish-server-image.result)
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: tag-main-images
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the pinned skopeo on PATH
+        run: |
+          set -euo pipefail
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
+          done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
+
+      - name: Put the pinned bun toolchain on PATH
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >> "$GITHUB_PATH"
+
+      - name: Pin the registry auth file
+        run: echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          skopeo login ghcr.io -u "$ACTOR" --password-stdin \
+            --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
+
+      - name: Tag paired main images
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          bun tools/runner-image/tag-main.ts \
+            --sha "$HEAD_SHA" \
+            --server-repo ghcr.io/rigelbuild/compass-server \
+            --runner-repo ghcr.io/rigelbuild/compass-runner
+
   release-server-image:
     name: release-server-image
     runs-on: ubuntu-latest
