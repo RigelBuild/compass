@@ -2,12 +2,8 @@
 
 package runner
 
-// agentHost.RefreshSecrets: the SecretsVersion-driven fetch+materialize leg. A
-// live session's secrets are fetched over the link and installed into its
-// container over the stdin-exec channel (the git-credential posture). Every case
-// pins a contract a plausible bug would break: a refresh for an unknown session
-// must fail (not materialize into the wrong container); a bound session must run
-// the materialize exec as the agent uid in its $HOME.
+// RefreshSecrets fetches the versioned secrets and installs them through stdin
+// exec. Unknown sessions must fail; materialization uses the agent uid and HOME.
 
 import (
 	"context"

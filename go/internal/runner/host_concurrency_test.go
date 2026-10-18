@@ -2,26 +2,9 @@
 
 package runner
 
-// Per-container transition-lock tests for the production agentHost
-// (RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-concurrent-dispatch/design.md, Approach
-// (d) / Plan T4). Concurrent dispatch makes concurrent SessionHost callers
-// reachable, so the lifecycle ops on ONE container must serialize while ops on
-// DIFFERENT containers still overlap — the per-container granularity that keeps
-// a slow Provision/Start of one container off the latency path of every other,
-// and closes the Start TOCTOU (host.go — two concurrent Starts for one container
-// both passing the existing-session check).
-//
-// T1 harness choice (per the record's T1 note — implementer's choice): these
-// drive the REAL agentHost (NewSessionHost via newConfigRefreshFixture), not a
-// fake, because the transition lock lives in agentHost and a fake would assert
-// nothing about it. The launch is parked on the engine's execGate/execEntered
-// channels so a test can hold one Start in flight while it drives another,
-// deterministically — no sleeps, no polling. Where a test must prove an op was
-// SUPPRESSED (produces no event by construction), it asserts on the authoritative
-// post-release OUTCOME (which fails fast the instant both goroutines complete,
-// never via the failsafe ceiling); the testTimeout ceiling only converts a
-// pathological hang into a descriptive t.Fatal, mirroring
-// TestCloseJoinsConcurrentTeardowns (host_test.go).
+// Transition-lock tests use the real agentHost: same-container lifecycle calls
+// serialize, while calls for different containers may overlap. Launch gates
+// make the outcomes deterministic without sleeps or polling.
 
 import (
 	"context"

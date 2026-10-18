@@ -275,13 +275,9 @@ func TestDrainToLogReportsFaultOnATruncatedLine(t *testing.T) {
 	}
 }
 
-// truncatedFaultReader serves chunk across as many reads as the caller's buffer
-// needs, and returns the non-EOF err together with the read that delivers the
-// final bytes (the io.Reader contract permits n>0 with a non-nil err). So a
-// caller that runs past the cap sees truncation AND the fault on the same read;
-// every read after is a clean EOF. failingReader can't reach this shape — it
-// faults only on a read AFTER its data, and serves one buffer, so it can neither
-// exceed the cap nor carry the fault on the truncated line itself.
+// truncatedFaultReader returns the final chunk and a non-EOF error together,
+// exercising the io.Reader case where n > 0 and err != nil. Later reads return
+// EOF; failingReader cannot exercise a fault on the oversized line itself.
 type truncatedFaultReader struct {
 	chunk []byte
 	err   error

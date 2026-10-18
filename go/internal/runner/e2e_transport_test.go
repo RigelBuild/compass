@@ -2,18 +2,9 @@
 
 package runner
 
-// T5 Half-A end-to-end proof (RIG-1351): the Runner-side agent->Runner call
-// transport, exercised through the REAL integrated stack rather than the T2
-// gateway/socket unit fakes. Every test dials the actual per-container Unix
-// socket that Provision served, over a real h2c Connect AgentGatewayClient, and
-// asserts the call flows agent -> socket -> Gateway -> (container->session
-// resolve) -> RelayCommsCall -> fake Server -> back. The T2 tests use
-// UnimplementedAgentGatewayHandler / blockingGateway and never touch the real
-// agentHost-backed Gateway, so this seam is uncovered until here.
-//
-// Deterministic + event-gated only (channels, short-deadline contexts): no
-// sleeps, no retries (rule://no-retries). testTimeout (helpers_test.go) bounds
-// every blocking wait so a wedged forward fails fast instead of hanging.
+// End-to-end tests dial the real per-container socket and exercise agent ->
+// Gateway -> Server forwarding over h2c Connect. Event-gated waits use a deadline
+// only to fail fast; there are no sleeps or retries.
 
 import (
 	"context"
@@ -32,17 +23,9 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
-// recordingRelay is a fake RunnerService Server standing in for the real
-// RelayCommsCall endpoint. It captures every RelayCommsCallRequest it receives
-// (under a mutex, so the test goroutine and the h2c handler goroutine race
-// safely) and returns a canned result echoing the call id, so the test can
-// prove the exact session id + call reached the Server and the result flowed
-// back. When started != nil it blocks the forward until release is closed or
-// the request context is cancelled — the in-flight state a test event-gates on
-// for the force-close scenario, mirroring gateway/socket_test.go's
-// blockingGateway. RelayBoardCall is captured the same way and answers a canned
-// result, proving host wiring reaches the Board leg. Enroll/PublishEvents/
-// Sessions stay unimplemented (the embedded Unimplemented handler).
+// recordingRelay captures forwarded calls and returns canned results. Optional
+// start/release channels hold a request in flight for force-close tests; the
+// board leg is captured too, while other RPCs remain unimplemented.
 type recordingRelay struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 
@@ -144,12 +127,8 @@ func (r *recordingRelay) snapshot() []*compassv1internal.RelayCommsCallRequest {
 	return append([]*compassv1internal.RelayCommsCallRequest(nil), r.received...)
 }
 
-// newTransportFixture builds the concrete *agentHost over the stub-streaming
-// runtime (a real, terminatable child so Start/Stop drive a live agent) whose
-// ServerLink forwards to relay. It returns *agentHost (not the SessionHost
-// interface) because the transport tests need .Provision/.Start/.Session/.Close
-// plus white-box reads of h.sockets for the served socket path. The per-container
-// sockets land under a fresh t.TempDir runtime dir.
+// newTransportFixture builds the real agentHost with a terminatable child and
+// returns it for socket-path and lifecycle assertions.
 func newTransportFixture(t *testing.T, relay compassv1internalconnect.RunnerServiceHandler) *agentHost {
 	t.Helper()
 	return newTransportFixtureWithEngine(t, relay, newStubStreamingRuntime(t))

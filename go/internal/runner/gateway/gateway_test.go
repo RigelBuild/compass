@@ -2,14 +2,8 @@
 
 package gateway
 
-// Hermetic suite for the Runner->Server forward handler Gateway.Comms (transport
-// design T3, RIG-1351). White-box (package gateway) so it drives the handler and
-// its two seams directly, sleep-free: the fakes record every fact synchronously,
-// so every assertion reads a value the in-memory call already produced.
-//
-// The load-bearing case is the fail-closed guard: a call before Start binds a
-// session returns FailedPrecondition and never forwards an empty session id.
-// The relay-never-called assertion fails if the session check is bypassed.
+// Hermetic Gateway.Comms tests drive the handler directly and verify that calls
+// before Start fail closed without forwarding an empty session id.
 
 import (
 	"context"
@@ -23,16 +17,8 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// fakeSessions is a hand-written SessionForContainer. It records the container
-// name it was asked to resolve (so a test can prove the handler resolves the
-// name fixed at construction, never one read off the request) and returns a
-// canned (sessionID, ok).
-//
-// The recorder is mutex-guarded because the Gateway's handlers run on the
-// socket's http.Server goroutines and a test may drive several concurrently.
-// The counter was unsynchronized until a concurrent durable-path test called it
-// from 24 goroutines; every existing caller happened to be sequential, so the
-// race was latent rather than absent.
+// fakeSessions records the container name resolved by the handler and returns a
+// canned session. Its mutex protects calls from concurrent socket handlers.
 type fakeSessions struct {
 	sessionID string
 	ok        bool

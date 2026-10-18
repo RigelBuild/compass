@@ -58,13 +58,8 @@ func (c *SeqCounter) next() uint64 {
 	return c.n
 }
 
-// rollback returns an allocated-but-unsent sequence. A forward that fails must
-// not burn a number: the counter is socket-lifetime, so a burned number is a
-// permanent hole, and the hub flags a skipped number as in-transit loss
-// (runnerhub/hub.go:230). A durable frame erring back to the agent is correct,
-// expected behaviour — it must not make the Server report a loss that did not
-// happen. Only the latest seq is reclaimed: if another Gateway allocated since,
-// the number stays burned and shows as a gap once the hub has a baseline.
+// rollback reclaims the latest allocated-but-unsent sequence. Leaving a hole
+// makes the hub report loss that did not occur; older allocations stay burned.
 func (c *SeqCounter) rollback(seq uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -73,18 +68,10 @@ func (c *SeqCounter) rollback(seq uint64) {
 	}
 }
 
-// sessionPublisher owns the one PublishEvents client-stream for a session and
-// stamps a monotonic RunnerSeq on every frame it forwards. It is opened by the
-// Publish handler at stream entry and closed at stream end. Runner lifecycle
-// reports also use one-shot publishers for transitions the agent cannot report;
-// durable conversation frames commit via CommitConversationFrame, off this spine.
-//
-// The counter is NOT owned here. A publisher is replaceable within one Gateway
-// (the session-change reset in acquirePublisher closes an orphan bound to a
-// stopped session and opens a fresh one), and a per-publisher counter restarts
-// at 0 on that swap — replaying low seqs under the hub's high-water mark and
-// silently disabling gap detection for the replayed range. The counter belongs
-// to the Gateway; see its seq field.
+// sessionPublisher owns a PublishEvents stream for a session. Lifecycle reports
+// use one-shot publishers; durable frames use CommitConversationFrame instead.
+// The Gateway owns the sequence counter so replacing a publisher cannot restart
+// RunnerSeq below the hub's high-water mark.
 type sessionPublisher struct {
 	sessionID string
 	// traceparent is ctx's trace, read once; empty for the socket-lifetime publisher.
@@ -118,11 +105,9 @@ type sessionPublisher struct {
 	closeErr error
 }
 
-// newSessionPublisher opens the upstream PublishEvents client-stream for
-// sessionID and returns the publisher that drives it. ctx bounds the stream's
-// life: the Publish handler uses the socket-lifetime context, while lifecycle
-// reports use a bounded caller ctx. seq is the Gateway counter, carried across
-// publishers so the sequence never restarts.
+// newSessionPublisher opens a PublishEvents stream for the given context and
+// session. Its context bounds the stream lifetime, and its sequence counter
+// survives publisher replacement.
 func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string, seq *SeqCounter) *sessionPublisher {
 	traceparent := otelx.Traceparent(ctx)
 	ctx, cancel := context.WithCancel(ctx)
@@ -141,18 +126,10 @@ func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string
 	}
 }
 
-// forward allocates the next RunnerSeq and sends the frame upstream under one
-// critical section, so allocation order matches emission order across every
-// concurrent caller. This is the loss-tolerant Publish path only (trace/session
-// frames); durable conversation frames no longer ride the publisher — they
-// commit request/response via CommitConversationFrame — so no idempotency_key
-// rides this envelope. A send error is returned to the caller: the Publish
-// handler ends its stream and the agent reconnects per the loss model.
-//
-// A failed Send rolls the allocation back. The counter is socket-lifetime, so an
-// unsent number would be a permanent hole, and the hub reads a skipped number as
-// in-transit loss — a stream frame erring back must not make the Server report a
-// loss that never happened.
+// forward serializes sequence allocation and Send so sequence order matches
+// emission order. Only loss-tolerant Publish frames use this stream; durable
+// conversation frames use CommitConversationFrame. A failed Send rolls back its
+// allocation to avoid a false gap in the socket-lifetime sequence.
 func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -201,11 +178,8 @@ func (p *sessionPublisher) sendLocked(seq uint64, frame *compassv1internal.Agent
 	return nil
 }
 
-// close closes the upstream stream and awaits its ack, mirroring the stdout
-// relay's CloseAndReceive at EOF (relay.go:168-171). The Publish handler closes
-// its shared stream when the agent's client-stream ends; Runner lifecycle reports
-// close their one-shot streams after forwarding a terminal frame. Returns the
-// ack error (nil on a clean close) so the caller can classify it.
+// close ends the upstream stream and waits for its ack. Shared agent streams
+// close at EOF; lifecycle reports close their one-shot streams after forwarding.
 func (p *sessionPublisher) close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -222,20 +196,10 @@ func (p *sessionPublisher) close() error {
 	return p.closeErr
 }
 
-// acquirePublisher returns the session's ordered publisher, creating it on first
-// use. Only the Publish handler calls it now (durable frames commit off this
-// spine). The upstream PublishEvents stream is opened against the socket-lifetime
-// context (g.baseCtx), NOT the calling handler's request context, so it outlives
-// any one request; the Publish handler owns the stream and closes it at stream
-// end via releasePublisher. Runner lifecycle reports bypass this shared publisher
-// and use bounded one-shot streams so they cannot close it.
-//
-// Session-change reset: a Gateway is retained for the container socket across
-// Stop→Start (host.go), so a publisher opened for a prior session can linger. If
-// the resolved sessionID no longer matches the lingering publisher's, that
-// publisher belongs to a dead session — replace it, and close the orphan's
-// upstream stream (best-effort, outside the lock, since a new session's frames
-// must never be stamped with the stopped session's id).
+// acquirePublisher returns or creates the ordered shared publisher. Its stream
+// uses the socket-lifetime context and is closed by the Publish handler; lifecycle
+// reports use bounded one-shot streams. A session change replaces a stale
+// publisher so new frames cannot carry the stopped session's id.
 func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 	g.pubMu.Lock()
 	var stale *sessionPublisher
@@ -281,17 +245,10 @@ func (g *Gateway) detachPublisher(pub *sessionPublisher) {
 	}
 }
 
-// releasePublisher detaches pub (compare-and-clear under pubMu) and closes its
-// upstream stream OUTSIDE the lock. Called by the Publish handler with the
-// publisher it acquired. Returns the upstream close/ack error.
-//
-// The close is outside pubMu because CloseAndReceive awaits the Server's ack
-// with no timeout; holding pubMu would stall every Publish forward behind one
-// unresponsive Server. pub.mu still serializes the close against any Send on the
-// same stream, and close is idempotent, so a lifecycle report that already closed
-// pub hands back its result. Compare-and-clear matters after that report: a
-// handler reopened by BindSession may own g.pub, and the stale handler must not
-// clear or close it.
+// releasePublisher detaches pub and closes it outside pubMu because awaiting the
+// Server ack has no timeout and must not stall new Publish calls. pub.mu serializes
+// close against Send. Compare-and-clear protects a replacement publisher, and
+// close is idempotent when a lifecycle report already closed it.
 func (g *Gateway) releasePublisher(pub *sessionPublisher) error {
 	g.detachPublisher(pub)
 	return pub.close()

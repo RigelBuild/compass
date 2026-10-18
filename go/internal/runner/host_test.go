@@ -2,17 +2,9 @@
 
 package runner
 
-// The production SessionHost (agentHost): OQ6 row 5 (Runner-authoritative
-// Status, answered from the host's own live set), the Start-twice-same-container
-// → errAlreadyRunning guard, Stop idempotency (an unknown session succeeds),
-// Provision driving SpecBuilder→AgentRuntime.Launch, Reload reusing the session
-// id, and the AgentEnv the host derives from a launched container's handle (the
-// exec's uid, $HOME, checkout and model) staying identical across Start and
-// Reload. Every test names the contract a plausible bug would break.
-//
-// Start/Reload spawn an agent whose AgentStream.Stop terminates a real child, so
-// these use the stub-streaming runtime (a real terminatable Process) plus a
-// RunnerService wire for the link's client.
+// Production SessionHost tests cover session status, lifecycle guards, provision,
+// reload, and the derived AgentEnv. A real terminatable child and RunnerService
+// wire make Start/Reload behavior observable.
 
 import (
 	"archive/tar"
@@ -1130,11 +1122,8 @@ func TestCloseJoinsConcurrentTeardowns(t *testing.T) {
 	provisionAndStart(t, host, "a")
 	provisionAndStart(t, host, "b")
 
-	// Park every teardown mid-Stop until the test releases the gate, and have each
-	// signal stopEntered when it reaches Stop (a real event the test gates on, not
-	// a poll). stopEntered is buffered for both containers so a teardown can signal
-	// and then park without waiting for the test to read. The gate is released on
-	// every exit path (including a failing assertion) so the suite can't hang.
+	// Park both teardowns at Stop. Buffered entry signals and cleanup release the
+	// gate even on failure, so neither teardown nor the test can hang.
 	gate := make(chan struct{})
 	entered := make(chan runtime.WorkloadID, 2)
 	var releaseOnce sync.Once
@@ -1192,13 +1181,8 @@ func TestCloseJoinsConcurrentTeardowns(t *testing.T) {
 	}
 }
 
-// OQ6 row 5: Status is answered from the Runner's own live session set — a
-// started session appears with its live state, and a stopped one is gone. The
-// Runner is authoritative for live truth. A bug that answered from a stale or
-// external source would not reflect the live set.
-// hostTierStubRuntime is the streaming stub that also answers the tier and
-// unenforced-egress capabilities, standing in for the host backend so the
-// Status stamp is exercisable without spawning host children.
+// Status comes from the Runner's live session set. hostTierStubRuntime also
+// reports host-tier and unenforced-egress capabilities for status tests.
 type hostTierStubRuntime struct {
 	*stubStreamingRuntime
 }
@@ -1851,11 +1835,8 @@ func TestStartFailsClosedOnFetchError(t *testing.T) {
 	}
 }
 
-// newHostFixtureWithRecordingExec mirrors newHostFixtureWithModel but wires a
-// recordingExecRuntime as the engine, so BOTH the agent-launch ExecStreaming and
-// the one-shot Exec (the resume-write) are captured — the default
-// stubStreamingRuntime.Exec is a recording no-op that keeps no spec, so a resume
-// write would be invisible to an assertion.
+// newHostFixtureWithRecordingExec captures both agent launches and resume writes,
+// which the stub's no-op Exec would hide.
 func newHostFixtureWithRecordingExec(t *testing.T, specs SpecBuilder) (SessionHost, *recordingExecRuntime) {
 	t.Helper()
 	engine := newRecordingExecRuntime(t)
@@ -2072,11 +2053,8 @@ func TestStartResumeWriteFailureFailsStart(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	// Fail ONLY the resume-write Exec. The secrets env-file materialize also
-	// runs an Exec in Start (always, even with no secrets) strictly before the
-	// resume write, so a global execErr would trip THAT one first and this test
-	// would pass without ever exercising the resume-write path. Select the
-	// resume write by its stdin — it is the one Exec fed the raw resume body.
+	// Select only the resume-write Exec; secrets materialization runs earlier, so a
+	// global execErr would fail the wrong stage.
 	engine.mu.Lock()
 	engine.execErr = errors.New("write failed inside container")
 	engine.execErrStdin = "body"

@@ -2,11 +2,8 @@
 
 package runner
 
-// ResolveWorkspaceUID: the per-backend uid policy that lives beside the non-root
-// check. A backend that names its own uid (the host tier) wins; every container
-// tier falls back to the baked AgentUID. These moved here from the cmd binary
-// when the resolution moved off a concrete type assertion onto a capability
-// probe on the runtime.
+// ResolveWorkspaceUID uses a backend-provided uid when available, otherwise
+// falls back to the baked AgentUID for container tiers.
 
 import (
 	"errors"

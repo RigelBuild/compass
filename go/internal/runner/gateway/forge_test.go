@@ -2,14 +2,8 @@
 
 package gateway
 
-// Hermetic suite for the Runner->Server forward handler Gateway.Forge (create/
-// comment/get/list an issue or PR, submit a review — Compass forge write path
-// T5). The forge twin of the Lifecycle suite: white-box (package gateway),
-// sleep-free — the fakes record every fact synchronously, so every assertion
-// reads a value the in-memory call already produced.
-//
-// The load-bearing case is the fail-closed guard: a forge call before Start
-// binds a session returns FailedPrecondition and never forwards an empty id.
+// Hermetic Gateway.Forge tests verify forwarding and fail-closed behavior before
+// Start binds a session.
 
 import (
 	"context"

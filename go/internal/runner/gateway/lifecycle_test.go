@@ -2,14 +2,8 @@
 
 package gateway
 
-// Hermetic suite for the Runner->Server forward handler Gateway.Lifecycle
-// (spawn/despawn a peer — spawn/despawn design T6a). The lifecycle twin of the
-// Comms suite: white-box (package gateway), sleep-free — the fakes record every
-// fact synchronously, so every assertion reads a value the in-memory call
-// already produced.
-//
-// The load-bearing case is the fail-closed guard: a lifecycle call before Start
-// binds a session returns FailedPrecondition and never forwards an empty id.
+// Hermetic Gateway.Lifecycle tests cover forwarding and reject calls before Start
+// binds a session.
 
 import (
 	"context"

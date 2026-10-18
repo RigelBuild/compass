@@ -2,11 +2,8 @@
 
 package runner
 
-// ResolveEgress: the per-backend egress policy that lives beside the uid
-// resolution. A backend that cannot enforce egress carries no policy at all,
-// because provision refuses one that reaches an unenforceable tier — but an
-// explicit allowlist is operator intent this tier cannot honor, so it fails
-// startup rather than being discarded.
+// ResolveEgress rejects explicit allowlists when a backend cannot enforce them;
+// silently discarding operator intent would change the requested posture.
 
 import (
 	"strings"

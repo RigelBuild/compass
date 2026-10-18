@@ -2,13 +2,8 @@
 
 package runner
 
-// Shared scaffolding for the Runner-side seam tests: a pipe-backed fake
-// WorkloadRuntime (the existing runtime.fakeRuntime.ExecStreaming is a nil-pipe
-// stub — this one returns a StreamingExec whose IO.Stdout/IO.Stderr are
-// io.PipeReaders the test writes into), a recording fake runtime for the
-// Provision→Launch path, a capturing slog handler for the drain's log lines, a
-// PublishEvents server that backs newLink's client, and the h2c transport
-// helpers.
+// Shared Runner test scaffolding provides pipe-backed runtimes, log capture,
+// a PublishEvents server, and h2c transport helpers.
 
 import (
 	"context"
@@ -60,12 +55,8 @@ type nopWriteCloser struct{}
 func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (nopWriteCloser) Close() error                { return nil }
 
-// pipeRuntime is a WorkloadRuntime whose ExecStreaming returns a StreamingExec
-// backed by real in-memory pipes: the test writes lines into stdoutW / stderrW
-// and the drains read them off IO.Stdout / IO.Stderr. Its
-// lifecycle methods (Create/Start/Exec/…) are recording no-ops so it also serves
-// the Provision→Launch path. Process is left nil: the drains read only IO, so a
-// test that never calls AgentStream.Stop needs no real child handle.
+// pipeRuntime backs StreamingExec with in-memory pipes so tests can feed lines
+// to the drains. Lifecycle methods are recording no-ops.
 type pipeRuntime struct {
 	mu      sync.Mutex
 	calls   []string
@@ -132,14 +123,8 @@ func (f *pipeRuntime) record(call string) {
 // exit / EOF).
 func (f *pipeRuntime) closeStdout() { _ = f.stdoutW.Close() }
 
-// stubStreamingRuntime is a WorkloadRuntime whose lifecycle methods are
-// recording no-ops and whose ExecStreaming delegates to a real PodmanCLI driving
-// a shell stub — so it returns a StreamingExec with a REAL, terminatable
-// Process (the host's Reload / live-session Stop call Process.Terminate, which a
-// nil-Process fake would panic on). The stub ignores the podman argv and sleeps
-// past the test, so it is a live child that SIGKILL reaps. Every streaming exec
-// spec it is handed is recorded, so a test can assert what identity and
-// configuration the host actually started an agent with.
+// stubStreamingRuntime provides a real terminatable child for Start/Reload and
+// records each streaming exec spec for identity and configuration assertions.
 type stubStreamingRuntime struct {
 	mu          sync.Mutex
 	calls       []string
@@ -206,11 +191,8 @@ func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.Wor
 	entered := f.execEntered
 	execErr := f.execErr
 	f.mu.Unlock()
-	// Signal that a relaunch reached the agent launch (a real event the test
-	// gates on), then park until released or ctx is cancelled — so a
-	// concurrent-dispatch test can hold one Start/Reload in flight while it drives
-	// another. The ctx escape keeps a parked launch from outliving a cancelled
-	// RunSessions.
+	// Signal launch and park until released or canceled, letting concurrency
+	// tests hold a Start/Reload in flight without leaking past shutdown.
 	if entered != nil {
 		entered <- id
 	}
@@ -582,11 +564,8 @@ func (c *capturePublish) bindRequests() []*compassv1internal.BindLifetimeRequest
 
 // --- capturing diagnostic log ------------------------------------------------
 
-// captureLog is a slog.Handler that publishes every record's message and its
-// string attributes to a channel, so a test can event-gate on a log line the
-// way the PublishEvents tests gate on a frame — no sleeps, no polling. It backs
-// the stdout-drain assertions: after the relay is retired, "the bytes reached
-// the diagnostic log" is the only observable the drain leaves behind.
+// captureLog records messages and string attributes for drain assertions; tests
+// gate on log events rather than sleeps or polling.
 type captureLog struct {
 	lines   chan logLine
 	dropped atomic.Uint64

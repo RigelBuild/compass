@@ -187,12 +187,8 @@ func TestRunDialWithRetryCancelDuringBackoffReturnsCtxErr(t *testing.T) {
 	}
 }
 
-// socketTailWidth measures the fixed tail the Runner appends to the runtime dir
-// — /containers/ + compass-agent- + a 32-char account id + /agent.sock — by
-// differencing the joined path against a known-length dir, using the same
-// filepath.Join the production path construction uses (host.go serveSocket) so
-// the test cannot drift from it. A runtime dir of exactly (sunPathMax - tail)
-// bytes is the last acceptable one.
+// socketTailWidth measures the fixed socket-path suffix with the same Join used
+// in production, so the boundary test tracks changes to path components.
 func socketTailWidth() int {
 	const probe = "/x"
 	widest := filepath.Join(probe, agentSocketDir,

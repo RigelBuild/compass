@@ -2,14 +2,9 @@
 
 package runner
 
-// agentHost's host-process Provision leg: when the engine satisfies the
-// unexported hostStateEngine probe (AgentStateDir), Provision runs the host
-// leg. The host tier has NO bind mounts, so the leg serves the per-agent gateway
-// socket and materializes the config tree INSIDE the handle's own 0700 state dir
-// and threads both paths to the agent as env vars on the streaming exec — never
-// mounting them at the default /run/compass paths. A serve/materialize failure
-// after Launch tears both the socket and the container down. Every case names a
-// contract a plausible bug would break.
+// Host-process Provision serves the gateway and materializes config inside the
+// handle's private state dir, passing both paths as environment variables. Failures
+// after Launch must remove both socket and container.
 
 import (
 	"context"
@@ -24,14 +19,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
-// hostStateFakeRuntime is a WorkloadRuntime that ALSO implements the
-// hostStateEngine probe (AgentStateDir), so agentHost drives its host-process
-// Provision leg. Create mints a real 0700 state dir per container with the
-// socket subdir the host backend's Create makes — the config root is left to
-// the materializer, as it is in production — keyed by the synthetic id it
-// returns, so AgentStateDir(handle.ID()) resolves the same dir
-// the leg serves into. It embeds the stub so ExecStreaming drives a real
-// terminatable child for Start/Stop.
+// hostStateFakeRuntime exposes AgentStateDir and creates a private state dir for
+// each synthetic id. It retains the streaming stub's terminatable child.
 type hostStateFakeRuntime struct {
 	*stubStreamingRuntime
 	stateRoot string

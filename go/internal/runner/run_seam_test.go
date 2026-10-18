@@ -2,20 +2,9 @@
 
 package runner
 
-// Loop-level tests for the unexported runSessions seam
-// (RigelBuild/docs:docs/designs/compass/infra/runtime/compass-runner-concurrent-dispatch/design.md, Approach
-// (a) + Plan T1 tests 4 & 6, T-cap). These drive runSessions directly over a
-// scripted in-memory sessionStream so a send failure, a shutdown-cancel join,
-// and the Provision-arm concurrency cap can each be forced DETERMINISTICALLY —
-// none of which is reproducible over a real bidi wire (a peer-broken Send is not
-// deterministically forceable; a cancel-mid-flight races connect's stream close;
-// the cap const is unexported Runner-local structure). The production
-// RunSessions is a thin wrapper (stream := l.client.Sessions(ctx); return
-// runSessions(...)), so the runnerhub wire tests exercise this same runSessions
-// over the real wire — the seam is not untested indirection.
-//
-// Every wait is event-gated on a channel; testTimeout is only a fail-fast
-// ceiling, never synchronization (no sleeps, no polling, no retries).
+// runSessions seam tests force send errors, shutdown joins, and the Provision
+// concurrency cap with a scripted stream. Channel gates, not sleeps, provide
+// synchronization; the timeout only bounds failures.
 
 import (
 	"context"
@@ -215,19 +204,10 @@ func TestRunSessionsShutdownJoinsInFlightCommand(t *testing.T) {
 		t.Fatal("the parked Provision never unwound on ctx cancel")
 	}
 
-	// Prove the negative — runSessions has NOT returned while the command
-	// goroutine is parked at its exit gate holding its wg token — with a bounded
-	// BLOCKING observation, not a non-blocking peek. A peek is racy here: the
-	// cancel that parks the Provision also drives runSessions' return down a
-	// separate, LONGER path (watcher → CloseResponse → Receive EOF → classify →
-	// configWorkerDone), so in the RED world (no wg.Wait) provisionExiting — the
-	// shorter path — routinely fires before that return lands, and a peek misses
-	// it (a false pass). Blocking closes the gap: in RED, done fires within the
-	// window and reddens deterministically; in GREEN, done can NEVER fire while
-	// the gate is held (runSessions is physically parked at wg.Wait on this very
-	// goroutine's token), so the window elapses and the test proceeds. The window
-	// is a bounded negative-observation, not synchronization or a timing sleep —
-	// GREEN legitimately waits it out; RED never reaches the ceiling.
+	// A blocking negative observation catches a missing wg.Wait: without the join,
+	// done closes while Provision is held at its exit gate. With the join, return
+	// is impossible until release; the timeout is an observation bound, not a
+	// synchronization sleep.
 	select {
 	case <-done:
 		t.Fatal("runSessions returned while a command goroutine was still in flight at its exit gate; the shutdown join (wg.Wait) is missing")

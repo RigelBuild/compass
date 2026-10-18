@@ -2,17 +2,9 @@
 
 package runner
 
-// agentHost's microVM (vsock-gateway) Provision leg: when the engine satisfies
-// the unexported vsockGatewayEngine probe, Provision inverts its order (Launch
-// first, then serve), refuses BOTH refused mounts (the agent socket and the
-// config tree), and serves the SAME generated AgentGateway handler over the
-// per-session suffixed AF_UNIX path the backend reports — recording the listener
-// in the same h.sockets map so teardown closes it. A Serve failure after Launch
-// tears the launched session down. And the podman path (no probe) stays
-// byte-identical: socket served pre-Launch, both mounts appended. RefreshConfig
-// skips a probed session so a ConfigVersion signal never churns a microVM agent
-// it cannot deliver config to. Every case names a contract a plausible bug
-// would break.
+// MicroVM Provision launches before serving the gateway, rejects socket/config
+// mounts, and registers the suffixed socket for teardown. RefreshConfig skips
+// this backend; the ordinary podman path remains unchanged.
 
 import (
 	"context"
@@ -28,13 +20,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
-// vsockGatewayFakeRuntime is a WorkloadRuntime that ALSO implements the
-// vsockGatewayEngine probe (AgentGatewayEndpoint), so agentHost drives its
-// microVM Provision leg. Create returns the container name as its engine id (so
-// each container is distinguishable), and AgentGatewayEndpoint hands back a real
-// short-lived AF_UNIX path under the test's own dir — the plain suffixed listener
-// gateway.Serve binds, dialable hermetically with no vsock. It embeds the stub
-// so ExecStreaming drives a real terminatable child for Start/Stop.
+// vsockGatewayFakeRuntime exposes a dialable Unix endpoint for each synthetic
+// container id and retains the streaming stub's terminatable child.
 type vsockGatewayFakeRuntime struct {
 	*stubStreamingRuntime
 	endpointDir string

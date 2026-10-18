@@ -30,29 +30,17 @@ import (
 )
 
 const (
-	// maxConfigBytes caps the total decompressed size of a config bundle. A
-	// fleet config (skills, extensions, mcp descriptors) is small text; 64 MiB
-	// is far above any legitimate bundle yet bounds a gzip bomb well below host
-	// memory pressure. Enforced during streamed decompression, never after.
+	// maxConfigBytes bounds decompressed bundles to limit gzip-bomb memory use.
 	maxConfigBytes = 64 << 20
-	// maxConfigFiles caps the number of members in a config bundle. A fleet has
-	// tens of skills/extensions/mcp files; 10k is generous headroom while still
-	// bounding a tar-of-many-tiny-files DoS. Enforced during streaming.
+	// maxConfigFiles bounds archives with many tiny members.
 	maxConfigFiles = 10_000
 )
 
-// configTopLevelName matches the FIRST-level entry name under skills/,
-// extensions/, or mcp/ (e.g. the "greet" in skills/greet/...). Only this
-// first-level name is regex-constrained to a conservative safe set; deeper
-// segments of a nested member rely on the traversal + containment guards
-// (absolute/".." rejection and the destDir-prefix check) rather than this
-// regex, so a nested file may carry a name this pattern would reject and still
-// land safely contained under its version dir.
+// configTopLevelName constrains first-level names; traversal and containment
+// checks protect deeper segments.
 var configTopLevelName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-// Config-bundle top-dir names — kept textually in lockstep with the store door's
-// (T1). Named constants (not bare strings) so the switch arms and the whitelist
-// share one spelling.
+// Bundle top-directory names shared with the store-door whitelist.
 const (
 	topDirSkills     = "skills"
 	topDirExtensions = "extensions"
@@ -76,10 +64,8 @@ var configTopDirs = map[string]struct{}{
 	topDirProfiles:   {},
 }
 
-// Top-level regular-file members admitted by exact filename (RIG-1678 T2), and
-// the one file admitted under settings/ (yml-only, OQ-1). Any other top-level
-// file or settings variant stays rejected — the structural twin of the store
-// door (the credential denylist is store-door-only, never mirrored here).
+// Admit only these top-level files and settings/config.yml; credential filtering
+// remains exclusive to the store door.
 const (
 	memberAgentsMD = "AGENTS.md"
 	memberModels   = "models.yml"
@@ -199,12 +185,7 @@ func (m *ConfigMaterializer) Materialize(ctx context.Context, mcsLabel string) (
 	return ConfigMount{HostPath: m.root, Version: bundle.Version}, nil
 }
 
-// ensureRoot creates the config root and pins it to 0755. podman bind-mounts the
-// root read-only into the container and exposes the source dir's own perms at the
-// mountpoint, so the confined agent (a distinct uid under keep-id) must be able
-// to traverse INTO root to resolve current/ -> versionDir. os.MkdirAll requests
-// 0755 but a non-022 Runner umask masks that down, so chmod pins it independent
-// of ambient umask — the parent-level counterpart to pinConfigModes on the tree.
+// ensureRoot keeps the read-only mount root traversable despite the Runner umask.
 func (m *ConfigMaterializer) ensureRoot() error {
 	if err := os.MkdirAll(m.root, 0o755); err != nil { //nolint:gosec // G301: the config root is mounted read-only into the container; it must be 0755 for the confined agent to traverse it
 		return fmt.Errorf("ensuring config root %q: %w: %w", m.root, err, gateway.ErrOperatorConfig)
@@ -215,9 +196,8 @@ func (m *ConfigMaterializer) ensureRoot() error {
 	return nil
 }
 
-// unpackVersion validates + unpacks the bundle into a staging dir then atomically
-// renames it into versionDir, and writes the observability version file. Staging
-// is removed on any error so a crashed unpack leaves no half-written version dir.
+// unpackVersion validates into staging, then renames atomically; errors remove
+// staging so incomplete versions are never exposed.
 func (m *ConfigMaterializer) unpackVersion(ctx context.Context, bundle AgentConfigBundle, versionDir string) error {
 	if err := m.ensureRoot(); err != nil {
 		return err
@@ -261,11 +241,7 @@ func (m *ConfigMaterializer) unpackVersion(ctx context.Context, bundle AgentConf
 	return nil
 }
 
-// pinConfigModes walks dir and chmods every directory to 0755 and every regular
-// file to 0644, so the unpacked tree carries the documented modes independent of
-// the Runner process umask (the os.MkdirAll/os.WriteFile requested modes are
-// masked down by a non-022 umask). validateAndUnpack admits only dirs and
-// regular files, so the walk never encounters — nor follows — a symlink.
+// pinConfigModes sets unpacked modes after validation excludes symlinks.
 func pinConfigModes(dir string) error {
 	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -306,17 +282,8 @@ func (m *ConfigMaterializer) flipCurrent(ctx context.Context, version string) er
 	return nil
 }
 
-// prune removes every version dir under root other than keep. The Server is the
-// store of record (old versions are re-fetchable), so the host keeps only
-// current. A prune failure is non-fatal: the flip already succeeded and a
-// leftover dir is harmless, so log at Warn and return.
-//
-// Dot-prefixed entries (the .staging-/.curlink- temp dirs) are deliberately
-// skipped: a concurrent Materialize's live unpack or flip is using one, and
-// pruning it mid-write would corrupt that run. The cost is that a temp dir
-// orphaned by a crash between MkdirTemp and its deferred RemoveAll is never
-// reclaimed here — a small, bounded leak (one aborted bundle each) accepted in
-// favor of never racing a concurrent writer.
+// prune keeps the current version and skips temporary dirs to avoid racing
+// active materialization.
 func (m *ConfigMaterializer) prune(ctx context.Context, keep string) {
 	entries, err := os.ReadDir(m.root)
 	if err != nil {
@@ -335,9 +302,7 @@ func (m *ConfigMaterializer) prune(ctx context.Context, keep string) {
 	}
 }
 
-// relabel runs chcon -R to move destDir into the container's SELinux MCS
-// category (update path only). It is a package var so tests can stub the host
-// shellout; the production value uses exec.CommandContext.
+// relabel assigns the container's SELinux MCS category; tests stub the shellout.
 var relabel = func(ctx context.Context, mcsLabel, destDir string) error {
 	cmd := exec.CommandContext(ctx, "chcon", "-R", mcsLabel, destDir) //nolint:gosec // G204: the SELinux relabel seam — mcsLabel is a Runner-read podman MountLabel and destDir is a Runner-built path, neither user-controlled
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -346,11 +311,8 @@ var relabel = func(ctx context.Context, mcsLabel, destDir string) error {
 	return nil
 }
 
-// validateAndUnpack streams the gzip-tar bundle into destDir, enforcing every
-// security guard (size/count caps, traversal, symlink/hardlink, layout) BEFORE
-// writing each member and failing closed on the first violation. destDir must
-// already exist. It is a focused helper so tests can drive it directly with
-// crafted tarballs.
+// validateAndUnpack enforces archive limits and path/layout rules before writing.
+// destDir must already exist.
 func validateAndUnpack(tarball []byte, destDir string) error {
 	gz, err := gzip.NewReader(bytes.NewReader(tarball))
 	if err != nil {
@@ -358,9 +320,7 @@ func validateAndUnpack(tarball []byte, destDir string) error {
 	}
 	defer func() { _ = gz.Close() }() // read-only reader: close error is not actionable
 
-	// limited bounds the decompressed stream: the moment a member's bytes would
-	// push the running total past maxConfigBytes, the copy errors — a gzip bomb
-	// cannot force us to decompress the whole thing first.
+	// Bound decompression as it happens so a gzip bomb cannot exhaust memory.
 	tr := tar.NewReader(gz)
 
 	var (
@@ -451,11 +411,7 @@ func readCapped(r io.Reader, limit int64) ([]byte, int64, error) {
 	return buf, int64(len(buf)), nil
 }
 
-// validateMemberPath enforces traversal + layout rules on a tar member name and
-// returns the cleaned relative path. It rejects absolute paths, `..` segments,
-// and anything not under a permitted top-level dir (or one of the two admitted
-// top-level files) with a safe name. Structural twin of the store door (T1);
-// the credential denylist is store-door-only and NOT mirrored here.
+// validateMemberPath rejects traversal and members outside the permitted layout.
 func validateMemberPath(name string, typeflag byte) (string, error) {
 	if name == "" {
 		return "", errors.New("config bundle member has an empty name")

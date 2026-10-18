@@ -2,19 +2,9 @@
 
 package gateway
 
-// Hermetic suite for the Runner-side per-container agent socket listener
-// (RIG-1351 T2). White-box (package gateway) so it can drive the unexported
-// listenAgentSocket / reclaimStaleSocket and the runnerUID seam directly.
-//
-// The listener is a security boundary: the socket lives in an owner-only dir at
-// mode 0600, and stale-socket recovery must reclaim ONLY a socket this Runner
-// owns while never deleting any other inode that happens to sit at the path.
-// Because the production code already exists, fail-first for the three security
-// guards (cases 5/6/7) is shown by mutation-revert, recorded in the task report.
-//
-// No wall-clock sleeps: readiness and in-flight state are event-gated on
-// channels; the one bounded deadline (case 9) is the production drain grace
-// itself, injected via a short-deadline context, not a settle-sleep.
+// Hermetic tests cover socket permissions, stale-socket ownership, and bounded
+// drain behavior. The force-close test gates on an in-flight request and uses a
+// short caller deadline, not shutdownGrace.
 
 import (
 	"context"
@@ -387,14 +377,8 @@ func TestRejectsPathOverSunPathLimit(t *testing.T) {
 	// TMPDIR).
 	padTo := func(t *testing.T, n int) (dir, path string) {
 		t.Helper()
-		// A short fixed root, not t.TempDir(): the latter embeds the test name,
-		// which lands these subtests at ~135 bytes under a darwin-shaped TMPDIR
-		// (/var/folders/<2>/<hash>/T, ~49 bytes) and skips them — on the one
-		// platform where sunPathMax differs from Linux's, and so the one platform
-		// this test most needs to run. MkdirTemp("", "g") is bounded instead: the
-		// random suffix is a uint32 in decimal, so at most 10 digits, giving <=16
-		// bytes on Linux and <=61 under that darwin TMPDIR — both well under the
-		// cap, and a bound rather than a measurement that could drift.
+		// MkdirTemp gives a short bounded root; t.TempDir embeds the long test name
+		// and can exceed the path budget on Darwin, hiding the boundary coverage.
 		root, err := os.MkdirTemp("", "g") //nolint:usetesting // t.TempDir embeds the test name and blows this test's own byte budget on darwin — see above
 		if err != nil {
 			t.Fatalf("MkdirTemp: %v", err)
@@ -406,10 +390,8 @@ func TestRejectsPathOverSunPathLimit(t *testing.T) {
 		})
 		dir = filepath.Join(root, "run")
 		base := len(dir) + 1 // + separator
-		// These two subtests are the only coverage of the boundary the guard
-		// exists to enforce, so a deep TMPDIR must redden the run rather than
-		// skip it — a skip here reports `ok` for a package that asserted
-		// nothing, which is the failure mode this whole change is about.
+		// These are the only path-limit boundary cases; fail rather than skip when
+		// TMPDIR leaves too little room, or the gate would assert nothing.
 		if base >= n {
 			t.Fatalf("temp root %q is %d bytes, leaving no room for a %d-byte path; set TMPDIR to a short path", dir, base, n)
 		}
@@ -445,13 +427,7 @@ func TestRejectsPathOverSunPathLimit(t *testing.T) {
 			_ = l.Close(context.Background())
 			t.Fatal("listen on an over-long path must fail, got nil error")
 		}
-		// The diagnostic is the whole point: the message must carry both numbers
-		// and something actionable to shorten, none of which the kernel's EINVAL
-		// does. Match the surrounding phrases, not the bare digits — a temp path
-		// carries random digits that could contain the cap by chance and pass a
-		// substring check against a message that never mentioned it. The remedy
-		// names the socket's parent, not one tier's flag: this function is
-		// shared, and the tiers root the path under different knobs.
+		// Check the diagnostic's numbers and actionable parent-directory remedy.
 		msg := err.Error()
 		for _, want := range []string{
 			fmt.Sprintf("is %d bytes", len(path)),
@@ -708,17 +684,9 @@ func TestOperatorFaultSentinelClassification(t *testing.T) {
 		}
 	})
 
-	// Negative guards: genuine-internal paths must NOT carry the sentinel.
-	// These assert on a value built the same way the code raises it, not on an
-	// error returned by the live path (each needs an OS anomaly — a chmod-race,
-	// a bind collision, an Lstat-EACCES — that is not portably forceable in a
-	// unit test). So they pin the MESSAGE SHAPE: the unwrapped fmt.Errorf the
-	// code uses at these sites does not accidentally satisfy errors.Is for the
-	// sentinel. They do NOT catch a future refactor that blanket-wraps the live
-	// path — that changes the code, not this literal. The real regression
-	// protection for the wrap/unwrap boundary is the live positive guards above
-	// plus the live multi-%w assertion; these keep the intended unwrapped shapes
-	// documented and executable.
+	// These hand-built errors document the intended classification; they do not
+	// exercise production failure paths. Live tests cover wrapped operator faults;
+	// OS anomalies needed to force these internal-fault branches are not portable.
 	t.Run("socket-file Chmod failure stays INTERNAL", func(t *testing.T) {
 		// Built the same way the code raises it at the socket-FILE Chmod arm
 		// (securing agent socket, socket.go), which is deliberately unwrapped.

@@ -2,36 +2,8 @@
 
 package runner
 
-// Full-stack config-delivery proof against a REAL rootless-podman container
-// running the REAL compass-agent:latest image. It closes the deferred sub-slice
-// of the config-in-place-update work: the substrate half (bind-mount RO + live
-// current flip, alpine + shell reader) is already proven by
-// runtime/config_mount_test.go, and the signal->worker->RefreshConfig hop is
-// already proven hermetically by dispatch_test.go. What no other test exercises
-// is the REAL agent reader picking up a NEW bundle across a REAL Reload:
-//
-//	ConfigVersion (fleet bump) -> host.RefreshConfig -> re-materialize v-2 + flip
-//	current -> in-place Reload (Stop old agent + StartAgent re-exec) -> the REAL
-//	compass-agent re-boots, reads current/, emits the NEW bundle's version hash.
-//
-// The observable is the agent's own boot line. On each boot the real agent
-// connects its gateway socket, loads the mounted config, and emits to STDERR
-// `[compass-agent] config version: <hash>` (cli.ts) where <hash> is the content
-// of current/version — a runner-written file sourced from bundle.Version. The
-// runner drains the agent's stderr into its slog (agent_exec.go drainToLog with
-// msg "agent stderr" and a "line" attr), so the version line lands as a captured
-// log record: msg == "agent stderr", attrs["line"] contains the boot line.
-//
-// A bare `podman run compass-agent:latest` emits nothing — main() returns early
-// at the gateway-socket connect when no socket is mounted, BEFORE the config
-// load. The line only emits when the agent is exec'd into a container whose
-// gateway socket is live, i.e. through the real runner host. So the E2E MUST go
-// through NewSessionHost, never a bare run.
-//
-// Skipped (not failed) when podman is unusable or compass-agent:latest is absent
-// from local storage, matching lifecycle_test / config_mount_test. Build-tagged
-// (podman) so it is not part of the hermetic gate; it runs on real-podman hosts
-// only.
+// Real-agent E2E: a config version bump reloads the container and the agent logs
+// the new bundle hash. It skips without rootless podman or a bootable image.
 
 import (
 	"context"
@@ -60,12 +32,8 @@ func agentImageExists(ctx context.Context) bool {
 	return exec.CommandContext(ctx, "podman", "image", "exists", agentImage).Run() == nil
 }
 
-// agentBootResult is the outcome of the agent-image boot probe. Present is not
-// the same as bootable: the image bundles the compass-agent JS entrypoint, which
-// loads a native addon (pi_natives) at module init, before main(). An image
-// whose recipe never ships that addon beside the bundle throws at load and,
-// under the Runner's default-deny egress, hangs on the addon's npmjs-fetch
-// recovery — so the agent never reaches the config read this test observes.
+// agentBootResult distinguishes a loadable native addon from an image that
+// cannot reach the config read under the Runner's default-deny egress.
 type agentBootResult int
 
 const (
@@ -74,23 +42,12 @@ const (
 	// agentUnbootable: the known image-recipe defect fired (the addon-load
 	// failure prefix is present) — a present-but-unbootable image, skip not fail.
 	agentUnbootable
-	// agentBootInconclusive: the probe saw NEITHER startup marker. The success
-	// marker is an oh-my-pi debug string emitted under PI_DEBUG_STARTUP, an
-	// upstream SDK contract that has been volatile; its absence on
-	// an otherwise-runnable image means that contract may have DRIFTED, so the
-	// caller must skip loudly and distinctly (silently reusing the known-defect
-	// narrative would let this test stop auto-activating with no alarm).
+	// No marker means the startup-probe contract may have drifted; skip loudly.
 	agentBootInconclusive
 )
 
-// probeAgentBoot boots the agent offline (--network=none, the Runner's egress
-// posture) with the addon-loader's startup markers on, and classifies the
-// outcome. Booting offline forces a broken image to fail fast rather than hang
-// on npmjs recovery. Classifying (rather than a bare bool) keeps this test
-// HONEST: the caller emits a DIFFERENT loud skip for a known-unbootable image
-// than for a drifted-marker probe, so neither a present-but-unbootable image nor
-// a stale probe ever reads as a config-delivery failure — but neither is a
-// silent pass either.
+// probeAgentBoot runs offline to avoid hanging on addon recovery, then
+// distinguishes a known load failure from an inconclusive marker probe.
 func probeAgentBoot(ctx context.Context) agentBootResult {
 	out, _ := exec.CommandContext(ctx,
 		"podman", "run", "--rm", "--network=none",
@@ -117,12 +74,8 @@ func podmanUsable(ctx context.Context) bool {
 	return exec.CommandContext(ctx, "podman", "run", "--rm", "docker.io/library/alpine:latest", "true").Run() == nil
 }
 
-// collectingLog is a mutex-guarded slice-collecting slog.Handler: it records
-// EVERY log record's message and string attributes, so a real agent boot (which
-// emits many stderr lines) never overflows and drops the one line under test —
-// the 64-cap channel handler (captureLog.recvLine) would. A sync.Cond wakes any
-// waiter the instant a new record lands, so waitForConfigVersionLine gates on the
-// record event, never a clock.
+// collectingLog retains every record and wakes waiters on each log event, so the
+// real agent's stderr cannot overflow a bounded test channel.
 type collectingLog struct {
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -157,12 +110,8 @@ func (c *collectingLog) WithGroup(string) slog.Handler      { return c }
 
 func (c *collectingLog) logger() *slog.Logger { return slog.New(c) }
 
-// waitForConfigVersionLine blocks until a captured record proves the real agent
-// booted and read the bundle whose version is hash — msg == "agent stderr" and
-// its "line" attr contains `config version: <hash>` — or fails the test at the
-// deadline. It gates on the record event (cond.Broadcast on each Handle) rather
-// than polling a clock; a watchdog timer broadcasts once at the deadline so a
-// wedged boot breaks out of the wait and fails loudly instead of hanging.
+// waitForConfigVersionLine waits for the agent's captured version line; a
+// watchdog wakes it to fail when no matching record arrives.
 func waitForConfigVersionLine(t *testing.T, log *collectingLog, hash string, timeout time.Duration) {
 	t.Helper()
 	want := "config version: " + hash
@@ -191,20 +140,9 @@ func waitForConfigVersionLine(t *testing.T, log *collectingLog, hash string, tim
 	}
 }
 
-// e2eSpecBuilder produces a real AgentSpec for the E2E container: the real agent
-// image, a unique name, the unprivileged agent workspace, and an egress
-// allowlist. The config mount + socket mount are added by Provision itself
-// (host.go), so the builder does NOT add them.
-//
-// CheckoutDir sits UNDER the agent-writable $HOME (/home/agent/repo), not the
-// production /workspace default: Launch's ensureCheckoutDir does `mkdir -p` the
-// checkout dir as the unprivileged agent uid, and its precondition is a
-// parent writable by that uid. The real compass-agent:latest image ships no
-// world-writable /work or /workspace (only $HOME is agent-owned), so a checkout
-// under $HOME is what satisfies that precondition here. The checkout dir is not
-// what this test proves — the config-delivery loop is — so anchoring it on the
-// image's one agent-writable tree keeps the fixture launchable without a
-// production or image change.
+// e2eSpecBuilder creates the real image's agent workspace. Provision adds the
+// config and socket mounts; the checkout is under the only agent-writable path,
+// HOME, because the image has no world-writable /work or /workspace.
 type e2eSpecBuilder struct {
 	name string
 }
@@ -222,11 +160,8 @@ func (b e2eSpecBuilder) BuildSpec(*compassv1.ProvisionAgentWorkspaceRequest, str
 	}, nil
 }
 
-// TestConfigDeliveryReloadPicksUpNewBundle is the full-stack proof: a
-// ConfigVersion bump drives the real runner's RefreshConfig, which re-materializes
-// the new bundle, flips current, and Reloads the real agent in place — and the
-// re-booted agent reads the flipped config and emits the NEW version hash. The
-// load-bearing assertion is the SECOND agent-stderr line carrying the v2 hash.
+// TestConfigDeliveryReloadPicksUpNewBundle proves RefreshConfig flips the bundle
+// and reloads the real agent, whose second boot line must contain the v2 hash.
 func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman not usable in this environment")
@@ -236,64 +171,43 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	}
 	switch probeAgentBoot(t.Context()) {
 	case agentUnbootable:
-		// LOUD skip, never a silent pass: the image is present but its agent
-		// process cannot start (the recipe ships no loadable pi_natives addon),
-		// so the config-delivery loop this test proves is unreachable through no
-		// fault of the runner. A known image-recipe defect, tracked separately;
-		// the test auto-activates the instant a bootable image is loaded. A skip,
-		// not a fail: a fail here would misattribute an image defect to the
-		// runner's config path.
+		// Skip loudly when the present image cannot boot, since this E2E cannot
+		// reach the config path under test.
 		t.Skip(agentImage + " is present but its agent cannot boot (no loadable pi_natives addon); config-delivery loop unreachable until the agent image ships a working addon")
 	case agentBootInconclusive:
-		// The probe saw neither the known load-failure nor the success marker.
-		// The image may be otherwise bootable, but the PI_DEBUG_STARTUP marker
-		// contract this probe keys on has likely drifted — so this test is no
-		// longer reliably auto-activating. Skip LOUDLY and distinctly: do NOT
-		// reuse the known-defect narrative, which would hide a real coverage loss.
+		// Missing startup markers may indicate probe drift; report a distinct skip.
 		t.Skip(agentImage + ": startup probe inconclusive — saw neither the pi_natives load-failure nor the native:loadNative:done marker; the PI_DEBUG_STARTUP marker contract may have drifted, so this test is no longer auto-activating — investigate the probe rather than assuming the known image defect")
 	case agentBootable:
 		// Bootable — run the config-delivery proof below.
 	}
 
-	// Two distinct bundle versions, neither a substring of the other, so the v2
-	// wait cannot match on the v1 boot line. The version file the runner writes
-	// from bundle.Version is what the agent emits, so setting Version controls
-	// the observable hash directly.
+	// Distinct versions ensure the v2 wait cannot match the initial boot line.
 	const v1hash = "deliveryalpha"
 	const v2hash = "deliverybravo"
 
-	// Real engine + runtime: the production PodmanCLI and AgentRuntime, so the
-	// agent is really exec'd into a real container.
+	// Use the production runtime so the agent runs inside a real container.
 	engine := runtime.NewPodmanCLI()
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 
-	// Live config wire: setConfigBundle drives the fleet version the materializer
-	// fetches, exactly as newConfigRefreshFixture does.
+	// setConfigBundle drives the version fetched by the materializer.
 	pub := newCapturePublish()
 	link := newLink(newRunnerServiceServer(t, pub))
 
-	// Capturing logger that keeps EVERY record (see collectingLog): the agent's
-	// stderr drains here, so the version line lands as a captured record.
+	// Capture all records so the drained stderr version line cannot be dropped.
 	log := newCollectingLog()
 
 	name := "compass-cfgdelivery-" + strconv.Itoa(os.Getpid())
 
-	// Force-remove any leftover from a crashed run so the name is free, and guard
-	// teardown (Go has no Drop): a failure before Stop must never leak the real
-	// container. The force-remove is the belt to Stop's suspenders — Stop reaps
-	// the agent stream; the container itself is torn down here.
-	// t.Cleanup discards are deliberate: best-effort teardown of a real container
-	// has no actionable error path (the run is already ending).
+	// Remove stale containers and register teardown so failures cannot leak one.
+	// Stop reaps the stream; force-remove tears down the container.
 	cleanupCtx := context.WithoutCancel(t.Context())
 	_ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run()
 	t.Cleanup(func() { _ = exec.CommandContext(cleanupCtx, "podman", "rm", "--force", name).Run() })
 
 	cfg := AgentHostConfig{RuntimeDir: shortRuntimeDir(t)}
 	host := NewSessionHost(link, rt, registry, engine, e2eSpecBuilder{name: name}, cfg, log.logger()).(*agentHost)
-	// Close the host last: it Closes the per-container socket listener that
-	// Provision opens, which neither Stop (agent stream only) nor the container
-	// force-remove reaches. Mirrors e2e_transport_test.go.
+	// Close the host last: only it closes the per-container socket listener.
 	t.Cleanup(func() {
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
 		defer cancel()
@@ -315,22 +229,16 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = host.Stop(context.WithoutCancel(t.Context()), sessionID) })
 
-	// 2. The first boot must emit the v1 hash — proves the real reader ran on
-	// construction and read the initially materialized bundle.
+	// Verify the first boot read the initially materialized v1 bundle.
 	waitForConfigVersionLine(t, log, v1hash, 90*time.Second)
 
-	// 3. Bump the fleet to v2 (distinct version => distinct version file) and
-	// drive the real ConfigVersion-driven pass: re-materialize + flip current +
-	// Reload. Driving RefreshConfig directly is correct — the signal->worker hop
-	// is already proven hermetically in dispatch_test.go; the E2E's unique value
-	// is the real-container reader pickup.
+	// Bump to v2 and call RefreshConfig directly; the signal-to-worker hop is
+	// covered separately, while this E2E proves the real-container reader pickup.
 	pub.setConfigBundle(AgentConfigBundle{Version: v2hash, Tarball: buildConfigTarball(t, validBundle())})
 	if err := host.RefreshConfig(ctx); err != nil {
 		t.Fatalf("RefreshConfig: %v", err)
 	}
 
-	// 4. The load-bearing assertion: a SECOND agent-stderr line carries the NEW
-	// hash. The real agent re-booted on Reload and read the flipped current/ ->
-	// the new bundle.
+	// The second boot must report v2 after Reload reads the flipped current link.
 	waitForConfigVersionLine(t, log, v2hash, 90*time.Second)
 }
