@@ -1,24 +1,9 @@
 package vfs
 
-// The local VolumeManager backend keeps one subtree per session and an
-// immutable, account-scoped snapshot store under the configured base dir.
-
-// The load-bearing part is the close-stamp: a small JSON marker written by
-// teardown (Stamp) and read by the reaper (Expire), which bounds the storage leak
-// the 14-day expiry exists to bound. The backend holds three invariants over it.
-
-// (a) Attach clears the stamp before returning the path, so a reopened
-// closed-but-unexpired session never carries a past-deadline stamp into new life.
-
-// (b) Expire takes a per-volume advisory lock and RE-READS the stamp under it, so
-// a volume is never reaped in the window between the reaper reading a stamp and a
-// concurrent Attach clearing it. Attach takes the same lock, RE-VERIFIES the
-// volume exists, and the lock file lives OUTSIDE the volume root on a stable inode.
-// Lock waits are bounded by the caller's context.
-
-// (c) The stamp carries close-vs-suspend intent from the caller. A suspended
-// session's volume is never eligible however old, because suspend uses the same
-// stop+remove teardown a close does — "the container is gone" cannot distinguish them.
+// LocalManager keeps per-session volumes and account-scoped snapshots. Its
+// close-stamp coordinates Attach, Expire, and the close-versus-suspend intent:
+// Attach clears it, Expire rechecks it under a per-volume lock, and suspended
+// volumes remain ineligible even though teardown removes their containers.
 
 import (
 	"context"
@@ -35,11 +20,8 @@ import (
 const (
 	// storeDirName keeps snapshots outside volume reaper scans.
 	storeDirName = ".compass-vfs.snapshots"
-	// metaDirSuffix names the per-volume metadata dir, a sibling of the root:
-	// <baseDir>/<sessionID><metaDirSuffix>. It holds the close-stamp and is the
-	// volume-identity token scanBaseDir keys on. It sits outside the root because
-	// keep-id makes the root agent-owned, and an agent must not be able to hide
-	// its volume from the reaper by deleting what lives inside it.
+	// metaDirSuffix names metadata beside the root, outside the agent-owned tree.
+	// Its presence is the volume identity used by scans.
 	metaDirSuffix = ".compass-vfs.meta"
 	// stampFileName is the close-stamp marker. Written atomically (temp +
 	// rename) so the reaper can never observe a half-written stamp and
@@ -682,12 +664,8 @@ func metaDir(root string) string { return root + metaDirSuffix }
 // stampPath is the volume's close-stamp file.
 func stampPath(root string) string { return filepath.Join(metaDir(root), stampFileName) }
 
-// readStamp decodes the volume's close-stamp. A nil stamp with a nil error
-// means UNSTAMPED — the volume belongs to a live session, or is a crash orphan
-// ReconcileOrphans has not yet discovered. Any other read or decode failure is
-// returned: a stamp that exists but cannot be understood must not silently
-// collapse into "unstamped" (which would look live) or into a defaulted
-// IntentClosed (which would look reapable).
+// readStamp returns nil for an absent stamp. Other read/decode failures stay
+// errors; they must not be mistaken for live or reapable state.
 func readStamp(root string) (*closeStamp, error) {
 	path := stampPath(root)
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path is confined to the operator-configured base dir — either a traversal-checked session id or a ReadDir entry name of that dir, never caller-supplied
@@ -704,17 +682,8 @@ func readStamp(root string) (*closeStamp, error) {
 	return &stamp, nil
 }
 
-// writeStamp writes the volume's close-stamp atomically AND durably: encode,
-// stage to a temp file in the same metadata dir, fsync+rename over the target,
-// then fsync the containing dir so the rename itself survives a host crash.
-// The rename is what makes a concurrent reader see either the old stamp or the
-// new one and never a torn record, and staging in the same dir keeps it a
-// same-filesystem rename. The durability is load-bearing rather than belt-and-
-// braces: losing an IntentClosed stamp in a crash writeback window is benign
-// (ReconcileOrphans re-stamps it), but losing an IntentSuspended stamp fails
-// WRONG — the volume returns UNSTAMPED, gets stamped IntentClosed at the next
-// discovery, and the suspended session's volume that invariant (c) exists to
-// pin forever becomes reap-eligible.
+// writeStamp stages in the metadata dir, then fsyncs the file and directory.
+// Losing IntentSuspended could make a suspended volume reapable after recovery.
 func writeStamp(root string, stamp closeStamp) error {
 	dir := metaDir(root)
 	if err := os.MkdirAll(dir, volumeDirMode); err != nil {
@@ -796,17 +765,9 @@ func writeAndClose(f *os.File, data []byte) error {
 	return errors.Join(writeErr, closeErr)
 }
 
-// clearStamp removes the volume's close-stamp (invariant (a)), atomically AND
-// durably. An absent stamp is already-clear, not a failure: Attach of a volume
-// that was never stamped — the common case, a resume of a still-live session —
-// must succeed.
-//
-// The unlink is fsynced (its containing metadata dir) with the same durability
-// writeStamp gives the write, because invariant (a) is exactly as load-bearing
-// as (c): a host crash shortly after an Attach that lost the clear would
-// resurrect the past-deadline stamp with its ORIGINAL timestamp, and the next
-// Expire would reap a volume belonging to the session that just re-attached —
-// the loss of the warm tree this package exists to preserve.
+// clearStamp durably removes the close-stamp; absence is already clear. Without
+// the directory sync, a crash could restore an expired stamp and reap an
+// attached session's volume.
 func clearStamp(root string) error {
 	path := stampPath(root)
 	if err := os.Remove(path); err != nil {

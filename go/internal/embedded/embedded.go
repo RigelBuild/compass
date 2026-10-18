@@ -110,14 +110,8 @@ func (p Pipeline) Run(ctx context.Context, params Params) (string, error) {
 	return accountID, nil
 }
 
-// stackUpArgs builds the `compass-stack up` argv from the resolved params. It is
-// pure (no I/O, no exec) so the exact invocation is unit-testable without
-// running anything — mirroring cmd/compass-stack's pure resolveConfig. It passes
-// ONLY --state-dir/--image/--socket: --database is omitted (compass-stack
-// computes the identical default DSN from --state-dir, so passing it would
-// duplicate that logic), and --postgres-image/--collector-image/--listen are
-// omitted so the CLI's defaults are the contract (the app re-learns nothing the
-// stack already owns — §A2 reconciliation 2).
+// stackUpArgs returns the pure `compass-stack up` argv. It passes only
+// state-dir, image, and socket; stack-owned defaults remain with the CLI.
 func stackUpArgs(p Params) []string {
 	args := []string{
 		"up",
@@ -128,18 +122,8 @@ func stackUpArgs(p Params) []string {
 	return args
 }
 
-// captureStderr wires cmd.Stderr to a temp *os.File and returns a reader for the
-// bytes captured so far plus a cleanup that closes and removes the file.
-// Capturing to an *os.File — not a bytes.Buffer — is load-bearing for the
-// fire-and-return stack commands: `compass-stack up` exits 0 once the stack is
-// Ready while its postgres/server/runner children keep running. os/exec backs a
-// non-*os.File stderr writer with an OS pipe whose copy goroutine Cmd.Wait
-// blocks on until EOF, and those lingering children inherit the pipe's
-// write-end, so EOF never arrives and Wait hangs forever. An *os.File is dup'd
-// straight into the child (no pipe, no goroutine), so Wait returns the instant
-// compass-stack itself exits; and the children write to a plain file that never
-// EPIPEs, so capturing this way never signals the very stack the app must keep
-// alive.
+// captureStderr uses a file, not a pipe: long-lived stack children inherit
+// stderr and would keep os/exec's pipe-copy goroutine, and Wait, blocked.
 func captureStderr(cmd *exec.Cmd) (read func() string, cleanup func(), err error) {
 	f, err := os.CreateTemp("", "compass-stack-stderr-*")
 	if err != nil {
@@ -319,17 +303,8 @@ func ResolveStackBin(flagValue string) (string, error) {
 		"put compass-stack on $PATH, or stage it beside the compass-app executable")
 }
 
-// prependExecDirToPath returns env with execDir prepended to its PATH entry so a
-// bundle's sidecar binaries (compass-server/compass-runner) win exec.LookPath
-// inside the supervised stack, while an ambient dev-box PATH keeps working
-// unchanged (prepend, never replace). postgres is NOT a PATH sidecar — it is a
-// DL-260 container the stack runs, not a process the stack LookPaths. env is the
-// process environment (os.Environ() shape: "KEY=VALUE"); a missing PATH entry is
-// created.
-//
-// execDir must be an absolute path — a relative or empty execDir is a no-op, so
-// a bare-name compass-stack (filepath.Dir "." from a $PATH/flag bin) never
-// prepends the current directory onto the child's PATH.
+// prependExecDirToPath prefers bundled sidecars without replacing the ambient
+// PATH. Only an absolute execDir is prepended; a bare binary name is a no-op.
 func prependExecDirToPath(env []string, execDir string) []string {
 	if !filepath.IsAbs(execDir) {
 		return env
@@ -384,13 +359,8 @@ func RealPreflight(image string) func(ctx context.Context) error {
 	}
 }
 
-// realPreflightDeps assembles the Deps literal for the given host OS. It takes
-// goos as an argument, rather than reading runtime.GOOS itself, so a test
-// running on ANY host can assert what the darwin wiring carries — the machine
-// check going missing on darwin is the exact regression this seam exists to
-// catch, and it is unobservable from a linux test if the builder resolves its
-// own OS. The one goos value feeds both the core's check selection and the
-// machine adapter, so the two cannot disagree about which host this is.
+// realPreflightDeps takes GOOS so tests can verify darwin wiring on any host.
+// The same value selects core checks and the machine adapter.
 func realPreflightDeps(goos string) preflight.Deps {
 	return preflight.Deps{
 		GOOS:           goos,
@@ -401,23 +371,9 @@ func realPreflightDeps(goos string) preflight.Deps {
 	}
 }
 
-// classifyPreflight splits the preflight results by severity at the wiring
-// boundary and returns only the FATAL failures folded into one legible error
-// (nil when none are fatal).
-//
-// The split is load-bearing for embedded mode's zero-config cold start. `up`
-// (compass-stack) is what STARTS postgres and PULLS the agent image
-// (internal/stack/adapters/image.go EnsureImage), so on a fresh state dir the
-// image check NECESSARILY fails before `up` has run — gating on it would make the
-// app unable to cold-start, breaking the zero-config charter. And it needs no
-// post-up re-check: `up`-Ready is GetServerInfo answering, which requires
-// migrations against a live postgres AND the runner booting on the pulled image,
-// so reaching Ready transitively verifies both.
-//
-//   - FATAL (host capabilities `up` cannot create): OS, rootless podman, the
-//     podman version floor (delta 4), and — on darwin — the podman machine.
-//   - ADVISORY (`up` ensures it, `up`-Ready verifies it): image — logged at
-//     Warn, never fatal.
+// classifyPreflight makes host-capability failures fatal and the image advisory.
+// A fresh stack pulls the image; reaching Ready verifies migrations and runner
+// startup, so an image precheck would block cold starts without adding coverage.
 func classifyPreflight(ctx context.Context, results preflight.Results) error {
 	var fatal preflight.Results
 	for _, r := range results {

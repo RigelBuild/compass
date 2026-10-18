@@ -1,23 +1,7 @@
-// The podman-machine probe and ensure step behind an injected seam. On macOS the
-// podman CLI drives a Linux VM ("the machine") and a fresh Mac has no machine at
-// all, so embedded mode must both DETECT the machine's state and PROVISION it —
-// mirroring how `compass-stack up` ensures the agent image and the database
-// rather than gating on them. The OS choice is a parameter, not a build tag
-// (machineReadyAdapter takes the GOOS the preflight core is already keyed on),
-// so the darwin wiring is reachable from a test on any host — a build-tagged
-// darwin adapter would make the regression this closes untestable on every
-// lane that actually runs. The classification, the error copy, and the ensure
-// orchestration are inverted over machineDeps, so all four states (no machine
-// / stopped / running / init fails) are unit-testable with no podman present.
-//
-// Every shape this file reads out of the podman CLI is an ASSUMPTION about
-// external behavior — the design record marks the `machine inspect` socket path
-// and the `machine ls --format json` no-machine-vs-stopped distinction as
-// spike-verified, and the spike has not run. So the parsing is deliberately
-// defensive and TOLERANT of shape drift (both the `Running` bool and the `State`
-// string are accepted; a missing field degrades, never panics), and an
-// unparseable answer is classified UNKNOWN, which is never ready. The failure
-// copy always names the podman command the operator can run themselves.
+// Package embedded contains the podman-machine probe and ensure step behind an injected seam.
+// On macOS podman runs in a Linux VM, which a fresh machine must provision.
+// OS is injected so every state can be tested on any host without podman.
+// Parsing is defensive because podman CLI output is external and spike-verified assumptions remain.
 package embedded
 
 import (
@@ -34,19 +18,8 @@ import (
 // podmanBin is the podman executable name, resolved on PATH.
 const podmanBin = "podman"
 
-// The machine resource floor passed to `podman machine init`. `podman machine
-// init`'s own defaults are modest (2 GiB of memory), and the embedded stack runs
-// FOUR containers inside the VM — postgres, the collector, the server, and an
-// agent container per session — so the default leaves the machine thrashing or
-// OOM-killing the agent under a normal session. The floor below is sized for
-// that set with headroom for a second concurrent agent; the disk figure covers
-// the pulled images (agent + postgres + collector) plus the postgres data
-// directory's growth over a long-lived install.
-//
-// UNVERIFIED: no macOS host has run the spike, so this floor is a reasoned
-// choice, not a measured one, and the units are the podman CLI's documented ones
-// (--memory in MiB, --disk-size in GiB). The spike is what turns it into a
-// number recorded in the self-host doc.
+// Resource floors for four containers plus a second agent. These are reasoned
+// values, not measured on macOS; see the self-host documentation.
 const (
 	machineMemoryFloorMiB = 8192
 	machineDiskFloorGiB   = 100
@@ -69,23 +42,14 @@ const (
 	machineRunning
 )
 
-// machineDeps is the seam the machine probe and ensure step are inverted over:
-// one field per genuine external effect, exactly as preflight.Deps inverts the
-// host checks it runs. The real adapters shell the podman CLI
-// (realMachineDeps); tests supply deterministic stubs.
+// machineDeps inverts each podman CLI effect for deterministic tests.
 type machineDeps struct {
-	// list runs `podman machine ls --format json` and returns its stdout. Its
-	// presence-or-absence is the one thing the classification depends on: an
-	// empty list means no machine exists. What `inspect` does for a stopped
-	// machine is one of the unspiked assumptions this file's doc flags, so
-	// nothing is inferred from it failing.
+	// list distinguishes an absent machine; stopped-machine inspect behavior is
+	// unknown, so classification does not infer from its failure.
 	list func(ctx context.Context) ([]byte, error)
-	// inspect runs `podman machine inspect` (no machine named, so the DEFAULT
-	// machine) and returns its stdout: the authoritative state plus the host-side
-	// API socket path the VM forwards.
+	// inspect reports the default machine's state and host-side API socket.
 	inspect func(ctx context.Context) ([]byte, error)
-	// initMachine runs `podman machine init` with the resource floor. On a fresh
-	// host this DOWNLOADS a VM image and takes minutes.
+	// initMachine downloads a VM image on a fresh host and can take minutes.
 	initMachine func(ctx context.Context) error
 	// startMachine runs `podman machine start` on the default machine.
 	startMachine func(ctx context.Context) error
@@ -102,16 +66,9 @@ type machineInfo struct {
 	socket string
 }
 
-// machineListEntry is the subset of `podman machine ls --format json` this code
-// reads. Running is a pointer and State is a string because the field set
-// differs across podman versions and this parse must not depend on either being
-// present: presence in the list is what establishes existence, and running-ness
-// is read from whichever field the CLI supplied.
-//
-// A machine mid-start is deliberately NOT a distinct case. It classifies as
-// stopped and gets a `machine start`, which is a no-op on a machine already
-// coming up — one redundant command on a rare path, against a third state to
-// carry through the whole ensure step.
+// machineListEntry reads fields that vary across podman versions. List presence
+// establishes existence; a mid-start machine classifies as stopped and start
+// is a harmless no-op.
 type machineListEntry struct {
 	Name    string `json:"Name"`
 	Running *bool  `json:"Running"`
@@ -141,17 +98,11 @@ type machineInspectEntry struct {
 	} `json:"ConnectionInfo"`
 }
 
-// errMachineUnclassified is the sentinel for "the podman CLI's answer could not
-// be turned into a state". Callers wrap it with the command to run; it exists so
-// the ensure step can tell an unclassifiable answer (do nothing, surface it)
-// from a state it knows how to fix.
+// errMachineUnclassified distinguishes unreadable state from states ensure can fix.
 var errMachineUnclassified = errors.New("the podman machine state could not be determined")
 
-// probeMachine classifies the machine from the podman CLI. It calls `machine ls`
-// FIRST — that is the only call that separates no-machine from stopped-machine —
-// and then `machine inspect` for the authoritative state and the socket path of
-// the default machine. A CLI or parse failure yields machineUnknown with an
-// error naming the command to run by hand; it never guesses ready.
+// probeMachine lists first to distinguish absent from stopped, then inspects the
+// default machine. CLI or parse errors never guess that it is ready.
 func probeMachine(ctx context.Context, d machineDeps) (machineInfo, error) {
 	out, err := d.list(ctx)
 	if err != nil {
@@ -250,19 +201,14 @@ func machineReady(ctx context.Context, d machineDeps) error {
 	}
 }
 
-// machineStateUnreadable is the error for a machine state the podman CLI would
-// not tell us. Shared by the probe and the ensure step so both report the same
-// copy, and pointing at the command whose output could not be classified.
+// machineStateUnreadable is shared by probe and ensure for unknown state.
 func machineStateUnreadable() error {
 	return fmt.Errorf("%w; run `%s machine ls --format json` to see what podman reports",
 		errMachineUnclassified, podmanBin)
 }
 
-// machineSocketReachable checks the third failing state: the machine is running
-// but the API socket the VM forwards to the host does not answer. An empty path
-// counts as unreachable — a running machine that reports no socket is exactly
-// the unparseable-response case, and treating it as ready is what would produce
-// a green preflight followed by an undiagnosable failure.
+// machineSocketReachable treats an empty or unreachable API socket on a running
+// machine as not ready.
 func machineSocketReachable(ctx context.Context, d machineDeps, info machineInfo) error {
 	if info.socket == "" {
 		return fmt.Errorf("the podman machine %q is running but `%s machine inspect` reported no API socket path; "+
@@ -277,19 +223,8 @@ func machineSocketReachable(ctx context.Context, d machineDeps, info machineInfo
 	return nil
 }
 
-// ensureMachineReady is what the darwin MachineReady adapter wires: it makes the
-// machine ready rather than merely reporting on it. On no-machine it inits then
-// starts; on a stopped machine it starts; then it RE-PROBES, because the
-// authority on readiness is the probe, never the exit status of init/start. A
-// state it cannot fix (an unclassifiable CLI answer, or a running machine whose
-// socket does not answer) is surfaced from the probe unchanged.
-//
-// The init download is minutes long and runs under the caller's context, which
-// the embedded pipeline bounds with its bring-up window. On darwin that window
-// is sized for a cold provision (BringUpTimeoutFor), so a healthy
-// first run fits inside it. The copy on the failure path still names the init
-// command, so an operator who does exhaust the window gets something to run by
-// hand rather than a bare deadline error.
+// ensureMachineReady provisions or starts the machine, then trusts a fresh
+// probe rather than command exit status. The caller bounds the long init.
 func ensureMachineReady(ctx context.Context, d machineDeps) error {
 	info, err := probeMachine(ctx, d)
 	if err != nil {
@@ -326,16 +261,8 @@ func ensureMachineReady(ctx context.Context, d machineDeps) error {
 	return machineReady(ctx, d)
 }
 
-// machineReadyAdapter returns the preflight.Deps.MachineReady adapter for the
-// given host OS: on darwin the podman-machine ENSURE step (provision or start
-// the Linux VM, then re-probe), and nil elsewhere — linux podman is native, so
-// there is no machine and the preflight core omits the check.
-//
-// The OS is a PARAMETER rather than a build tag, matching preflight.Deps.GOOS:
-// a build-tagged darwin-only adapter would be uncompilable from a linux test, so
-// the very regression this closes — a darwin build reaching preflight with no
-// machine adapter — could not be tested anywhere the CI actually runs. Keyed off
-// GOOS instead, a linux host can assert the darwin wiring.
+// machineReadyAdapter enables provisioning only on darwin. Injected GOOS lets
+// linux tests verify macOS wiring without build-tagged dead code.
 func machineReadyAdapter(goos string) func(ctx context.Context) error {
 	if goos != "darwin" {
 		return nil

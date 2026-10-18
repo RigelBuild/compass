@@ -87,26 +87,14 @@ type ComputeSpec struct {
 	Timeout time.Duration
 }
 
-// ComputeRuntime is the elastic-compute seam: it runs a heavy op on whatever
-// backend the op's ResourceClass selects. An interface so the Runner can hold a
-// ComputeRuntime and tests can substitute a fake. A ComputeRuntime is
-// session-scoped — a backend is constructed with the session's container handle,
-// its container-runtime engine, and its egress policy — so it has the run-in-
-// place, burst, and egress-arming context a backend needs without threading it
-// through every Exec call.
+// ComputeRuntime selects a backend by ResourceClass. It is session-scoped so
+// each backend carries the container handle and egress policy for its Exec calls.
 type ComputeRuntime interface {
-	// Exec runs spec to completion, returning its buffered output. A non-zero
-	// exit is a successful call returning a failed command
-	// (runtime.ExecOutput.ExitCode), not an error; only a spawn failure,
-	// timeout, or backend error is an error. Reuses runtime.ExecOutput — fully
-	// buffered stdout/stderr, an accepted limit for whole-suite output until the
-	// streaming variant lands.
+	// Exec returns nonzero command exits in ExecOutput; errors mean spawn, timeout,
+	// or backend failure. Output is fully buffered until streaming is implemented.
 	Exec(ctx context.Context, spec ComputeSpec) (runtime.ExecOutput, error)
 
-	// ExecStreaming is reserved: it will run a long-lived streaming op returning
-	// its live stdio pipes plus a kill/wait handle, mirroring
-	// runtime.WorkloadRuntime.ExecStreaming. It is declared in the interface now
-	// so a later streaming consumer lands no interface change; the S1 backend
-	// returns ErrExecStreamingNotImplemented rather than silently succeeding.
+	// ExecStreaming is reserved for live pipes and a kill/wait handle; the current
+	// backend returns ErrExecStreamingNotImplemented rather than a false success.
 	ExecStreaming(ctx context.Context, spec ComputeSpec) (*runtime.StreamingExec, error)
 }

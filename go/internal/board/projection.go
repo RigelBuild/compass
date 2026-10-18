@@ -29,33 +29,19 @@ import (
 // projection publishes the AgentSessionStatus variant.
 type busPayload = *compassv1.SubscribeEventsResponse
 
-// Projection is the Bridge board: the per-session aggregate of the latest
-// AgentSessionState, plus the SubscribeEvents fan-out. Safe for concurrent use —
-// PublishSessionStatus (the RunnerHub delivery goroutine) and Snapshot (the
-// GetAgentStatus RPC goroutine) run concurrently.
+// Projection aggregates the latest session state and fans out SubscribeEvents.
+// PublishSessionStatus and Snapshot may run concurrently.
 type Projection struct {
 	bus *events.Bus[busPayload]
 
 	mu sync.RWMutex
-	// sessions is session_id -> the latest state observed for it, terminal states
-	// (STOPPED/ERRORED) included. A session is retained after it terminates so a
-	// single-id GetAgentStatus(session_id) still answers a finished or crashed
-	// agent's final state ("did my agent finish?"); the all-sessions Snapshot("")
-	// filters terminal states out, since GetAgentStatus unfiltered contracts to
-	// return every *live* session (compass.proto:49,283). Retain-all is bounded by
-	// the single-Runner agent count for the MVP; lifecycle GC (eviction on the
-	// reattach/expiry state machine, compass.proto:149-153) is deferred. The
-	// value carries the DL-167 agent_account_id alongside the state, so a
-	// snapshot reattaches each session to its agent for any status the hub
-	// published with a resolvable binding.
+	// sessions retains terminal states for single-id reads, while Snapshot lists
+	// only live sessions. Retention is bounded by Runner agent count.
 	sessions map[string]sessionEntry
 }
 
-// sessionEntry is the board's per-session record: the latest state, the agent
-// account it was attributed to (empty when the hub could not resolve the
-// binding — the stated DL-167 residual gap), and the owning Runner's runtime
-// tier and egress posture (stamped from enrollment, so the snapshot path carries
-// them too).
+// sessionEntry carries the latest state, account binding, and enrolled Runner
+// runtime and egress posture.
 type sessionEntry struct {
 	state         compassv1.AgentSessionState
 	account       string
@@ -148,13 +134,6 @@ func (p *Projection) Snapshot(sessionID string) []*compassv1.AgentSessionStatus 
 	return out
 }
 
-// isTerminal reports whether a session has reached a terminal state — STOPPED (a
-// clean finish) or ERRORED (a crash). Terminal sessions are retained in the map
-// (queryable by single id) but excluded from the all-sessions Snapshot("").
-// DISCONNECTED is deliberately NOT terminal: the owning Runner dropped its link
-// but the session awaits reattach within the bounded window (compass.proto:161-163),
-// so it stays a live board entry until the expiry state machine (deferred)
-// falls it to ERRORED.
 func isTerminal(state compassv1.AgentSessionState) bool {
 	return state == compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED ||
 		state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED

@@ -191,18 +191,15 @@ func (p *IssueProjection) Rehydrate(ctx context.Context) error {
 	return nil
 }
 
-// issueToProto maps the store-native issue to the canonical wire Issue. store
-// enums -> proto enums by value (they mirror: IssueState 0..8, ForgeProvider
-// 0..3); Forge is rebuilt as &compassv1.ForgeRef{Provider, Host}; Labels copied;
-// empty->nil per the module contract; tracker/prs left nil (prs are loaded by
-// record caches wire under its id and coordinate. Callers hold p.mu.
+// record indexes a wire issue by id and forge coordinate. Callers hold p.mu.
 func (p *IssueProjection) record(wire *compassv1.Issue, coord store.ForgeCoord) {
 	p.issues[wire.GetId()] = wire
 	p.byCoord[coord] = wire.GetId()
 }
 
-// IssueToProtoWithPrs). AgentAttribution is set only for a Compass-authored issue
-// (a non-empty agent_handle); a human author leaves it unset.
+// issueToProto maps store issues to wire types. Store enums mirror proto values;
+// IssueToProtoWithPrs adds tracker and PR data separately. Agent attribution is
+// set only for Compass-authored issues.
 func issueToProto(si store.Issue) *compassv1.Issue {
 	out := &compassv1.Issue{
 		Id: si.ID,
@@ -235,11 +232,8 @@ func issueToProto(si store.Issue) *compassv1.Issue {
 	return out
 }
 
-// protoToForgeFields maps an ingested canonical Issue to the store's forge-only
-// upsert input (the inverse used by PublishIssueUpdate). Reads proto via GetX().
-// Pulls ONLY forge fields + coordinate + agent_handle — never state/machinery
-// (those are store-owned; IssueForgeFields has no such field, the compile-time
-// guarantee that the forge-only upsert cannot clobber a human-set state).
+// protoToForgeFields carries only forge-owned fields, so ingestion cannot
+// overwrite store-owned state.
 func protoToForgeFields(p *compassv1.Issue) store.IssueForgeFields {
 	out := store.IssueForgeFields{
 		ForgeProvider: store.ForgeProvider(p.GetForge().GetProvider()),
@@ -256,22 +250,16 @@ func protoToForgeFields(p *compassv1.Issue) store.IssueForgeFields {
 	if len(p.GetLabels()) > 0 {
 		out.Labels = append([]string(nil), p.GetLabels()...)
 	}
-	// The OQ-6(a) recency guard (RIG-2883 T4a): carry the forge's last-updated
-	// timestamp so the store's conditional upsert can skip a stale re-sink. An
-	// unset proto field leaves ForgeUpdatedAt zero, which stores NULL and keeps
-	// the write additive.
+	// Preserve forge update times so conditional upserts skip stale data. An unset
+	// timestamp leaves the write additive.
 	if ts := p.GetUpdatedAt(); ts != nil {
 		out.ForgeUpdatedAt = ts.AsTime()
 	}
 	return out
 }
 
-// cloneIssue returns a deep copy for Snapshot: a caller mutating a returned
-// Issue (or any sub-message / slice) must not touch the cached one. proto.Clone
-// tracks the message definition automatically, so the copy stays complete as
-// the Issue proto gains fields — a manual field-by-field copy would silently
-// drop any field added later (e.g. Tracker/Prs, once their producing slices
-// land).
+// cloneIssue protects cached messages from caller mutation; proto.Clone retains
+// fields added to the message in the future.
 func cloneIssue(in *compassv1.Issue) *compassv1.Issue {
 	out, _ := proto.Clone(in).(*compassv1.Issue)
 	return out

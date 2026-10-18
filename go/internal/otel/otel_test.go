@@ -315,12 +315,8 @@ func TestSessionIDInterceptor(t *testing.T) {
 	})
 
 	t.Run("an invalid-UTF8 header is refused, so it cannot poison the export batch", func(t *testing.T) {
-		// Go's HTTP parser rejects control bytes but admits high bytes, and OTLP
-		// attributes are proto3 strings: the marshaller fails the WHOLE
-		// ExportTraceServiceRequest on an invalid one, dropping every span
-		// batched alongside it. This interceptor runs ahead of auth, so
-		// admitting it would be an unauthenticated way to blind the trace
-		// backend for everyone.
+		// An invalid proto3 string makes OTLP reject the whole batch. The header
+		// reaches this interceptor before auth, so accepting it could blind traces.
 		for _, bad := range []string{"sess-\xff\xfe-1", "sess-\xe9-1", "\xc3"} {
 			if got := stampedSessionIDs(t, bad, true); len(got) != 0 {
 				t.Fatalf("session.id = %q for invalid-UTF8 header %q, want none", got, bad)

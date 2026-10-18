@@ -256,13 +256,8 @@ type graphQLRequest struct {
 	Variables map[string]any `json:"variables"`
 }
 
-// graphQLResponse carries the top-level GraphQL errors array plus each
-// mutation's own payload. A mutation can fail two ways at the GraphQL layer:
-// a 200 with a populated top-level errors list, or a 200 with an empty errors
-// list but a payload success=false. Both mutations select `{ success }`, so a
-// false there is an actionable soft failure (under Option B these two emits are
-// the entire return path and carry the ack-liveness SLA); Data is keyed by the
-// mutation's top-level field name (agentActivityCreate / agentSessionUpdate).
+// graphQLResponse carries top-level errors and mutation payloads. Mutations can
+// fail in either location: errors in the response or success=false in data.
 type graphQLResponse struct {
 	Data map[string]struct {
 		Success *bool `json:"success"`

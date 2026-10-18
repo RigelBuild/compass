@@ -63,19 +63,12 @@ const (
 	backendFile                   // 0600 file fallback
 )
 
-// probeUser is a reserved keyring key used only to detect whether the keyring
-// backend can service requests. It is never written; a real key is always a
-// validated https server URL, so this sentinel can never collide with one. A
-// Get returns ErrNotFound on a working backend and a dial/platform error on an
-// absent one.
+// probeUser is a reserved sentinel that cannot collide with validated server
+// URLs. ErrNotFound means the keyring works; dial errors mean it is unavailable.
 const probeUser = "compass-app::keyring-probe"
 
-// keyringStore prefers the OS keyring and binds to the file fallback only when
-// the keyring backend is unavailable (e.g. no D-Bus Secret Service on Linux).
-// The choice is made once and cached, so an operational keyring failure after a
-// successful bind propagates as an error rather than silently diverting one
-// operation to the file — which would split-brain the credential across
-// backends (RIG-2009).
+// keyringStore binds once to the keyring or file fallback. Later keyring errors
+// propagate; switching then would split a credential across backends.
 type keyringStore struct {
 	fallback *fileStore
 
@@ -118,11 +111,8 @@ func (s *keyringStore) Delete(serverURL string) error {
 	return nil
 }
 
-// resolve binds the persistence backend once, on first use. It probes the
-// keyring with a read of the reserved probeUser key: ErrNotFound (or any
-// success) means the keyring is present and working; any other error means the
-// backend is unavailable and the file fallback is bound for the store's
-// lifetime.
+// resolve probes once on first use. ErrNotFound or success binds the keyring;
+// any other error binds the file fallback for the store's lifetime.
 func (s *keyringStore) resolve() backend {
 	s.once.Do(func() {
 		_, err := keyring.Get(keyringService, probeUser)
@@ -186,11 +176,8 @@ func (s *fileStore) Delete(serverURL string) error {
 
 func (s *fileStore) path() string { return filepath.Join(s.dir, tokenFileName) }
 
-// writeAtomic writes data to the token file 0600, atomically: a temp file in the
-// same directory (born 0600) is written, synced, and renamed over the final
-// path, so a reader never observes a partial credential. Mirrors the server's
-// writeTokenFile (go/server/network_door.go:341-383). Error strings carry only
-// paths and syscall causes, never the token bytes.
+// writeAtomic uses a 0600 temp file, sync, and rename so readers never observe a
+// partial credential. Errors contain paths and syscall causes, never token data.
 func (s *fileStore) writeAtomic(data []byte) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("tokenstore: ensuring state dir %q: %w", s.dir, err)

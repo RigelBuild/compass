@@ -1,28 +1,7 @@
-// Package microvmtest is the shared runtime gate for the compass microVM
-// integration tests. A microVM boot is only proven against real virtualization,
-// so every test that opens /dev/kvm, spawns cloud-hypervisor/virtiofsd/passt, or
-// requires the guest image runs KVM-backed — there is no mock. This package owns
-// the one copy of the KVM-availability probe and env-resolution those suites
-// share: probe whether /dev/kvm is openable by the current uid, resolve the
-// guest-image and VMM/virtiofsd paths from the environment (with PATH
-// fallbacks), and SKIP (never fail) when KVM is absent, so the hermetic gate
-// stays green on a KVM-less box while the assertions are real wherever KVM
-// exists. When COMPASS_REQUIRE_MICROVM is set — the CI KVM leg — that skip
-// becomes a hard failure instead, because a skip would silently pass the suite
-// without exercising anything.
-//
-// It is deliberately runtime-agnostic: it hands back an Env of resolved paths,
-// and each consuming test drives the VMM itself. That keeps this package free of
-// any dependency on the packages it serves (no import cycle) and makes it
-// reusable across the V2a+ integration suites.
-//
-// Unlike pgtest, this package's non-test files compile UNTAGGED, so the moon
-// battery type-checks the gate everywhere — even on a box with no KVM. The
-// two-tier tag rule lives in the CONSUMERS, not here: an integration test that
-// touches KVM/cloud-hypervisor/virtiofsd/passt or the guest image carries
-// `//go:build microvm && unix` and calls microvmtest.Require(t) first; an
-// untagged test must run on a KVM-less box. This package is the untagged shared
-// gate those tagged tests import.
+// Package microvmtest gates integration tests that need real KVM and VM tools.
+// It resolves the guest image and binaries, skipping when KVM is absent unless
+// COMPASS_REQUIRE_MICROVM makes that a hard failure. It stays untagged so its
+// API compiles on hosts without KVM; KVM consumers carry microvm && unix tags.
 
 package microvmtest
 
@@ -137,14 +116,8 @@ func kvmOpenable() bool {
 	return hostcheck.ProbeKVM() == nil
 }
 
-// resolveEnv populates an Env from the guest-image env vars and PATH lookups for
-// the VMM/virtiofsd binaries. A missing guest-image var or a binary absent from
-// PATH is a hard failure on a run that has already cleared the KVM gate: the
-// guest images and VMM are prerequisites of any boot, so their absence is a
-// misconfigured environment, not a reason to silently skip into a green suite.
-// The images are supplied by the environment (see KernelEnvVar/RootfsEnvVar), so
-// their absence is caught here rather than defaulted to a build path this
-// package does not own.
+// resolveEnv reads guest-image env vars and resolves VMM tools from PATH. Once
+// KVM is available, missing configuration is a hard failure, not a skip.
 func resolveEnv(t *testing.T) Env {
 	t.Helper()
 	vmmPath, err := exec.LookPath(vmmBinary)

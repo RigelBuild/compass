@@ -9,11 +9,8 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// dataEvent models Linear's data-change webhook envelope (type Issue/Comment,
-// action create/update/remove, with a `data` object and, on update, an
-// `updatedFrom` object of previous values). It is the sibling of SessionEvent
-// (webhook.go) — the AgentSession arm is untouched; this is a new data arm.
-// json tags mirror Linear's camelCase payload keys.
+// dataEvent models Linear issue/comment change envelopes. Updates include
+// updatedFrom; JSON tags match Linear's camelCase keys.
 type dataEvent struct {
 	Type        string          `json:"type"`
 	Action      string          `json:"action"`
@@ -193,13 +190,8 @@ func linearCommentRef(d dataPayload) *compassv1internal.CommentRef {
 	return ref
 }
 
-// linearAccount renders the commenter's display login. It returns displayName
-// ONLY (Linear's User.displayName is a non-null, always-populated field) — NOT
-// a displayName||name fallback: the sweep producer (forge.linearComment) fetches
-// and reads only displayName, so a name fallback here would make the two
-// notify-snapshot producers resolve ForgeAccount asymmetrically, reintroducing
-// the RIG-2732 Fork-1 phantom-diff bug class on the account field (DL-304 keeps
-// the digested SnapshotComment byte-identical across producers).
+// linearAccount uses displayName only, matching the sweep producer. A fallback
+// to name could make the two snapshot producers disagree on ForgeAccount.
 func linearAccount(u dataUser) string {
 	return u.DisplayName
 }

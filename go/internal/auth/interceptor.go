@@ -25,21 +25,12 @@ var (
 // name is matched case-insensitively (see bearerToken), not by a fixed prefix.
 const authorizationHeader = "Authorization"
 
-// callerKey is the unexported context key under which the network door's bearer
-// interceptor stores the authenticated caller for the auth layer's own reader
-// (AdminGate). Unexported so only this package can set it and no other package's
-// context value can collide.
+// callerKey stores the authenticated network-door account for this package.
+// Its unexported type prevents context-key collisions.
 type callerKey struct{}
 
-// withCaller returns a child context carrying account as the authenticated caller
-// for both readers on the network door: the auth AdminGate reads it via
-// CallerFrom (callerKey), and the comms service handlers read it via
-// comms.actorFromContext — the T3 seam (comms/context.go), set through
-// comms.WithActor. Setting both is load-bearing: without the comms.WithActor
-// half, an authenticated comms RPC on the network door would fall back to the
-// bootstrap-admin identity (comms attributes the admin when no actor is set),
-// silently attributing every network caller to the admin rather than the real
-// token holder.
+// withCaller sets the account for both auth and comms readers. Without the
+// comms actor, network calls would be attributed to the bootstrap admin.
 func withCaller(ctx context.Context, account store.AccountID) context.Context {
 	ctx = context.WithValue(ctx, callerKey{}, account)
 	return comms.WithActor(ctx, account)
@@ -109,12 +100,8 @@ func resolveBearer(ctx context.Context, st *store.Store, header string) (store.A
 	return store.AccountID(subj.ID), subj.Tenant, nil
 }
 
-// bearerToken extracts the token from an Authorization header value, accepting
-// the Bearer scheme case-insensitively (RFC 7235 §2.1) followed by one or more
-// spaces, and returning the credential verbatim (case-sensitive — base64url is
-// case-significant). Returns ok=false for any non-bearer value, an empty
-// credential, or a credential carrying an interior space (a base64url token never
-// contains one, so that signals a malformed header).
+// bearerToken accepts a case-insensitive Bearer scheme and preserves the
+// case-sensitive credential. Empty or space-containing credentials are invalid.
 func bearerToken(header string) (string, bool) {
 	scheme, rest, found := strings.Cut(header, " ")
 	if !found || !strings.EqualFold(scheme, "bearer") {

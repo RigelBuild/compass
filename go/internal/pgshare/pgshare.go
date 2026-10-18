@@ -1,29 +1,8 @@
-// Package pgshare is the shared database-acquisition and schema-isolation core
-// the compass real-Postgres test lanes build on. A store of record is only
-// proven against the database it targets, so every store/handler/serve
-// integration test runs against an actual Postgres (design.md:1188-1190) — there
-// is no mock. This package owns the one copy of the acquisition policy those
-// suites share: acquire a database (an already-running one via
-// COMPASS_TEST_DATABASE_DSN, else — only when explicitly opted in via
-// COMPASS_TEST_USE_CONTAINER — a throwaway container started through the
-// container CLI), give each test its own uniquely-named schema, and SKIP (never
-// fail) when no container runtime is usable, so the hermetic gate stays green in
-// a container-less sandbox while the assertions are real wherever a runtime
-// exists. When a runtime exists but no DSN is set and the container path was not
-// opted into, it FAILS LOUDLY rather than silently swapping in the ~500x-slower
-// container path and changing what the suite measures.
-//
-// It is deliberately store-agnostic: it hands back a DSN, and each package opens
-// its own store against it. That keeps this package free of any dependency on
-// the packages it serves (no import cycle) and makes it reusable by the store,
-// comms, server, and stack-supervisor suites alike. The pgtest package
-// re-exports AcquireDSN as its RequireDSN entry point unchanged.
-//
-// It is build-tagged so it is compiled only into the opt-in real-Postgres lanes,
-// never the default `go test` gate. It is a non-test file (not `_test.go`) so it
-// is importable across packages and lanes; the build tag keeps it out of
-// production binaries all the same.
-//
+// Package pgshare acquires real Postgres and isolates tests with per-test
+// schemas. It accepts shared DSNs or explicitly opted-in containers; missing
+// runtimes skip unless live Postgres is required, and a present unconfigured
+// runtime fails rather than silently selecting a slower container path.
+
 //go:build (pgtest || podman) && unix
 
 package pgshare
@@ -44,20 +23,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// pgImage is the Postgres image the harness runs. A pinned major keeps the
-// generated-tsvector + websearch_to_tsquery behavior the tests assert stable,
-// and the digest keeps it byte-identical: `16-alpine` is a mutable tag, so
-// without one a repoint silently swaps the database under the suites here and
-// in CI at different times, producing a divergence no diff would show.
-//
-// Must stay equal to the pgtest service image in .github/workflows/ci.yml, or a
-// local run and CI stop exercising the same Postgres.
+// pgImage pins the major and digest so local and CI suites use the same Postgres
+// behavior. Keep it equal to the pgtest service image in CI.
 const pgImage = "docker.io/library/postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
 
-// dsnEnvVar, when set, points the harness at an already-running Postgres and
-// suppresses container management — the CI-service path (design.md:1188). The
-// pgtest package re-exports this string as its public DSNEnvVar; the two must
-// stay equal (they name the same operator contract).
+// dsnEnvVar points to shared Postgres; pgtest re-exports the same contract.
 const dsnEnvVar = "COMPASS_TEST_DATABASE_DSN"
 
 // useContainerEnvVar, when set to a non-empty value, opts the harness into
@@ -66,12 +36,8 @@ const dsnEnvVar = "COMPASS_TEST_DATABASE_DSN"
 // changes what the suite measures, so it is opt-in rather than a fallback.
 const useContainerEnvVar = "COMPASS_TEST_USE_CONTAINER"
 
-// requireLiveEnvVar, when set to a non-empty value, turns the no-runtime SKIP
-// path into a hard failure: with no COMPASS_TEST_DATABASE_DSN and no container
-// runtime, AcquireDSN would normally skip so the suite stays green in a
-// container-less sandbox, but where a live database is mandatory (CI sets this)
-// a skip would silently pass the suite without exercising anything. Setting
-// COMPASS_REQUIRE_LIVE=1 makes that case fail loudly instead.
+// requireLiveEnvVar turns the no-runtime skip into failure when live Postgres is
+// mandatory, so CI cannot pass without exercising the database.
 const requireLiveEnvVar = "COMPASS_REQUIRE_LIVE"
 
 // dsnSource is which of the five database-acquisition paths AcquireDSN takes.
@@ -178,17 +144,8 @@ func IsolatedSchemaDSN(t *testing.T, dsn string) string {
 	return withSearchPath(dsn, schema)
 }
 
-// withSearchPath returns dsn with its connection search_path set to schema, so
-// every pooled connection store.Open makes resolves unqualified names to that
-// schema. It threads the setting through the libpq `options` parameter
-// (-c search_path=…), appended to any existing query string.
-//
-// A DSN that already carries an `options` parameter is rejected (panic): libpq
-// keeps only one `options`, so appending a second would silently drop the
-// per-test search_path and cross-contaminate parallel tests. A loud failure at
-// setup beats a silent isolation loss that surfaces as a flaky, cross-talking
-// suite. The DSNs this harness builds never set `options`, so this guards
-// against an operator-supplied COMPASS_TEST_DATABASE_DSN that does.
+// withSearchPath adds a per-test schema through libpq's options parameter.
+// Reject an existing options value: libpq would discard one, breaking isolation.
 func withSearchPath(dsn, schema string) string {
 	if strings.Contains(dsn, "options=") {
 		panic("pgtest: COMPASS_TEST_DATABASE_DSN already sets an 'options' parameter; " +
@@ -243,14 +200,8 @@ func containerCLI() string {
 	return ""
 }
 
-// startContainer launches a throwaway Postgres container, waits for it to accept
-// connections, and returns its DSN. The container and its anonymous data volume
-// are force-removed on cleanup.
-//
-// This path is reached only when COMPASS_TEST_USE_CONTAINER is set (see
-// AcquireDSN), so a failure to start the container is an infrastructure failure
-// on an explicitly opted-in run: it fails loudly rather than skipping into a
-// green suite, which would hide a broken local container runtime.
+// startContainer launches opted-in disposable Postgres and removes its volume.
+// Startup failures are infrastructure failures, not skips.
 func startContainer(t *testing.T, cli string) string {
 	t.Helper()
 	ctx := t.Context()
@@ -286,18 +237,8 @@ func startContainer(t *testing.T, cli string) string {
 	return dsn
 }
 
-// removeContainerArgs is the argv (after the CLI binary) that force-removes a
-// throwaway container AND its anonymous volumes. The --volumes flag is
-// load-bearing: the postgres image declares VOLUME /var/lib/postgresql/data, so
-// every throwaway spawns an anonymous volume, and a bare `rm --force` (no
-// --volumes) leaves it dangling. Across thousands of fleet test runs those
-// orphans accumulate until podman's num_locks pool is exhausted and no new
-// volume — hence no new container — can be allocated, which surfaces downstream
-// as a pgtest "hang" (the socket never binds, so the test waits out its
-// deadline). --rm alone does not cover this: it does not remove anonymous
-// test so the flag that keeps the pool bounded cannot be dropped unnoticed.
-// Sister argv in internal/runtime (removeArgs); the two are deliberately
-// independent (no test-harness->prod dependency) — keep in sync.
+// removeContainerArgs removes the container and its anonymous data volume.
+// Omitting --volumes leaks postgres volumes; keep independent runtime args in sync.
 func removeContainerArgs(name string) []string {
 	return []string{"rm", "--force", "--volumes", name}
 }
@@ -341,19 +282,11 @@ func waitReady(t *testing.T, ctx context.Context, dsn string) {
 	}
 }
 
-// suitePGBinary is the on-PATH private-database wrapper the suite-postgres path
-// spawns (github.com/RigelBuild/compass/cmd/compass-postgres). It is invoked
-// exactly as the stack supervisor invokes it — `--state-dir <dir> --database
-// <dsn>` (cmd/compass-postgres/main.go) — so the suite exercises the same
-// bring-up the production supervisor drives.
+// suitePGBinary is the PATH-resolved wrapper used to start private test Postgres.
 const suitePGBinary = "compass-postgres"
 
-// suiteReadyBudget/suiteReadyTick bound the connect poll that gates
-// StartSuitePostgres readiness. They mirror waitReady's throwaway-container poll:
-// a cold cluster's initdb + first-accept latency fits inside the budget, and the
-// tick keeps the poll cheap while it waits. This is not a timing assumption about
-// when Postgres is ready — the loop gates on the connect actually succeeding, and
-// short-circuits the moment the child process exits.
+// The bounded connect poll allows cold init while exiting as soon as the child
+// stops; readiness is based on a successful connection, not elapsed time.
 const (
 	suiteReadyBudget = 30 * time.Second
 	suiteReadyTick   = 250 * time.Millisecond
@@ -385,13 +318,8 @@ func StartSuitePostgresMain(ctx context.Context, stateDir, sockDir string, port 
 	return startSuitePostgres(ctx, stateDir, sockDir, port)
 }
 
-// startSuitePostgres is the shared bring-up body behind the TB and TB-free
-// variants. It resolves the wrapper on PATH, forms the supervisor's
-// keyword/value DSN (host=<sockDir> port=<port> dbname=compass sslmode=disable —
-// the form cmd/compass-postgres parses and compass-server later opens),
-// exec's the wrapper with the supervisor's argv, and gates readiness on a bounded
-// connect poll that also short-circuits if the child exits first. On any failure
-// it reaps a started child and returns a nil stop.
+// startSuitePostgres shares startup for TB and TestMain callers. It reaps a
+// started child on failure and returns a stop function only after readiness.
 func startSuitePostgres(ctx context.Context, stateDir, sockDir string, port int) (string, func(), error) {
 	if stateDir == "" {
 		return "", nil, errors.New("pgshare: a state directory is required")
@@ -440,13 +368,8 @@ func startSuitePostgres(ctx context.Context, stateDir, sockDir string, port int)
 	return dsn, stop, nil
 }
 
-// waitSuiteReady gates on compass-postgres actually accepting a connection —
-// mirroring waitReady's bounded connect poll — while short-circuiting the moment
-// the child process exits (a wrapper that fails to init its cluster exits rather
-// than binding, and polling out the full budget on a dead child would only slow
-// the failure). It never fails a test; it returns the error so both variants can
-// route it. done closing signals the child exited; *waitErr carries its status
-// and is read only after done is observed closed.
+// waitSuiteReady polls for a successful connection, but returns promptly if the
+// child exits. done synchronizes access to waitErr after Wait completes.
 func waitSuiteReady(ctx context.Context, dsn string, done <-chan struct{}, waitErr *error) error {
 	deadline := time.Now().Add(suiteReadyBudget)
 	for {

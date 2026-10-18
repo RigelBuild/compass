@@ -99,12 +99,8 @@ func (p *Publisher) Run(ctx context.Context) error {
 		case event, ok := <-sub.Live:
 			if !ok {
 				if sub.Lagged() {
-					// Overrun: bus events were dropped. Presence is a derived
-					// projection with no owed set — re-subscribe and carry on; the
-					// next ask event or the reconciliation edge repairs any missed
-					// recompute. Re-drain of the retained ring is deliberately
-					// avoided (it would republish nothing new under
-					// publish-on-change anyway).
+					// On overrun, resubscribe: presence is derived and can be repaired by
+					// a later ask or reconciliation edge. Replaying the ring adds nothing.
 					fresh, err := p.bus.Subscribe(0, p.bus.InstanceEpoch())
 					if err != nil {
 						p.log.ErrorContext(ctx, "presence: re-subscribe after bus-lag overrun", "error", err)
@@ -121,13 +117,8 @@ func (p *Publisher) Run(ctx context.Context) error {
 	}
 }
 
-// handleEvent routes one comms bus payload for the ask arm. A MessagePosted
-// carrying an ask (Ask-open) and a MessageUpdated (Ask-answered flips
-// Ask.answered) both recompute + publish-on-change for the AUTHORING agent; a
-// MessagePosted with no ask, and every other variant, is ignored (only the ask
-// overlay flips on a comms event). The authoring agent's current lifecycle state
-// for the recompute comes from the in-memory last-known lifecycle, or OFFLINE if
-// unknown (design.md:483-485).
+// handleEvent recomputes the author's presence when an ask opens or is answered.
+// Events without ask changes do not affect this overlay.
 func (p *Publisher) handleEvent(ctx context.Context, resp *compassv1.SubscribeCommsResponse) {
 	var author string
 	switch {
@@ -163,20 +154,9 @@ func hasAsk(msg *compassv1.Message) bool {
 	return false
 }
 
-// recomputeFromStore recomputes an agent's presence from its last-known
-// lifecycle state layered with the store's current open-ask overlay, and
-// publishes-on-change. The ask arm uses it: the overlay flipped, the lifecycle
-// did not, so the state comes from lastState.
-//
-// Gated on the account having a recorded lifecycle state: the ask overlay only
-// applies to an agent the lifecycle arm has already seen. An agent records a
-// lastState entry at its first lifecycle/promotion edge BEFORE it can author
-// anything (it must be live to post), while a HUMAN ask author never receives a
-// lifecycle edge and so has no entry. Skipping accounts with no recorded state
-// keeps a human ask author out of this AGENT-presence projection — without the
-// gate, presenceFor(UNSPECIFIED, openAsk) = OFFLINE would publish a spurious
-// AgentPresenceChanged naming a non-agent. The store read is deferred to after
-// the gate so a human ask author costs no query.
+// recomputeFromStore layers the open-ask overlay over the last known lifecycle.
+// Require a lifecycle entry first so human ask authors do not appear as offline
+// agents or trigger a needless store read.
 func (p *Publisher) recomputeFromStore(ctx context.Context, account store.AccountID) {
 	p.mu.Lock()
 	state, ok := p.lastState[account]
@@ -230,18 +210,9 @@ func (p *Publisher) applyLifecycle(ctx context.Context, account store.AccountID,
 	p.publishIfChanged(ctx, account, presenceFor(state, openAsk))
 }
 
-// applyPromoted reconstructs presence at a session promotion (the restart-
-// reconciliation edge): it resolves the session's live lifecycle state via the
-// Status relay (GetAgentStatus returns only lifecycle, so WITHOUT the store pass
-// a WAITING agent would rebuild as IDLE) and layers the store's open-ask overlay,
-// then records the state and publishes-on-change. A session with no resolvable
-// live status reconstructs OFFLINE.
-//
-// The Status resolve is a REMOTE Runner round-trip on the single loop goroutine,
-// so it is bounded by a deadline (statusTimeout, default presenceStatusTimeout):
-// a wedged Runner degrades this session to ok=false → OFFLINE rather than
-// freezing the loop (and starving the ask arm) until the Runner answers or serve
-// shuts down. A DEADLINE, not a retry — one bounded call, no loop, no backoff.
+// applyPromoted rebuilds presence from the live status relay and store overlay;
+// missing status becomes OFFLINE. The remote call is bounded so a wedged Runner
+// cannot freeze the loop or starve ask events.
 func (p *Publisher) applyPromoted(ctx context.Context, account store.AccountID, sessionID string) {
 	rctx, cancel := context.WithTimeout(ctx, p.statusTimeout)
 	state, ok := p.status.SessionState(rctx, sessionID)

@@ -7,12 +7,8 @@ import (
 	"testing"
 )
 
-// Fixtures shaped like the podman CLI output the machine code parses. Every one
-// of these shapes is an ASSUMPTION about external podman behavior (the design
-// record marks the inspect socket path and the `machine ls --format json`
-// no-machine-vs-stopped distinction as spike-verified, and no macOS host has run
-// the spike), so the parse is written to tolerate drift and the tests pin the
-// tolerance, not one exact vendor shape.
+// Fixtures cover podman output shapes, including assumptions not yet verified
+// on macOS; tests pin parser tolerance rather than one vendor response.
 const (
 	listEmpty      = `[]`
 	listRunning    = `[{"Name":"podman-machine-default","Default":true,"Running":true}]`

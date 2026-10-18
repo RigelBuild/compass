@@ -63,20 +63,14 @@ type PresenceReads interface {
 	AgentHasOpenAsk(ctx context.Context, agent store.AccountID) (bool, error)
 }
 
-// LifecycleStatusResolver resolves a live session's lifecycle state through the
-// Runner Status relay (GetAgentStatus) — the reconciliation input a restart
-// rebuilds presence from. runnerhub.Hub implements it (SessionState). ok=false
-// when no live status exists for the session (the reconstruction falls to
-// OFFLINE).
+// LifecycleStatusResolver reads a session's lifecycle through Runner Status;
+// missing live status makes restart reconstruction OFFLINE.
 type LifecycleStatusResolver interface {
 	SessionState(ctx context.Context, sessionID string) (compassv1.AgentSessionState, bool)
 }
 
-// presenceStatusTimeout bounds the remote Runner Status resolve at a session
-// promotion (applyPromoted). It runs on the single presence loop goroutine, so a
-// wedged Runner must not freeze the loop: past this deadline the resolve returns
-// ok=false and the session degrades to OFFLINE. A DEGRADE bound, not a retry
-// (rule://no-retries) — one bounded call per promotion, no loop, no backoff.
+// presenceStatusTimeout bounds the remote status call on the single loop
+// goroutine. A timeout degrades the session to OFFLINE; it is one call, not a retry.
 const presenceStatusTimeout = 5 * time.Second
 
 // edgeKind tags a hub-fed edge queued for the loop to drain under its own ctx.
@@ -101,10 +95,8 @@ type hubEdge struct {
 	traceparent string
 }
 
-// Publisher tails the comms bus and publishes AgentPresenceChanged onto it as a
-// live agent's presence changes. Safe for concurrent use: last, lastState, the
-// edge queue, and the notify channel mutate under mu; the bus loop, the hub
-// sinks, and PresenceSnapshot all touch them.
+// Publisher tails comms events and publishes presence changes. The loop, hub
+// sinks, and snapshot reader share state under mu.
 type Publisher struct {
 	bus    *events.Bus[*compassv1.SubscribeCommsResponse]
 	st     PresenceReads
@@ -167,12 +159,8 @@ func NewPublisher(
 	}
 }
 
-// presenceFor maps a lifecycle state plus the open-ask overlay onto the 4-state
-// presence projection (D4, design.md:864-867). WAITING overrides IDLE: a live
-// STARTING/READY session whose agent has an open ask shows WAITING, not IDLE. A
-// WORKING agent is "actively running" and stays WORKING even with an open ask.
-// Every terminal/unknown state (STOPPED/ERRORED/DISCONNECTED/UNSPECIFIED, i.e.
-// no live session) is OFFLINE.
+// presenceFor applies the open-ask overlay to live states. WAITING overrides
+// IDLE; WORKING remains active, and terminal or unknown states are OFFLINE.
 func presenceFor(state compassv1.AgentSessionState, openAsk bool) compassv1.AgentPresence {
 	switch state {
 	case compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING:

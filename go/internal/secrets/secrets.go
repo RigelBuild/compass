@@ -2,7 +2,7 @@
 // container runtime. It wraps secret resolution behind a Resolver interface and
 // owns the resolve-surface value types the Runner fetch path and the container
 // materializer consume.
-//
+
 // The split of concerns:
 //   - internal/store owns two separate registries. The secrets table holds user
 //     secrets: one row carries the declaration (name, delivery/routing) AND the
@@ -13,12 +13,12 @@
 //     value + content-hash version + delivery/kind): SpecResolver by generating
 //     a manifest and resolving names against the provider, StoreResolver by
 //     decrypting the user rows.
-//
+
 // It maps store enums to its own resolve-surface enums at this edge, exactly as
 // the comms service maps store↔proto (store/types.go) — so store stays a leaf
 // and the two evolve independently. The dependency runs one way: secrets →
 // store (no cycle).
-//
+
 // Value locations differ by kind. User secret values are persisted in the
 // Postgres secrets table as AES-256-GCM ciphertext (the internal/envelope seam
 // encrypts them; StoreResolver is the DB-backed resolver over those rows).
@@ -67,18 +67,11 @@ const (
 	SecretGH
 )
 
-// nameGrammar is SecretSpec's env-var-name grammar. A declared secret name must
-// match it: it becomes both a manifest key and, downstream, a path segment
-// under $HOME/.compass/secrets/ and a token in a root-adjacent setup script.
-// Validated at the store door (store.UpsertSecret) and re-checked here as
-// defense in depth before a name is ever emitted into a generated manifest.
+// nameGrammar is SecretSpec's env-var grammar. Names become manifest keys and
+// path segments, so validate them at the store door and again before emission.
 var nameGrammar = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// maxNameLen caps a secret name's length. A name becomes an env-var name and a
-// filesystem path segment (under $HOME/.compass/secrets/), so it must stay a
-// sane segment; 255 bytes is the common path-segment limit. User writes are
-// authenticated at the RPC edge and server-secret names are server-declared, so
-// this bounds store bloat, not an exploit.
+// maxNameLen keeps env-var names and filesystem path segments below 255 bytes.
 const maxNameLen = 255
 
 // ValidateName reports whether name is a legal secret name (SecretSpec's
@@ -118,12 +111,8 @@ func IsReservedGitHubEnvName(name string) bool {
 	return reserved || strings.HasPrefix(name, "GIT_CONFIG")
 }
 
-// profileGrammar is the grammar a SecretSpec profile name must match to be a
-// safe TOML bare key. A profile is operator-configured (WithProfile), but it is
-// interpolated into the manifest's [profiles.<profile>] table header, so a value
-// containing ']', '.', or a newline could restructure or invalidate the TOML.
-// Restricting it to TOML bare-key bytes (letters, digits, underscore, dash)
-// keeps the generated header well-formed regardless of configuration.
+// profileGrammar restricts interpolated TOML table names to bare-key bytes,
+// preventing malformed or restructured manifest headers.
 var profileGrammar = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // ValidateProfile reports whether profile is a legal SecretSpec profile name: a

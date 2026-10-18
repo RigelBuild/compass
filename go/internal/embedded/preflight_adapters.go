@@ -30,22 +30,12 @@ func podmanRootless(ctx context.Context) error {
 	return nil
 }
 
-// podmanVersionAtLeastFloor probes that the host podman is new enough for the
-// userns remap the runner depends on (podman >= 4.3). It reuses
-// runtime.(*PodmanCLI).VerifyUsernsRemapSupport so the app's front-door gate and
-// the runner's startup gate share one floor and one error copy ("podman N.N or
-// newer is required …"). A nil error means the floor is met; a non-nil error
-// carries that copy verbatim so preflight surfaces it before `compass-stack up`
-// (design §A3 delta 4).
+// podmanVersionAtLeastFloor shares the runner's minimum and error copy.
 func podmanVersionAtLeastFloor(ctx context.Context) error {
 	return runtime.NewPodmanCLI().VerifyUsernsRemapSupport(ctx)
 }
 
-// imagePresent probes that the agent image ref is present in the local store via
-// `podman image exists <image>` (exit 0 = present, non-zero = absent). A
-// non-nil error means the image is not available locally (the preflight core
-// reports it is pulled from GHCR at first run); it wraps the captured stderr for
-// context.
+// imagePresent checks the local store; a miss is reported for stack up to pull.
 func imagePresent(ctx context.Context, image string) error {
 	//nolint:gosec // G204: image is an operator/env-resolved ref, argv is fixed.
 	cmd := exec.CommandContext(ctx, "podman", "image", "exists", image)
