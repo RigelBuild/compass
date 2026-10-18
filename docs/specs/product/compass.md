@@ -1437,8 +1437,8 @@ SHALL NOT be reflected.
 ## Runner enrollment CLI
 
 Two operator binaries provision Runner enrollment credentials; both log to
-stderr only and print `--version`. `compass-runner --ca` and `--server-name`
-set the Runner's TLS trust and checked name.
+stderr only and print their version with `--version`. `compass-runner --ca`
+and `--server-name` set the Runner's TLS trust and checked name.
 
 ### Requirement: `compass-mint-runner-token` mints a Runner-subject token
 
@@ -1519,10 +1519,10 @@ or other permission. When only one exists, it SHALL regenerate both.
 
 `compass-runner --ca <pem>` (default `$COMPASS_RUNNER_CA`) SHALL trust only
 that PEM's certificates, at TLS 1.3 minimum; unset, the system roots. After
-the backend preflight, an unreadable or certificate-less file SHALL stop
-startup.
+the backend preflight, an unreadable file or one with no PEM certificate SHALL
+stop startup.
 
-#### Scenario: A Runner trusting a different certificate is refused
+#### Scenario: A Runner trusting another certificate is refused
 
 - **Given** a door serving a `compass-gen-cert` certificate
 - **When** the Runner's `--ca` names another certificate
@@ -1531,11 +1531,11 @@ startup.
 ### Requirement: `compass-runner --server-name` sets the name checked on the Server's certificate
 
 `--server-name` (default `$COMPASS_SERVER_NAME`) SHALL replace the `--server`
-host as the certificate name checked, with the same trusted roots.
+host as the name checked, with the same roots; unset, the `--server` host.
 
 #### Scenario: A Runner checks the public name
 
-- **Given** an in-cluster Server address and a certificate naming only
+- **Given** an in-cluster address and a trusted cert naming only
   `compass.example.test`
 - **When** the Runner sets `--server-name compass.example.test`
 - **Then** it enrolls
