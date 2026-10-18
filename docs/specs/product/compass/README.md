@@ -8,8 +8,8 @@ indexed by its decision files
 [architecture lineage](https://github.com/RigelBuild/docs/blob/main/docs/designs/compass/meta/compass-architecture-lineage/design.md);
 this spec describes only what the code exposes today.
 
-Interface- and security-critical behavior is stated as `### Requirement:` +
-`#### Scenario:` contracts (RFC 2119 SHALL/MUST, Given/When/Then); prose
+Interface- and security-critical behavior is stated as `Requirement:` headings
+with nested `Scenario:` headings (RFC 2119 SHALL/MUST, Given/When/Then); prose
 frames the model.
 
 ## Overview
