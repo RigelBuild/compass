@@ -36,8 +36,8 @@ var apiFilesystems = []apiFilesystem{
 	{source: "devtmpfs", target: "/dev", fstype: "devtmpfs"},
 }
 
-// mountAPIFilesystems creates and mounts API pseudo-filesystems; EBUSY is tolerated for pre-mounted targets.
-// Flags stay zero because the guest has no privilege boundary for nosuid/nodev/noexec to protect.
+// mountAPIFilesystems creates API pseudo-filesystems; EBUSY is tolerated for pre-mounted targets.
+// The agent runs non-root without capabilities; these kernel API mounts use default flags.
 func mountAPIFilesystems() error {
 	for _, fs := range apiFilesystems {
 		if err := os.MkdirAll(fs.target, 0o750); err != nil {

@@ -18,8 +18,8 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// defaultBackstop sets the periodic recovery interval and maximum missed-webhook latency.
-// It keeps request volume below the prior poll design; deployments can shorten it within the rate budget.
+// defaultBackstop sets the interval between reconciliation sweeps.
+// Interrupted sweeps or target errors can delay recovery beyond one interval.
 const defaultBackstop = 30 * time.Minute
 
 // defaultPace spreads conditional fetches across a sweep; zero uses this default.

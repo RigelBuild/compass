@@ -22,8 +22,8 @@ const defaultRunnerEventBuffer = 256
 // RunnerEvent retains the PublishEventsRequest so the hub can classify frames and detect gaps without re-projecting fields.
 // Keeping the proto also preserves fields added by later revisions.
 type RunnerEvent struct {
-	// RunnerID is a publisher-asserted header on the shared fan-in subject; it may be empty and is not authenticated identity.
-	// Consumers log and count unattributed events; the Server resolves the Runner independently.
+	// RunnerID is a publisher-asserted header; it may be empty and is not authenticated
+	// identity. Consumers must validate it against a trusted session binding.
 	RunnerID string
 	// Event is the decoded envelope, never nil for an event read off the
 	// channel.

@@ -362,9 +362,8 @@ func (r *NotifyRouter) SynthesizeUpdate(ctx context.Context, sub NotifySubscribe
 	}
 }
 
-// advanceOnSuppress advances only a caught-up artifact-scope subscriber; container rows use a different cursor.
-// A trailing subscriber keeps its gap for reconciliation, and CAS prevents overwriting a concurrent route.
-// CAS loss or store failure degrades open, allowing at most a later synthetic update.
+// advanceOnSuppress advances a caught-up artifact subscriber; CAS/store failures do not fail Route.
+// Reconciliation retries with synthetic updates until the subscriber acknowledges the revision.
 func (r *NotifyRouter) advanceOnSuppress(ctx context.Context, ev forge.ForgeEvent, sub NotifySubscriber, priorRevision, next string) {
 	if sub.Scope != compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_ARTIFACT {
 		return

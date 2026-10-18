@@ -121,7 +121,7 @@ func (c *Comms) reconcileCoordinationTx(ctx context.Context, tx pgx.Tx, managerA
 }
 
 // emitCoordChanges publishes buffered ChannelChanged events after commit.
-// Read failures are logged and skipped; the next reconcile or D1 sweep repairs state.
+// Read failures are logged and skipped; a later coordination reconcile can publish the state again.
 func (c *Comms) emitCoordChanges(ctx context.Context, cc *coordChanges) {
 	if cc == nil {
 		return

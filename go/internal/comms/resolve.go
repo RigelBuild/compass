@@ -43,8 +43,8 @@ func (c *Comms) resolveHandles(ctx context.Context, caller store.AccountID, hand
 	return out, nil
 }
 
-// resolveAgentHandle resolves bare handles in the caller's owner namespace.
-// Wrong-owner and non-agent handles return NOT_FOUND naming the submitted spelling.
+// resolveAgentHandle resolves bare or owner-qualified handles to an agent account ID.
+// Bare handles use the caller's owner namespace; misses name the submitted spelling.
 func (c *Comms) resolveAgentHandle(ctx context.Context, caller store.AccountID, handle string) (store.AccountID, error) {
 	acc, err := c.resolveAgentAccount(ctx, caller, handle)
 	if err != nil {

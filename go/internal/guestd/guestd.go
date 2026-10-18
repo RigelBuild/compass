@@ -89,8 +89,8 @@ func Run(ctx context.Context, log *slog.Logger) error {
 	return run(ctx, config{guestdVersion: Version, log: log}, steps)
 }
 
-// run provisions API filesystems, reads cmdline config, sets up networking and workspace, then serves.
-// Any failed step aborts before Health; RPC Stop powers off because exiting PID 1 panics the guest kernel.
+// run aborts setup errors before Health is served; serving faults can still occur afterward.
+// RPC Stop powers off because exiting PID 1 panics the guest kernel.
 func run(ctx context.Context, cfg config, steps bootSteps) error {
 	// log is the guestd logger threaded from Run; a nil (test-constructed config)
 	// falls back to the default handler, which writes to os.Stderr (ttyS0) — the

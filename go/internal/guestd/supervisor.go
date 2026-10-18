@@ -25,7 +25,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
-// maxCapture bounds each exec output stream; exceeding the cap returns ResourceExhausted rather than truncating.
+// maxCapture bounds stdout and stderr separately for one-shot Exec; overflow returns ResourceExhausted.
 const maxCapture = 8 << 20
 
 // execState gates execution until provisioning succeeds.
@@ -65,7 +65,8 @@ const armTimeout = 120 * time.Second
 const armStderrTail = 4 << 10
 
 // runNftScript runs the egress script as guest root, outside the exec child path and table.
-// It is bounded by armTimeout and ctx; failures include the status and bounded output tail.
+// Command failures include the exit error and a bounded output tail when present.
+// Spawn errors return directly; execution is bounded by armTimeout and ctx.
 func runNftScript(ctx context.Context, script string) error {
 	ctx, cancel := context.WithTimeout(ctx, armTimeout)
 	defer cancel()
