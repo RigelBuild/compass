@@ -66,10 +66,9 @@ type Subscription[P any] struct {
 	// every response the stream emits carries the current epoch.
 	Epoch uint64
 
-	// HeadSeq is the highest seq on the ring at subscribe time, captured under
-	// the same lock as Replay to provide a race-free snapshot boundary.
-	// State-snapshot consumers use it for synthesized Changed events and discard
-	// Replay; a fresh bus yields 0.
+	// HeadSeq is the highest bus seq on the ring at subscribe time (0 on a fresh
+	// bus), captured under the same lock as Replay, so it is a race-free replay
+	// boundary.
 	HeadSeq uint64
 
 	lagged *lagFlag
@@ -343,9 +342,9 @@ func epochMS() int64 {
 	return time.Now().UnixMilli()
 }
 
-// epochNonce mints a random per-boot epoch; unlike a timestamp it cannot repeat
-// after a clock reset or VM snapshot restore. It retries on 0, the wire's
-// "unset" sentinel.
+// epochNonce mints a random per-boot epoch, so a repeat across restarts is
+// negligible, unlike a timestamp after a clock reset or VM snapshot restore.
+// It retries on 0, the wire's "unset" sentinel.
 func epochNonce() uint64 {
 	var buf [8]byte
 	for {
