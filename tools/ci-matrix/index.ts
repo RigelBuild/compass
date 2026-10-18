@@ -46,9 +46,9 @@ export type GenInput = {
 export type MatrixEntry = {
 	/** "go" | "bun" | "nix" (the tag suffix) */
 	group: string;
-	/** 'true' iff this group has >=1 runnable target — an affected ci-task-bearing member (always 'true' on push/schedule for a group with a ci task) */
+	/** 'true' iff this group has >=1 runnable target. */
 	run: "true" | "false";
-	/** the group's runnable ciTargets (sorted): affected members; [] when run==='false' */
+	/** Runnable ciTargets, sorted by target name. */
 	targets: string[];
 };
 
@@ -71,6 +71,8 @@ export type GenOutput = {
 
 /** The prefix stripped to get the group name: tag is `ci-group.<group>`. */
 const CI_GROUP_PREFIX = "ci-group.";
+/** Projects whose ci targets run on every pull request. */
+export const ALWAYS_RUN_ON_PR: readonly string[] = ["length-gate"];
 
 /**
  * The FOD check the arm64 leg reruns natively. Keyed on moon's task-affected set,
@@ -205,6 +207,25 @@ function targetsByGroup(
 	return targets;
 }
 
+function injectAlwaysRunTargets(
+	event: GenInput["event"],
+	projectById: ReadonlyMap<string, ProjectInput>,
+	groupOf: ReadonlyMap<string, string>,
+	targetsByGroup: Map<string, string[]>,
+): void {
+	if (event !== "pull_request") return;
+	for (const id of ALWAYS_RUN_ON_PR) {
+		const project = projectById.get(id);
+		if (project === undefined || project.ciTarget === null) continue;
+		const group = groupOf.get(id);
+		if (group === undefined) continue;
+		const targets = targetsByGroup.get(group);
+		if (targets !== undefined && !targets.includes(project.ciTarget)) {
+			targets.push(project.ciTarget);
+		}
+	}
+}
+
 function matrixForGroups(
 	groups: ReadonlySet<string>,
 	targetsByGroup: ReadonlyMap<string, readonly string[]>,
@@ -276,6 +297,7 @@ export function generate(input: GenInput): GenOutput {
 		groupUniverse,
 		projectById,
 	);
+	injectAlwaysRunTargets(input.event, projectById, groupOf, taskTargets);
 	return {
 		matrix: matrixForGroups(groupUniverse, taskTargets),
 		...affectedFlags(input),
@@ -551,8 +573,8 @@ function reportMainError(err: unknown): void {
 	process.exit(1);
 }
 
-function eventFromEnvironment(value: string | undefined): GenInput["event"] {
-	if (value === "pull_request" || value === "schedule") return value;
+export function normalizeEvent(name: string): GenInput["event"] {
+	if (name === "pull_request" || name === "schedule") return name;
 	return "push";
 }
 
@@ -571,7 +593,7 @@ async function runSelection(
 }
 
 async function main(): Promise<void> {
-	const event = eventFromEnvironment(process.env.GITHUB_EVENT_NAME);
+	const event = normalizeEvent(process.env.GITHUB_EVENT_NAME ?? "");
 	try {
 		const projects = parseProjects(await $`moon query projects`.quiet().text());
 		const selection = await runSelection(event, projects);

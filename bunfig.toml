@@ -51,5 +51,7 @@ minimumReleaseAgeExcludes = [
   "@tanstack/query-core",
   "@rigelbuild/ref-gate",
   "@rigelbuild/biome-config",
+  "@rigelbuild/comment-scan",
+  "@rigelbuild/length-gate",
   "@rigelbuild/tsconfig",
 ]

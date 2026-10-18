@@ -26,6 +26,8 @@
 			"@opentelemetry/sdk-trace-web": "^2.0.0",
 			"@opentelemetry/semantic-conventions": "^1.33.0",
 			"@rigelbuild/biome-config": "1.0.1",
+			"@rigelbuild/comment-scan": "1.0.0",
+			"@rigelbuild/length-gate": "1.0.0",
 			"@rigelbuild/ref-gate": "1.0.0",
 			"@rigelbuild/renovate-preflight": "1.0.0",
 			"@rigelbuild/tsconfig": "1.0.0",
@@ -49,6 +51,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "catalog:",
 		"@rigelbuild/biome-config": "catalog:",
+		"@rigelbuild/length-gate": "catalog:",
 		"@rigelbuild/ref-gate": "catalog:",
 		"@rigelbuild/renovate-preflight": "catalog:",
 		"@rigelbuild/tsconfig": "catalog:"
