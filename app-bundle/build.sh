@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# build.sh — builds the versioned Compass native-app release tarball.
-# The bundle includes the GTK shell, sidecars, pinned tools, and UI; embedded
-# postgres uses the stock postgres:18 container. Paths are script-relative.
+# build.sh — builds the versioned Compass native-app release tarball (GTK shell,
+# sidecars, pinned tools, UI); embedded postgres is the stock postgres:18 image.
+# Bash: Nix/Go build-and-staging glue that runs the same in CI and locally.
+# Paths are script-relative.
 
 set -euo pipefail
 
@@ -32,7 +33,8 @@ export PATH="$BIN_ENV/bin:$PATH"
 PKG_CONFIG_PATH="$PC_ENV/lib/pkgconfig:$PC_ENV/share/pkgconfig"
 CC_BIN="$CC_ENV/bin/cc"
 
-# Version every binary from release-please's version.txt plus the dev git SHA.
+# One version for every binary: dev builds use version.txt plus the git SHA;
+# releases use COMPASS_BUNDLE_VERSION below.
 # Keep cat separate: `set -e` checks only the last substitution in a composite
 # assignment and can hide a missing version file.
 if [[ -n "${COMPASS_BUNDLE_VERSION:-}" ]]; then
@@ -131,8 +133,8 @@ if ! got="$("$STAGE/bin/secretspec" --version 2>&1)"; then
 fi
 log "  bin/secretspec --version = $got"
 
-# Clear old tarballs because git-SHA names leave stale artifacts across builds.
-# SMOKE.md expects exactly one tarball, so remove previous versions first.
+# Clear old tarballs: git-SHA names leave stale ones across dev builds, which can
+# be mistaken for the artifact under test.
 log "Creating tarball: $TARBALL"
 rm -f "$SCRIPT_DIR"/compass-app-*-linux-amd64.tar.gz
 tar -czf "$SCRIPT_DIR/$TARBALL" -C "$SCRIPT_DIR" "$BUNDLE"
