@@ -24,12 +24,8 @@ func procedurePath(svc protoreflect.ServiceDescriptor, m protoreflect.MethodDesc
 	return "/" + string(svc.FullName()) + "/" + string(m.Name())
 }
 
-// gatedFileDescriptors is the explicit set of proto file descriptors whose
-// services classifyProcedure must cover — the single source both the
-// exhaustiveness test and the omitted-service guard read. Kept explicit (rather
-// than derived wholesale from the registry) so the covered set stays
-// self-documenting and intentional; TestClassificationGateCoversEveryRegisteredCompassService
-// guards that this list can't silently fall behind a newly registered service file.
+// gatedFileDescriptors is the explicit service set checked by the exhaustive
+// test. A separate guard detects newly registered Compass service files.
 func gatedFileDescriptors() []protoreflect.FileDescriptor {
 	return []protoreflect.FileDescriptor{
 		compassv1.File_compass_v1_compass_proto,

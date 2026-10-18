@@ -122,11 +122,8 @@ func (k Keypair) WriteFiles(certPath, keyPath string) error {
 	return nil
 }
 
-// atomicWrite writes data to path at mode perm, atomically: a temp file in the
-// same directory (mode-pinned against umask) is written, synced, and renamed
-// over path. A reader never sees a partial file, and because rename replaces the
-// target rather than truncating it in place, an existing file's stale mode never
-// carries over. On any error the temp file is removed so no partial leaks.
+// atomicWrite stages in the target directory, syncs, then renames. Readers never
+// see partial data, and replacement does not preserve a stale target mode.
 func atomicWrite(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*")

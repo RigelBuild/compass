@@ -169,17 +169,8 @@ func anonymousVolumeName(t *testing.T, cli, name string) string {
 	return ""
 }
 
-// volumeExists reports whether a volume with the given name is present. It uses
-// `volume inspect`, which exists on both podman and docker (unlike podman's
-// podman-only `volume exists`), so the end-to-end test stays valid on the docker
-// fallback containerCLI advertises. inspect exits 0 when the volume is present;
-// when it is absent it exits nonzero AND names a not-found condition on stderr.
-// The absence classification keys on that message, not merely on a nonzero exit:
-// podman uses 125 as a generic catch-all (daemon hiccup, permission error,
-// malformed name), so treating any nonzero exit as "absent" could misread a
-// transient failure as "volume gone" and let the post-removal assertion pass
-// falsely green. Anything that ran-and-failed without a not-found message, or a
-// failure to launch the CLI at all, is a real error and fails the test loudly.
+// volumeExists uses inspect for podman/docker compatibility and classifies
+// absence by the not-found message. Other nonzero exits can be runtime failures.
 func volumeExists(t *testing.T, cli, vol string) bool {
 	t.Helper()
 	out, err := exec.CommandContext(t.Context(), cli, "volume", "inspect", vol).CombinedOutput()
@@ -271,11 +262,8 @@ func TestStartSuitePostgresMainChildExitShortCircuits(t *testing.T) {
 	if dsn != "" {
 		t.Errorf("want empty dsn on error, got %q", dsn)
 	}
-	// The short-circuit must fire off the child-exit signal, not the deadline.
-	// A bound well under suiteReadyBudget (30s) proves the select returned on
-	// `<-done` rather than the timeout, while tolerating poll-tick + reap
-	// latency. If the exit short-circuit were dropped, this would take the
-	// full ~30s and blow the bound.
+	// The child-exit signal must beat the deadline. This bound tolerates polling
+	// and reap latency but fails if the 30-second timeout was reached.
 	if elapsed >= 10*time.Second {
 		t.Errorf("want fast fail via child-exit short-circuit (< 10s), took %s", elapsed)
 	}

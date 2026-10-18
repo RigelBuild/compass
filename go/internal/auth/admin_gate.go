@@ -9,21 +9,14 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// privilege is the access class of a CompassService or CommsService RPC on the
-// network door: a sealed sum (//sumtype:decl) so every switch over it — check()
-// below — must handle each class exhaustively or gochecksumtype fails the build.
-// The sum does NOT police procedure coverage (classifyProcedure switches over a
-// string, which gochecksumtype cannot see); classify_exhaustive_test enforces
-// that every generated procedure is classified. See classifyProcedure.
+// privilege is a sealed access-class sum. Compiler checks cover its switches;
+// the exhaustive test covers generated procedure classification.
 //
 //sumtype:decl
 type privilege interface{ isPrivilege() }
 
-// adminOnly marks an RPC reachable on the network door only by the bootstrap
-// admin. These are the privileged CompassService agent-session RPCs (and token
-// issuance): they were written for the single-user socket trust boundary and take
-// no account argument, so on the shared network door a non-admin account must not
-// reach them.
+// adminOnly marks RPCs limited to the bootstrap admin. These session and token
+// methods lack an account argument and were designed for a single-user socket.
 type adminOnly struct{}
 
 func (adminOnly) isPrivilege() {}
@@ -35,21 +28,12 @@ type authenticatedOpen struct{}
 
 func (authenticatedOpen) isPrivilege() {}
 
-// classifyProcedure maps a connect procedure path to its network-door access
-// class, returning ok=false when the path is not a recognized generated
-// procedure. The switch enumerates every generated CompassService and
-// CommsService procedure; classify_exhaustive_test ranges the proto service
-// descriptors and fails if any generated procedure is missing here, so a newly
-// added RPC reddens CI until it is classified. gochecksumtype cannot police this
-// coverage — the switch is over a string, not the privilege sum. An unrecognized
-// path (ok=false) is treated as adminOnly — fail closed, never admit an unknown
-// method as open.
+// classifyProcedure assigns each generated RPC a network-door access class.
+// The test checks descriptor coverage; unknown paths fail closed as admin-only.
 func classifyProcedure(procedure string) (privilege, bool) {
 	switch procedure {
-	// Privileged CompassService agent-session RPCs + token issuance + account rename +
-	// container teardown + fleet config writes: admin only. RemoveAgentWorkspace, PutAgentConfig,
-	// DeleteAgentConfig are operator-scoped; SpawnAgent (composite Provision+Start) is
-	// strictly more powerful, so admin-gated like them (DL-171).
+	// Privileged session, token, account, teardown, and fleet-config RPCs are
+	// admin-only; SpawnAgent is gated because it combines provision and start.
 	case compassv1connect.CompassServiceProvisionAgentWorkspaceProcedure,
 		compassv1connect.CompassServiceRemoveAgentWorkspaceProcedure,
 		compassv1connect.CompassServiceStartAgentSessionProcedure,
@@ -66,11 +50,8 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CompassServiceDeleteAgentConfigProcedure:
 		return adminOnly{}, true
 
-	// The connect-time probe, the two event streams, the board catch-up read, and the
-	// config info view: open to any authenticated account. SubscribeAgentSession
-	// carries its own per-account authorization, so the door admits non-admin members;
-	// GetAgentConfigInfo returns names only; WhoAmI reflects the caller's own identity;
-	// tour state is keyed to the caller's account; GetRefLinkRules holds no secrets.
+	// Authenticated accounts can use these probes, streams, and reads; each
+	// service enforces authorization and returns caller-safe data.
 	case compassv1connect.CompassServiceGetServerInfoProcedure,
 		compassv1connect.CompassServiceWhoAmIProcedure,
 		compassv1connect.CompassServiceGetTourStateProcedure,

@@ -2,15 +2,8 @@
 
 package presence
 
-// Hand-written fakes + a recording bus subscriber for the presence publisher's
-// collaborators, mirroring delivery's helpers_test.go discipline: a real
-// events.Bus (so tests exercise the true Subscribe/Publish tail), an in-memory
-// PresenceReads (the open-ask overlay input), and an in-memory
-// LifecycleStatusResolver (the reconciliation input). Every test drives the
-// publisher through these and event-gates on the observed AgentPresenceChanged
-// publishes, never a sleep, never a retry (rule://no-retries).
-// context.Background() is the test root (rule://go-thread-context exemption for
-// _test.go); the publisher's Run(ctx) is fed a cancelable child of it.
+// Hand-written fakes + a recording bus subscriber model the publisher's
+// collaborators with deterministic store and bus interactions.
 
 import (
 	"context"
@@ -85,12 +78,8 @@ func (f *fakeStatus) set(sessionID string, state compassv1.AgentSessionState) {
 	f.states[sessionID] = state
 }
 
-// blockingStatus is a LifecycleStatusResolver whose SessionState blocks until
-// either its release channel is closed or the caller's ctx is cancelled — the
-// wedged-Runner model for the M3 loop-freeze tests. It signals entered when a
-// resolve begins, so a test can gate on "the loop is now inside applyPromoted"
-// without a sleep. On ctx cancellation (the bounded-resolve deadline firing) it
-// returns ok=false, modeling the degrade-to-OFFLINE path.
+// blockingStatus models a wedged Runner and signals when resolution starts.
+// It returns unavailable on cancellation so tests can assert OFFLINE degrade.
 type blockingStatus struct {
 	entered chan string
 	release chan struct{}
@@ -215,11 +204,8 @@ func newTestPublisher(t *testing.T) (*Publisher, *fakeReads, *fakeStatus, *event
 	return p, reads, status, bus
 }
 
-// newTestPublisherWithStatus builds a publisher over a caller-supplied
-// LifecycleStatusResolver (e.g. a blockingStatus) and fresh reads + real bus, so
-// the M3 reconciliation-resolve tests can drive a wedged Runner. The status
-// timeout defaults to presenceStatusTimeout; a test overrides p.statusTimeout
-// directly before starting the loop.
+// newTestPublisherWithStatus injects a status resolver into fresh reads and a
+// real bus for reconciliation timeout tests.
 func newTestPublisherWithStatus(t *testing.T, status LifecycleStatusResolver) (*Publisher, *fakeReads, *events.Bus[*compassv1.SubscribeCommsResponse]) {
 	t.Helper()
 	reads := newFakeReads()

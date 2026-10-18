@@ -85,22 +85,12 @@ func (s *unaryResponseBuffer) Send(msg any) error {
 	return nil
 }
 
-// PostHogSessionHeader is PostHog's own frontend<->backend correlation header,
-// the name posthog-js sends. It is NOT W3C trace-context: the two are parallel
-// signals joined by a shared key, never merged data planes.
-//
-// Exported because the CORS builders must allow it as a REQUEST header. A
-// browser preflight that omits it fails the whole request, so the interceptor
-// below would be unreachable from the UI that is its only source.
+// PostHogSessionHeader is the frontend/backend correlation header, not W3C
+// trace context. CORS must allow it so browser requests reach this interceptor.
 const PostHogSessionHeader = "X-POSTHOG-SESSION-ID"
 
-// maxSessionIDLen caps a SINGLE attribute's size and refuses payload-shaped
-// values; per-request volume is governed by the door's own rate and size
-// limits, not by this constant. The value is attacker-controlled (any client
-// can set the header) and a span attribute flows to the trace backend, so an
-// unbounded copy would let one request carry an arbitrarily large blob into
-// Tempo. PostHog session ids are UUID-shaped; 200 leaves room for a format
-// change without admitting a payload.
+// maxSessionIDLen bounds one attacker-controlled span attribute. Session IDs
+// are UUID-shaped; the limit allows format changes without payload-sized values.
 const maxSessionIDLen = 200
 
 // NewSessionIDInterceptor stamps the PostHog session id from the request's
@@ -118,13 +108,8 @@ func NewSessionIDInterceptor() connect.ServerInterceptor {
 	}
 }
 
-// sessionIDFromHeader extracts a usable session id from the request, or "" when
-// the header is absent, blank, or not worth trusting. Returning "" rather than
-// repairing a bad value is deliberate: a truncated or re-encoded id joins to
-// nothing in PostHog, so it would add span weight while still failing the pivot.
-//
-// The UTF-8 check is load-bearing: OTLP span attributes are proto3 strings, and
-// one invalid value would drop every span batched with it.
+// sessionIDFromHeader rejects invalid values rather than repairing them: a
+// transformed ID would not join in PostHog. Invalid UTF-8 would drop its OTLP batch.
 func sessionIDFromHeader(h *connect.Header) string {
 	id := strings.TrimSpace(h.Get(PostHogSessionHeader))
 	if id == "" || len(id) > maxSessionIDLen || !utf8.ValidString(id) {

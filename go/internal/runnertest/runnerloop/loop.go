@@ -55,11 +55,8 @@ func RunSessionsLoop(t *testing.T, ctx context.Context, cancel context.CancelFun
 		cancel()
 		select {
 		case err := <-loopDone:
-			// On the clean path assertCleanShutdown already took the value and
-			// this reads the zero from a closed channel. On a failure path it
-			// takes the real one, and a stream error that killed the loop must
-			// surface here — otherwise the test reports only whatever Fatalf'd
-			// first, with the actual cause discarded.
+			// Cleanup reports the real stream error if the loop exited unexpectedly;
+			// otherwise the failure would be hidden by the earlier Fatalf.
 			if err != nil && !errors.Is(err, context.Canceled) {
 				t.Errorf("RunSessions ended with %v", err)
 			}

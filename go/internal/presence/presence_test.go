@@ -2,13 +2,8 @@
 
 package presence
 
-// The presence projection's acceptance cases (RIG-1569 T8, design record D4,
-// design.md:880-890), RED-first. Each drives the publisher through the real
-// events bus + hand-written fakes and gates on the recorder's observed
-// AgentPresenceChanged publishes — never a sleep, never a retry
-// (rule://no-retries). context.Background() is the test root
-// (rule://go-thread-context exemption for _test.go); it is threaded into Run via
-// startPublisher and never re-rooted below.
+// Presence tests drive the publisher through a real bus and fakes, gating on
+// observed AgentPresenceChanged events. The test context is threaded into Run.
 
 import (
 	"context"

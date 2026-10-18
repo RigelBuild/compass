@@ -110,17 +110,11 @@ type VolumeManager interface {
 	// already has one returns the existing volume rather than clearing it —
 	// volume destruction is Expire's alone (P2-GC-c).
 	CreateVolume(ctx context.Context, sessionID string) (Volume, error)
-	// Lookup resolves a session's existing volume (with its HostRoot) or
-	// returns ErrVolumeNotFound. It is the "resolve" half of the provision
-	// path's resolve-or-create: Attach needs a resolved Volume, so a caller
-	// cannot produce one from a bare session id without this verb. A Runner
-	// never resolves a volume it does not host — the box-local invariant.
+	// Lookup resolves an existing local volume. Runners never resolve volumes
+	// they do not host.
 	Lookup(ctx context.Context, sessionID string) (Volume, error)
-	// Attach makes the resolved volume available for mounting and returns its
-	// host path; it also atomically clears any close-stamp, so a reopened
-	// closed-but-unexpired session never carries a past-deadline stamp into its
-	// new life. The returned path depends only on the session id and the base
-	// dir, which is what makes it stable across every launch (P2-GC-d).
+	// Attach returns the host path and clears any close-stamp before re-opening.
+	// Its path is stable for a session and base directory.
 	Attach(ctx context.Context, v Volume) (path string, err error)
 	// Snapshot copies the volume without freezing the agent, so the copy can be torn by concurrent writes.
 	// Callers must verify the copied tree (e.g. git-clean) before PromoteSnapshot makes it current.
@@ -132,11 +126,8 @@ type VolumeManager interface {
 	// Restore rehydrates an archived volume and returns the live Volume.
 	// Reserved at P2 (OQ-2): the backend returns ErrRestoreNotImplemented.
 	Restore(ctx context.Context, ref ArchiveRef) (Volume, error)
-	// Expire reaps volumes whose session is closed and whose close-stamp is
-	// older than olderThan. Never touches live or suspended sessions: an
-	// unstamped volume belongs to a live session and a stamp carrying
-	// IntentSuspended is ineligible however old. This is the ONLY path that
-	// destroys volume contents (P2-GC-c).
+	// Expire is the only operation that destroys volume data. Unstamped live
+	// volumes and suspended sessions are never eligible.
 	Expire(ctx context.Context, olderThan time.Duration) error
 	// Stamp records the caller's close-vs-suspend intent on the volume. It is
 	// on the seam because Expire is only correct on a backend that can stamp.

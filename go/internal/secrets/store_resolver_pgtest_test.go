@@ -1,15 +1,8 @@
 //go:build pgtest && unix
 
-// T3 of the compass-user-secret-store record: the DB-backed StoreResolver over
-// the real pgtest store. These prove the crypto seam end-to-end THROUGH the
-// resolver, not just the store: the Upsert→ResolveFor round-trip with the A9
-// most-specific-wins precedence observed, cross-scope isolation, the AAD tamper
-// property (a row whose coordinate is altered behind the resolver's back fails to
-// decrypt rather than leaking a value), NUL-field refusal on the write door, and
-// the read-side authz gate for a non-agent principal.
-//
-// context.Background() is the test root (rule://go-thread-context _test.go
-// exemption); it is threaded into store.Open and every resolver call below.
+// Real-store tests cover encryption and authorization through StoreResolver:
+// round-trip and precedence, scope isolation, tamper rejection, NUL refusal, and
+// the non-agent read gate. The test context is threaded through store and calls.
 
 package secrets
 
@@ -159,12 +152,8 @@ func TestResolveForTamperFailsDecrypt(t *testing.T) {
 	agent := mustAgent(t, st, owner.ID, "agent")
 	key := fixtureKey(t)
 
-	// Seal a value under a DIFFERENT name's AAD (the "wrong" coordinate) but the
-	// SAME tenant the row lands with, so the name is the only mismatched field —
-	// then store the ciphertext at the agent-scoped row named MOVED. The stored
-	// row's own coordinate (name=MOVED) no longer matches the AAD the ciphertext
-	// was sealed under (name=ORIGINAL), so ResolveFor's row-bound AAD
-	// authentication must fail.
+	// Seal under a different name but the same tenant, then store under MOVED.
+	// Row-bound AAD must reject the coordinate mismatch during decryption.
 	tenant := string(st.EffectiveTenant(ctx))
 	wrongAAD, err := envelope.UserSecretAAD(tenant, store.SecretScopeAgent, string(agent.ID), "ORIGINAL", 1)
 	if err != nil {

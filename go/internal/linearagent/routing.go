@@ -101,11 +101,8 @@ func (r *Resolver) ResolveResponder(ctx context.Context, ev *SessionEvent) (mana
 	return manager, home, err
 }
 
-// coordinate extracts the delegated issue's forge coordinate from ev. A Linear
-// issue identifier is "TEAM-NUMBER" (e.g. "RIG-2717"): the team key is the
-// forge repo, the number is the artifact number, the provider is Linear, and
-// the host is config-resolved. ok=false when ev carries no parseable issue
-// identifier (a bare @mention), which routes to the supervisor fallback.
+// coordinate maps a Linear issue identifier to its forge coordinate. An
+// unparseable identifier, such as a bare mention, routes to the supervisor.
 func (r *Resolver) coordinate(ev *SessionEvent) (provider store.ForgeProvider, host, repo string, number uint64, ok bool) {
 	team, num, ok := parseIssueIdentifier(ev.AgentSession.Issue.Identifier)
 	if !ok {

@@ -34,41 +34,23 @@ const defaultCLI = "secretspec"
 // cliWaitDelay matches the other CLI spawns (runtime/clispawn.go).
 const cliWaitDelay = 10 * time.Second
 
-// reportStatusResolved is the SecretSpec report status meaning the provider
-// holds a value for a declared secret. The report's other statuses
-// ("missing_required", "missing_optional") both mean no value is present, so
-// the status path tests for this one rather than enumerating the misses — a new
-// miss status upstream then reads as unset, which is the safe direction.
+// reportStatusResolved marks a provider value. Unknown and missing statuses
+// remain unset, the safe direction if SecretSpec adds a new status.
 const reportStatusResolved = "resolved"
 
-// declarations is the read surface the Resolver needs from the store: the whole
-// declared set. store.Store satisfies it. An interface (not the concrete
-// *store.Store) so the pure resolve logic is unit-testable with a fake, without
-// a Postgres harness.
+// declarations is the read surface for the declared set. Its interface permits
+// unit tests to use fakes without Postgres.
 type declarations interface {
 	DeclaredSecrets(ctx context.Context) ([]store.SecretDeclaration, error)
 }
 
-// Resolver resolves the declared secret set to values through SecretSpec.
-// Resolve reads the whole registry (inject-all: no per-agent filter in the MVP
-// — a names filter is the future grants seam).
+// Resolver resolves every declared secret; Resolve injects the whole registry.
 type Resolver interface {
-	// Resolve resolves every declared secret to its value via SecretSpec,
-	// returning a ResolvedSecret per declaration with a content-hash Version.
-	// reason is recorded in the SecretSpec audit log. A required secret missing
-	// from the provider is an error (the store declared it, so the provider must
-	// hold it).
+	// Resolve returns values and content-hash versions; required missing values
+	// are errors because the provider must hold every declared required secret.
 	Resolve(ctx context.Context, reason string) ([]ResolvedSecret, error)
-	// Statuses reports, per declared secret, whether the provider currently
-	// holds a value for it — names + set/unset, NEVER a value. It is the
-	// value-free counterpart to Resolve, for the caller that needs to
-	// distinguish "declared" from "populated" without reading any value.
-	//
-	// Unlike Resolve it does NOT fail when a declared secret is unpopulated: an
-	// absent required value is reported as IsSet=false, not an error. That is
-	// the whole point — a server secret's row is self-declared at boot while its
-	// value is populated separately, so declared-but-unset is a normal state
-	// that must be observable rather than a resolve fault.
+	// Statuses exposes only names and whether a value is set. Unlike Resolve, an
+	// unpopulated required secret is a normal state, not an error.
 	Statuses(ctx context.Context, reason string) ([]SecretStatus, error)
 }
 
@@ -117,12 +99,8 @@ func NewSpecResolver(st declarations, stateDir string, opts ...SpecOption) *Spec
 	return r
 }
 
-// buildManifest renders the SecretSpec manifest TOML for a declared set: one
-// [project] block and one [profiles.<profile>] block with every declared name
-// as a required key. Value-free — the manifest declares names, never values.
-// Names are re-validated here (defense in depth) so a malformed name can never
-// reach the emitted TOML. A pure function of its inputs, so it is unit-testable
-// without a store or the CLI.
+// buildManifest emits a value-free TOML manifest, revalidating names before
+// output. It is pure and needs no store or CLI.
 func buildManifest(profile string, decls []store.SecretDeclaration) (string, error) {
 	if profile == "" {
 		profile = defaultProfile
@@ -366,12 +344,8 @@ func redactDecodeError(err error) error {
 	return errors.New("export output is not a JSON object of strings")
 }
 
-// writeManifest renders the manifest for the current declared set and writes it
-// to a unique 0600 temp file in the resolver's state dir, returning its path.
-// A per-call file (not one shared path) so concurrent resolves never race on
-// the write-to-read interval — each gets its own manifest and reads exactly the
-// snapshot it wrote. The state dir is created 0700 if absent. Server state,
-// never repo state; the caller removes the file after the CLI returns.
+// writeManifest writes a unique 0600 manifest per call, avoiding races between
+// concurrent resolves. Its 0700 state directory is server state, not repo state.
 func (r *SpecResolver) writeManifest(profile string, decls []store.SecretDeclaration) (string, error) {
 	if err := os.MkdirAll(r.stateDir, 0o700); err != nil {
 		return "", fmt.Errorf("secrets: create state dir: %w", err)
@@ -384,10 +358,7 @@ func (r *SpecResolver) writeManifest(profile string, decls []store.SecretDeclara
 	if err != nil {
 		return "", fmt.Errorf("secrets: create manifest: %w", err)
 	}
-	// CreateTemp makes the file 0600 already; write the body and close.
-	// Cleanup discards below are deliberate: on these paths the write/close
-	// error is what the caller needs, and a failed remove of a temp file we
-	// are already abandoning is not actionable.
+	// CreateTemp already sets 0600. On failure, cleanup errors are not actionable.
 	if _, err := f.WriteString(body); err != nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name())
@@ -400,11 +371,8 @@ func (r *SpecResolver) writeManifest(profile string, decls []store.SecretDeclara
 	return f.Name(), nil
 }
 
-// dotenvFilePath returns the local file a dotenv provider URI names, in the
-// three forms secretspec accepts. A relative path resolves against baseDir,
-// the manifest's directory, as the CLI does. A bare "dotenv://" or a leading
-// "~" component leaves the file choice to the CLI. The scheme match is exact
-// because secretspec rejects other casings.
+// dotenvFilePath resolves accepted dotenv forms relative to the manifest. Bare
+// and tilde paths are left to the CLI; the scheme match is case-sensitive.
 func dotenvFilePath(provider, baseDir string) (string, bool) {
 	if !strings.HasPrefix(provider, "dotenv:") {
 		return "", false

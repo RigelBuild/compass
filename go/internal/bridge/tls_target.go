@@ -90,12 +90,8 @@ func (t *Target) SetBearer(token string) {
 	rt.token.Store(&token)
 }
 
-// bearerRoundTripper wraps a base RoundTripper. It strips any caller-supplied
-// Authorization header on every request (unconditionally — the UI must never
-// supply a bearer, DL-107) and, when armed, injects "Authorization: Bearer
-// <token>". The token is held in an atomic.Pointer so SetBearer
-// (T5.3's goroutine) and the pump's forwarding goroutine can access it without a
-// lock. A nil pointer means unarmed.
+// bearerRoundTripper removes caller Authorization headers and injects its token
+// when armed. An atomic pointer permits concurrent SetBearer and forwarding.
 type bearerRoundTripper struct {
 	base  http.RoundTripper
 	token atomic.Pointer[string]

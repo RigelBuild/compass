@@ -2,11 +2,8 @@
 
 package presence
 
-// PresenceFor + PublishActivity (RIG-1721 T2), driven through the publisher's
-// real bus + fakes: the enum snapshot projects the last-published subset, and
-// PublishActivity emits an AgentPresenceChanged carrying the CURRENT presence
-// plus the activity string on the AgentPresenceChanged.activity field.
-// context.Background() is the test root (test-root ctx exemption).
+// These tests drive PresenceFor and PublishActivity through the real bus and
+// fakes, checking the published state and activity without sleeps.
 
 import (
 	"testing"

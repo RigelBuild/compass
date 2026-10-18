@@ -16,15 +16,10 @@ import (
 // instrumentationScope names this package's tracer, as delivery and comms do.
 const instrumentationScope = "github.com/RigelBuild/compass/go/internal/linearagent"
 
-// ackThoughtBody is the receipt the dispatcher emits on a `created` event — the
-// 10-second liveness SLA leg (linear.app/developers/agent-interaction §Session
-// webhooks): Linear marks a session unresponsive unless the agent emits within
-// 10s. It tells the human what happened and pairs with the stable session link
-// as the whole Option B return path (§Part 3).
+// ackThoughtBody is sent within Linear's 10-second session-webhook liveness SLA.
 const ackThoughtBody = "Compass received the session; opening in Compass\u2026"
 
-// externalURLLabel is the label on the stable session return link, which resolves
-// to the current Compass channel when the human opens it (§Part 3).
+// externalURLLabel names the stable session link back to the current channel.
 const externalURLLabel = "Open in Compass"
 
 // replyResponseBody is the `response` emitted on the Manager's first reply after
