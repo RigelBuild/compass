@@ -33,13 +33,7 @@ function parseLine(frame: OutboundFrame): Record<string, unknown> {
 }
 
 describe("ProtojsonLineSink — one line, oneof key per frame kind", () => {
-	// The wire discriminator: each domain frame kind maps to exactly one
-	// AgentFrame oneof field. protobuf-es `toJson` renders oneof fields in
-	// canonical proto3-JSON camelCase (the cross-language interop default; Go
-	// protojson agrees), so the emitted top-level key is the generated `case`
-	// name. A drifted key silently breaks the Runner's oneof classification, so
-	// these strings are asserted literally: session / transcriptEntry /
-	// deliveryAck.
+	// Literal oneof keys catch wire-name drift that would break Runner classification.
 	const session = create(SessionFrameSchema, {
 		state: AgentSessionState.WORKING,
 	});

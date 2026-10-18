@@ -1,10 +1,4 @@
-// AgentControl wire contract: the inbound control envelope's protojson shape is
-// what the Runner's Control producer encodes and the agent's ControlSource
-// decodes, so a drift here silently breaks control classification. Each test
-// defends a wire fact — the camelCase oneof discriminator per variant,
-// `controlSeq` as a top-level ENVELOPE field (not nested in the oneof), and the
-// two agent→Runner ack frames' scalar shapes (uint64 → protojson string). Same
-// philosophy as frame.test.ts for the outbound AgentFrame.
+// Pins the protojson wire names and scalar shapes shared with the Runner.
 
 import { describe, expect, test } from "bun:test";
 import {
@@ -22,12 +16,7 @@ import {
 } from "./compassv1";
 
 describe("AgentControl — camelCase oneof discriminator per control variant", () => {
-	// The wire discriminator: each control op maps to exactly one AgentControl
-	// `control` oneof field. protobuf-es toJson renders the set oneof member as
-	// its canonical proto3-JSON camelCase key (the cross-language interop
-	// default; Go protojson agrees). A drifted key breaks the agent's control
-	// dispatch, so these keys are asserted literally, and each round-trips back
-	// through fromJson to an equal message.
+	// Literal camelCase oneof keys catch wire-name drift that would break dispatch.
 	const cases = [
 		{
 			name: "prompt",
@@ -137,14 +126,7 @@ describe("AgentControl ack frames — scalar shapes survive the wire", () => {
 });
 
 describe("AgentFrame — ack variants carry the oneof discriminator", () => {
-	// The two agent→Runner ack frames ride the Publish spine as AgentFrame
-	// variants (agent.proto oneof: replay_complete_ack = 4, control_ack = 5).
-	// The oneof field name IS the wire discriminator C2 routes off, so it is
-	// asserted literally at the AgentFrame level — the scalar-shape tests above
-	// only exercise the standalone messages, never their envelope placement.
-	// A rename or oneof-slot drift on these new variants passes buf breaking
-	// (an addition stays non-breaking) and drift (schema regenerates cleanly),
-	// so only a literal-key assertion catches it.
+	// Envelope assertions catch dispatch breaks that schema-additive ack variants can introduce.
 	test("replayCompleteAck → single top-level AgentFrame key", () => {
 		const frame = create(AgentFrameSchema, {
 			frame: {

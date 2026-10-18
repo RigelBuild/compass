@@ -1,37 +1,4 @@
-// The export-surface containment test: the rule of the parent adoption
-// record (RigelBuild/docs:docs/designs/compass/repo/compass-agent-effect-adoption/design.md, Global
-// Constraints — "the public `.d.ts` stays free of the `effect` package") made
-// mechanical, extended by this record
-// (RigelBuild/docs:docs/designs/compass/repo/compass-agent-effect-otel/design.md, O1a) to cover
-// `@effect/opentelemetry` and `@opentelemetry/*` now that the OTel layer lives
-// inside src/transport/.
-//
-// The invariant: NO type from `effect`, `@effect/opentelemetry`, or
-// `@opentelemetry/*` is reachable through the package's PUBLIC type surface — the
-// types a consumer of `@compass/agent` can name starting from the package entry
-// (src/index.ts, which re-exports the transport surface: createUnixSocketTransport,
-// RunnerTransport, createSocketControlSource, createSocketFrameSink).
-//
-// This is TYPE-SURFACE reachability, not MODULE reachability, and the distinction
-// is the whole point of the parent record's containment mechanism. Internal
-// modules carry effect types freely: runtime-channel.ts exports `TransportRuntime
-// = ManagedRuntime<never, never>` and threads it through a module-private WeakMap,
-// and publish-spine.ts's `createPublishSpine` takes it as a parameter — but
-// neither is re-exported from the package entry, and the exported `PublishSpine`
-// interface names none of it, so `effect` never surfaces to a consumer.
-//
-// Mechanism: emit the package's declarations with tsc, then walk the exported
-// SYMBOLS from the emitted index.d.ts with the TypeScript checker, recursing
-// through each symbol's declaration. Running over the emitted `.d.ts` (not the
-// `.ts` source) is deliberate: a `.d.ts` declaration is SIGNATURE-ONLY — tsc has
-// already stripped function bodies — so walking declaration syntax IS walking the
-// public type surface, with no implementation-detail noise (a bare
-// `ManagedRuntime.make(...)` in a function body never appears). A leak is a
-// referenced type whose declaration file resolves inside a forbidden package.
-//
-// This is a red test: writing an exported signature that returns a bare
-// effect/otel type, or re-exporting otel-layer/runtime-channel from an entry,
-// reddens it.
+// The public declaration surface must not expose Effect or OTel types from the transport module.
 
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -49,22 +16,7 @@ const FORBIDDEN =
 
 // biome-ignore lint/plugin: 130s is a deliberate slow-body budget (RIG-3784), not a crash guard: a correct tsc --emitDeclarationOnly emit runs ~5s local but 45-68s on a contended runner (~9-14x), and the sync spawnSync has no intermediate signal to event-gate on. See the tail comment for the near-floor measurement.
 test("the package public type surface carries no effect/@effect/opentelemetry/@opentelemetry type", () => {
-	// Emit signature-only declarations into a temp dir under the package root.
-	// node/tsc bundler resolution probes `<ancestor>/node_modules` at each
-	// ancestor of the emitted `.d.ts`, so from `<pkg>/.dts-surface-*/src/…` the
-	// ancestor `<pkg>` reaches `<pkg>/node_modules`, where `effect` /
-	// `@opentelemetry/*` resolve to their real declaration files. Emitted to the
-	// OS tmpdir they would not resolve, and a re-exported effect type would show
-	// ZERO declaration files — a silent containment hole.
-	//
-	// This gitignored temp dir is safe under the concurrent main full sweep
-	// because moon 2.5+ uses native in-process file hashing by default, which
-	// replaces moon's legacy `git ls-files` + `git hash-object` shell-out with
-	// an in-process walker that hashes file contents directly and tolerates
-	// a file that vanishes mid-walk — so git never races the `rmSync` teardown of
-	// this dir. (Under the legacy git hasher a dir under the package root is in
-	// the walk, and git dies `exit 128 … No such file` when it opens a path this
-	// test has since deleted.)
+	// Emit under the package root so declaration resolution can find its dependencies; an OS temp dir would hide leaked types.
 	const out = mkdtempSync(join(PKG_ROOT, ".dts-surface-"));
 	try {
 		// Emit signature-only declarations for the whole package.
@@ -114,12 +66,7 @@ test("the package public type surface carries no effect/@effect/opentelemetry/@o
 			return checker.getSymbolAtLocation(node);
 		};
 
-		// Walk the type closure of a symbol over the emitted declarations:
-		// record each declaration's file, then resolve every type reference in
-		// it and recurse. Because the declarations are signature-only, this
-		// visits exactly the parameter/return/member/heritage types a consumer
-		// can name — and recursing through our own type aliases (TransportRuntime
-		// et al., were they ever exposed) would surface an indirect leak too.
+		// Recurse through signature types only, including aliases, to find indirect leaks.
 		const seen = new Set<ts.Symbol>();
 		const files = new Set<string>();
 		const collect = (symbol: ts.Symbol) => {
@@ -136,13 +83,7 @@ test("the package public type surface carries no effect/@effect/opentelemetry/@o
 						const s = resolveName(node.qualifier);
 						if (s) collect(s);
 					} else if (ts.isExpressionWithTypeArguments(node)) {
-						// A heritage base — `interface X extends Base` or
-						// `extends Ns.Base<T>` — names its base as an
-						// ExpressionWithTypeArguments whose `.expression` is an
-						// Identifier (`Base`) or PropertyAccessExpression (`Ns.Base`),
-						// NOT a TypeReferenceNode. The base's type ARGUMENTS are caught
-						// by the generic recursion below; the base type itself is only
-						// reached here. getSymbolAtLocation resolves both node shapes.
+						// Heritage bases are not TypeReferenceNodes, so resolve the expression symbol directly.
 						const s = checker.getSymbolAtLocation(node.expression);
 						if (s) collect(s);
 					} else if (ts.isTypeQueryNode(node)) {
@@ -157,13 +98,7 @@ test("the package public type surface carries no effect/@effect/opentelemetry/@o
 			}
 		};
 
-		// Roots = the package exports whose declaration lives under
-		// src/transport/. That is exactly the record's rule ("no effect type in
-		// any signature exported FROM src/transport/"): createUnixSocketTransport,
-		// RunnerTransport, createSocketControlSource, createSocketFrameSink. Other
-		// package exports (CompassAgent et al.) reach @opentelemetry/api through
-		// the OMP SDK's own pre-existing dependency — outside this record's
-		// transport-containment scope, so they are not roots here.
+		// Only exports declared in transport are roots; other package exports are outside this containment contract.
 		const TRANSPORT_DECL = /[/\\]src[/\\]transport[/\\]/;
 		for (const exp of checker.getExportsOfModule(moduleSymbol as ts.Symbol)) {
 			const target = unalias(exp);
@@ -183,10 +118,5 @@ test("the package public type surface carries no effect/@effect/opentelemetry/@o
 	} finally {
 		rmSync(out, { recursive: true, force: true });
 	}
-	// A real test-body BUDGET, not a slow-cleanup detector: the body shells out
-	// to a cold `tsc --declaration` emit over the package, then walks a second
-	// TS program over the output. That is ~5s locally but 45-68s on a contended
-	// CI runner (~9-14x). The emit is near its floor (scoping it to the index
-	// closure and in-process emit both measured SLOWER), so the ceiling is what
-	// gives it headroom — matched to the house budget for slow bodies here.
+	// Cold declaration emit and a second type walk are slow on contended CI runners.
 }, 130_000);

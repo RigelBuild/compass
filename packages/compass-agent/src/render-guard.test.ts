@@ -1,11 +1,4 @@
-// The render guards are the boundary every untrusted value crosses to become
-// text the model reads as authoritative harness output, so their negative space
-// is pinned directly — one forbidden character at a time — not only through a
-// consumer. A consumer test that packs several forbidden chars into one payload
-// (e.g. a url that is `"` AND newline AND space at once) still degrades if the
-// class is later widened to re-admit just one of them, so it cannot catch that
-// regression. These tests fail the instant the class admits a `"`, a `<`, or a
-// line break — the exact breakouts the guards exist to deny.
+// Each forbidden character must be rejected independently at the boundary where untrusted text becomes model-visible output.
 
 import { describe, expect, test } from "bun:test";
 import { attr, login, ref } from "./render-guard";

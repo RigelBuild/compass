@@ -1,9 +1,4 @@
-// The mutation verifier's own failure-detector, tested against REAL bun output
-// in both states. The first version of `suiteFailed` matched the word "fail"
-// and so returned true for ` 0 fail` — it reported red on a fully green suite
-// and would have reported red on a mutated one too. A detector that answers
-// the same in both states cannot detect anything, which is exactly the vacuity
-// the verifier exists to catch. So it gets pinned here.
+// The verifier must distinguish green and failing Bun output.
 
 import { describe, expect, test } from "bun:test";
 import {
@@ -69,14 +64,7 @@ describe("suiteFailed", () => {
 
 describe("mutate", () => {
 	test("every mutant's target occurs the expected number of times in its own real source", async () => {
-		// Guards the verifier against silently verifying nothing: if a refactor
-		// moves or reshapes a branch, the find string stops matching and this
-		// fails loudly, instead of the mutant becoming a no-op that always
-		// "passes" because it never changed the source.
-		//
-		// Reads each mutant's OWN file — the table spans the Control source and
-		// the ack cursor beside it — so a mutant pointed at the wrong file fails
-		// here rather than reporting a phantom survivor at run time.
+		// A stale mutant pattern could make the test pass without changing its target source.
 		const defaultSrc = new URL(
 			"../src/transport/control-source.ts",
 			import.meta.url,
@@ -247,12 +235,7 @@ describe("isFailing", () => {
 
 describe("the MUTANTS table's recorded expectations", () => {
 	test("the two UNTESTABLE branches are the abort guards masked by return()'s interrupt", () => {
-		// Before the T4 Effect migration only the catch-side guard was masked (by
-		// the top-of-loop guard). Once return() interrupts the pump fiber in
-		// addition to aborting, the top-of-loop guard is masked too — the interrupt
-		// prevents the re-open whether or not the guard is present, and no public
-		// seam fires the abort without also interrupting. See each entry's
-		// expectedSurvivor for the measured reasoning.
+		// These guards are masked by return() interruption, so only surviving public-surface mutants are expected.
 		const marked = MUTANTS.filter((m) => m.expectedSurvivor !== undefined);
 		expect(marked.map((m) => m.name)).toEqual([
 			"top-of-loop abort guard",

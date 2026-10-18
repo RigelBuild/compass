@@ -503,12 +503,9 @@ export class CompassAgent {
 	// sets `isStreaming` SYNCHRONOUSLY, so two calls on one `agent_end` edge collide. The
 	// input concatenates the two renderers (delivers, then forge) with "\n\n".
 
-	// The ack means "injected", not "turn finished" (record :800), so a mid-turn crash
-	// keeps the receipt. A settled REJECTION means NEITHER batch injected (a real mid-turn
-	// failure resolves instead) — fail closed for both: un-dedup delivers for redelivery;
-	// for forge do NOT re-enqueue or fire ackRail (the Runner is the redelivery authority).
-	// A `tail` is an idle steer draining the queue: it renders last, is un-deduped on
-	// rejection with the delivers, and counts as one more message in the trace topology.
+	// Ack means injected, not turn-finished; a mid-turn crash keeps the receipt.
+	// On settled rejection, deliveries remain eligible for redelivery; forge re-enqueue stays with Runner.
+	// An idle tail drains last and adds one message to the trace topology.
 	#flushTurnEnd(tail?: SteerTail): void {
 		// A started turn's `agent_end` owns whatever queues next, so the window closes.
 		this.#cancelBatch();

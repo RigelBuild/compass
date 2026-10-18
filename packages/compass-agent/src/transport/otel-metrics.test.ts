@@ -1,21 +1,5 @@
-// O2 metric wiring on the two OUTBOUND transport modules — the publish spine
-// (publish-spine.ts) and the durable frame sink (frame-sink.ts).
-// Decision 2 of RigelBuild/docs:docs/designs/compass/repo/compass-agent-effect-otel/design.md.
-//
-// The metrics no-op WITHOUT an OTel provider — but Effect still accumulates them
-// in its process-global in-memory registry, which every ManagedRuntime shares by
-// default (no metric-registry override in the transport's runtime, none here).
-// So a forced overflow / failed batch / priority give-up / durable give-up moves
-// the metric and `Metric.value` reads the delta back SYNCHRONOUSLY, with no live
-// MetricReader, exporter, or network. This is the exact pattern otel-layer.test.ts
-// uses (:64-67). Each case reads a baseline, forces the event, and asserts the
-// delta AND that the hand-rolled counters (droppedTraceCount /
-// failedPriorityCount) are unchanged — the additive-not-replacement invariant.
-//
-// No wall-clock timer, no poll (ts-no-test-timers): failure is driven by the fake
-// driver's rejection and gated on drain()'s returned promise. The frame-sink
-// give-up case incurs the PRODUCTION retry backoff (frame-sink.ts's
-// DURABLE_RETRY_BACKOFF_MS), event-gated by drain(), not a test-injected timer.
+// Pins outbound OTel metric deltas without a provider or network.
+// Fake rejection drives failures; drain gates completion of each case.
 
 import { expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
@@ -143,14 +127,7 @@ test("a failed trace batch increments trace_frames_lost{reason=failed_batch}, ad
 });
 
 test("trace_queue_depth samples the backlog at the take, before draining it", async () => {
-	// A resolving publish so the pump drains and drain() joins it. A backlog that
-	// fits one batch (< PUBLISH_BATCH_MAX) is fully queued before the deferred
-	// first takeBatch runs, so the gauge — sampled BEFORE the take — reads the
-	// whole backlog, not the post-drain residual. A UNIQUE metric namespace gives
-	// this gauge a private registry key, so a concurrent sibling test file writing
-	// the shared key cannot move the absolute value between set and read (the
-	// cross-file gauge race). The race-reproduction test below proves this
-	// isolation is load-bearing, not decorative.
+	// A resolving send drains the queued backlog; a unique namespace isolates the gauge from concurrent tests.
 	const namespace = `${crypto.randomUUID()}.`;
 	const backlog = 100;
 	const spine = createPublishSpine(
@@ -228,17 +205,7 @@ test("a delivered priority batch resets priority_retry_depth to 0 after its retr
 });
 
 test("a namespaced gauge read survives a concurrent writer clobbering the shared key", async () => {
-	// The root cause of the gauge flake, reproduced deterministically. Under the concurrent
-	// full suite a sibling test file constructs its own spine and writes the SAME
-	// shared gauge key between this test's Metric.set and its synchronous read; a
-	// gauge is an absolute last-writer-wins level, so the read saw the wrong value.
-	// Here that hostile concurrent writer is made explicit: after the spine sets
-	// its depth gauge, we clobber the SHARED (un-namespaced) key with a wrong
-	// value, then read back. The namespaced read is unaffected — it hits a private
-	// registry entry — while a read of the shared key would return the clobbered
-	// value. This is the discriminating assertion the fix turns green: point the
-	// spine at the empty namespace (the pre-fix shared key) and the two reads
-	// collapse onto the same clobbered entry, reddening the inequality.
+	// Clobbering the shared gauge proves the namespaced read remains isolated from concurrent writers.
 	const namespace = `${crypto.randomUUID()}.`;
 	const spine = createPublishSpine(
 		() => Promise.reject(new Error("dead socket")),

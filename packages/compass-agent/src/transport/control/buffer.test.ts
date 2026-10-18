@@ -1,21 +1,4 @@
-// The AsyncBuffer single-consumer contract (RIG-1364 C4b follow-up hardening).
-//
-// AsyncBuffer is the queue behind the socket ControlSource's iterable, and it
-// holds AT MOST ONE parked consumer (`#waiting`). Before the guard, a second
-// concurrent `pull()` overwrote that record and abandoned the first promise
-// forever: no error, no rejection, just an agent wedged on a control op that
-// would never arrive. The class is exported now, so the invariant is no longer
-// protected by being file-local — it has to be enforced and defended.
-//
-// These are direct unit tests rather than more socket-level ControlSource
-// cases: the violation is a SECOND consumer, and the source deliberately only
-// ever has one, so nothing driven through the live server can reach this path.
-//
-// No timers anywhere (ts-no-test-timers): every settlement here is either
-// synchronous inside `pull()`'s executor or driven by an explicit
-// push/close/fail on the same tick, so draining the microtask queue observes
-// it exactly. That is what lets a pull that WEDGES (the pre-guard bug) fail a
-// named assertion instead of hanging the suite until timeout.
+// AsyncBuffer allows one parked consumer; a second pull must reject, not strand the first promise.
 
 import { expect, test } from "bun:test";
 import { AsyncBuffer, type Queued } from "./buffer";
@@ -29,11 +12,7 @@ type Settled<T> =
 	| { state: "fulfilled"; value: T }
 	| { state: "rejected"; reason: unknown };
 
-// Observe a promise's settlement WITHOUT awaiting it, so a promise that never
-// settles is a value this test can assert on rather than a hang. Draining a
-// handful of microtask turns is exact here (see the file header): nothing on
-// these paths defers past the microtask queue. Attaching the handler also means
-// a rejection under test is never an unhandled rejection.
+// Observe settlement without awaiting, so a wedged promise can be asserted instead of hanging the test.
 async function settled<T>(p: Promise<T>): Promise<Settled<T>> {
 	let out: Settled<T> = { state: "pending" };
 	void p.then(
@@ -69,11 +48,7 @@ test("a second concurrent pull() is refused BY NAME — it rejects as single-con
 });
 
 test("the refused second pull() does NOT abandon the first — a later push() still resolves the FIRST pull with that value", async () => {
-	// The contract that actually matters. The pre-guard bug was not a bad error
-	// message, it was a permanent hang: the displaced first promise had no
-	// remaining route to settle, so the control loop awaiting it stopped forever.
-	// Non-vacuity: drop the guard → the second pull overwrites `#waiting`, the
-	// push resolves the SECOND promise, and `first` is still "pending" here → red.
+	// The first pull must remain reachable; replacing its waiting record would leave the control loop wedged.
 	const buf = new AsyncBuffer();
 	const first = buf.pull();
 	const second = buf.pull();
@@ -106,11 +81,7 @@ test("the real single-consumer path is untouched: sequential pull()/push() resol
 });
 
 test("close() after a refused concurrent pull() still ends the FIRST parked pull with done: true", async () => {
-	// The guard must leave `#waiting` holding the FIRST caller's record, reachable
-	// by every terminal path — not just by push(). A clean Runner close reaching
-	// the wrong (or a displaced) record is the same hang wearing a different hat.
-	// Non-vacuity: drop the guard → close() resolves the second, displaced record
-	// and `first` stays "pending" → red.
+	// close() must settle the original waiting caller, not a displaced second pull.
 	const buf = new AsyncBuffer();
 	const first = buf.pull();
 	expect(String(reasonOf(await settled(buf.pull())))).toContain(

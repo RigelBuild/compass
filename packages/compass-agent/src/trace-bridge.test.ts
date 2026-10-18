@@ -1,11 +1,4 @@
-// Tests for the trace-continuity bridge.
-// RigelBuild/docs:docs/designs/compass/observability/compass-agent-message-trace-continuity/design.md (### T1).
-//
-// House in-memory OTel recipe: a NodeTracerProvider (installs a real context
-// manager, so `context.with` propagates into `fn`) with an InMemorySpanExporter
-// + SimpleSpanProcessor, registered via `provider.register()`. Teardown calls
-// `trace.disable()` + `context.disable()` + `propagation.disable()` so no global
-// tracer, context manager, or W3C propagator leaks into a sibling test (RIG-3489).
+// Pins trace continuity using an in-memory OTel provider with global state disabled after each test.
 
 import { afterEach, expect, test } from "bun:test";
 import type {

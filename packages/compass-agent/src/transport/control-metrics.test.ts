@@ -1,33 +1,4 @@
-// O3 metric + span wiring on the INBOUND control source (control-source.ts).
-// Decision 1 (span) + Decision 2 (control.* metrics) of
-// RigelBuild/docs:docs/designs/compass/repo/compass-agent-effect-otel/design.md.
-//
-// The four control.* metrics no-op WITHOUT an OTel provider but still accumulate
-// in Effect's process-global in-memory registry, which every ManagedRuntime
-// shares by default (the source's borrowed/fallback runtime installs no
-// metric-registry override). So a driven reconnect / flap-reset / no-progress
-// drop / unmapped op moves the metric and `Metric.value` reads the delta back
-// SYNCHRONOUSLY — the exact pattern otel-metrics.test.ts uses for the O2 lane.
-//
-// The metric cases reuse the SAME live-server + injected-`now()` harness shape as
-// control-source.test.ts (a live connect-node h2c server on a Unix socket, a
-// `headerObserver` that advances the injected clock once per established
-// connection, an `ackGate` that gates on the ControlAck cursor): a flapping fake
-// stream drives the reconnect ladder deterministically, and the injected clock
-// models each connection's lifetime so the min-uptime flap-detector fires (or
-// not) without any real 5s wait. No wall-clock timer, no poll (ts-no-test-timers):
-// each case is event-gated on the source's own promises (collect() ending, or the
-// ackGate resolving on an applied op).
-//
-// The span case (`compass_agent.transport.control.connection`) needs a RECORDING
-// runtime — the no-op tracer discards spans — so it injects one through the
-// module-private `setTransportRuntime` channel (a test in src/transport/ may call
-// it) with an in-memory OTel exporter wired through effect's tracer via
-// `NodeSdk.layer` (an in-memory span exporter registered as the effect runtime's
-// tracer layer, so spans land in a readable array instead of the no-op sink). A
-// fake transport gives the test exact control over whether `onHeader` fires, so
-// the `established` span EVENT is present on a header-delivering attempt and
-// absent on a hung dial.
+// Pins inbound control OTel metrics and spans using event-gated reconnect and ack harnesses.
 
 import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
@@ -281,11 +252,7 @@ async function drive(
 // ---------------------------------------------------------------------------
 
 test("reconnects counts one increment per backoff taken across a flap storm", async () => {
-	// Three past-floor flaps (each connection outlives the 5000ms floor via the
-	// 6000ms clock bump, so the ladder resets and never exhausts), then a clean
-	// close. One backoff is taken between each drop and the next open → exactly 3.
-	// Mutation: removing `Metric.increment(reconnects)` at the backoff-take site
-	// makes the delta 0 → red.
+	// Three long-lived flaps reset the ladder; a clean close leaves three reconnect increments.
 	const rec = emptyRecorder();
 	let t = 0;
 	const socketPath = await serve(rec, {
@@ -314,17 +281,7 @@ test("reconnects counts one increment per backoff taken across a flap storm", as
 // ---------------------------------------------------------------------------
 
 test("no_progress_depth tracks the consecutive-no-progress level", async () => {
-	// Three past-floor flaps deliver nothing the consumer applies (no progress),
-	// so `noProgress` climbs 1→2→3 and the gauge is set each drop; then a clean
-	// close (no drop, no set) leaves the gauge at its peak.
-	//
-	// A UNIQUE metric namespace gives the gauge a private registry key, immune to
-	// the cross-file gauge race: a concurrent sibling test file can no
-	// longer move this absolute level between the source's set and the read. The
-	// sentinel (99) seeded on that SAME private key before driving keeps the site
-	// self-diagnostic: removing `Metric.set(noProgressDepth, noProgress)` leaves
-	// the gauge stuck at 99 (not 3) → red. (The reset-to-0 test below is the
-	// sibling guard for the same site on the progress path.)
+	// No-progress drops raise the gauge to its peak; a unique namespace isolates the assertion from sibling tests.
 	const namespace = `${crypto.randomUUID()}.`;
 	const noProgressDepth = noProgressDepthGauge(namespace);
 	const rec = emptyRecorder();
@@ -350,14 +307,7 @@ test("no_progress_depth tracks the consecutive-no-progress level", async () => {
 });
 
 test("a progress-making reconnect resets no_progress_depth to 0", async () => {
-	// One no-progress drop raises the gauge, then a drop that follows an APPLIED
-	// op (gated on the ack cursor, so the apply lands before the drop) makes
-	// progress and zeroes it; a clean close leaves the gauge at that reset. The
-	// two drops (reconnects delta 2) prove the source did climb-then-reset rather
-	// than never leaving 0. Mirrors O2's priority_retry_depth reset test.
-	// Unique namespace: the source sets this private gauge to 1 then resets it to
-	// 0; both writes land on the private key, so the mutation check stays
-	// non-vacuous and the read is immune to the cross-file race.
+	// An applied op resets no-progress depth; a unique namespace isolates the gauge from concurrent tests.
 	const namespace = `${crypto.randomUUID()}.`;
 	const noProgressDepth = noProgressDepthGauge(namespace);
 	const rec = emptyRecorder();
@@ -419,11 +369,7 @@ test("flap_resets fires only when a past-floor drop resets the ladder", async ()
 	expect(outcome1.ended).toBe("cleanly");
 	expect(counterCount(flapResets) - before).toBe(1);
 
-	// Part 2: sub-floor flaps — the injected clock never advances, so no
-	// connection outlives the floor and the reset never fires. The ladder
-	// exhausts (5 opens) and the source fails. delta == 0.
-	// Mutation: hoisting `Metric.increment(flapResets)` out of the reset `if`
-	// (counting every drop) makes Part 2's delta non-zero → red.
+	// Sub-floor flaps do not reset the ladder, so exhausting it leaves the reset metric unchanged.
 	const rec2 = emptyRecorder();
 	const beforeSub = counterCount(flapResets);
 	const socketPath2 = await serve(rec2, {
@@ -445,12 +391,7 @@ test("flap_resets fires only when a past-floor drop resets the ladder", async ()
 // ---------------------------------------------------------------------------
 
 test("unmapped increments the counter tagged by the op's event_type", async () => {
-	// An empty-shell config op lands in the `count()` funnel and is
-	// counted-unmapped at decode with event_type=control:config. Read the TAGGED
-	// instance's delta. A prompt op alongside proves only the unmapped funnel
-	// increments, not every dispatched op.
-	// Mutation: removing the `runtime.runSync(Metric.increment(Metric.tagged(...)))`
-	// in `count()` makes the tagged delta 0 → red.
+	// The unmapped config op increments only its tagged metric; the prompt remains mapped.
 	const rec = emptyRecorder();
 	const socketPath = await serve(rec, {
 		control: async function* () {
@@ -473,12 +414,7 @@ test("unmapped increments the counter tagged by the op's event_type", async () =
 // the connection span (recording runtime injected via setTransportRuntime)
 // ---------------------------------------------------------------------------
 
-// A recording runtime whose tracer records into an in-memory exporter, built the
-// transport's way (OTel layer merged with the logger removal). Declared
-// Layer<never> exactly as otel-layer.ts does: NodeSdk.layer returns
-// Layer<Resource.Resource>, and Layer's contravariant ROut lets it widen to
-// Layer<never>, so the runtime is a ManagedRuntime<never, never> — the
-// TransportRuntime shape setTransportRuntime expects.
+// Recording runtime routes spans to an in-memory exporter using the transport's OTel layer.
 function recordingLayer(exporter: InMemorySpanExporter): Layer.Layer<never> {
 	return NodeSdk.layer(() => ({
 		spanProcessor: new SimpleSpanProcessor(exporter),
@@ -541,16 +477,7 @@ function fakeSpanTransport(opens: SpanOpen[]): RunnerTransport {
 }
 
 test("each connection attempt opens a control.connection span with the attempt attribute; the established event is present only on a header-delivering stream", async () => {
-	// Two attempts: attempt 0 is a hung dial (no onHeader, then throws) → its span
-	// carries attempt=0 and NO established event; the pump takes one backoff and
-	// re-opens. Attempt 1 fires onHeader (established event), delivers an op, and
-	// clean-closes → its span carries attempt=1 AND the established event.
-	// SimpleSpanProcessor exports on span END, so after the source settles both
-	// spans are finished in the in-memory exporter.
-	// Mutation: dropping `Effect.withSpan("...control.connection", { attributes:
-	// { attempt } })` yields zero connection spans → red; dropping the
-	// `span.event("established", ...)` call in onHeader drops the event from the
-	// attempt-1 span → the established-present assertion reds.
+	// The hung dial has no established event; the header-delivering attempt does, and both spans finish on source settlement.
 	const exporter = new InMemorySpanExporter();
 	const runtime = ManagedRuntime.make(
 		Layer.merge(Logger.remove(Logger.defaultLogger), recordingLayer(exporter)),

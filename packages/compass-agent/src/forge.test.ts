@@ -1,16 +1,4 @@
-// ForgeBroker + the thirteen native forge tools (design:
-// RigelBuild/docs:docs/designs/compass/agent/compass-agent-forge-tools/design.md, T1 + T2).
-// Each test defends an observable contract of the agent->Runner forge call: the
-// exact `ForgeCallRequest` a tool `execute` puts on the wire (arm case, arm
-// payload, call_id / client_request_id / forge selector, bigint coercion), and
-// how a `ForgeCallResult` renders back — a domain `error` case as a thrown Error
-// (the OMP tool-failure contract), a write ack as a shape-guarded line, a read
-// as a nonce-fenced record.
-//
-// The transport is faked to the one method the broker consumes (`forge`), so
-// there is no socket, no Connect client, and no timing: a call in, a canned
-// result out, and the captured request asserted verbatim.
-
+// Pins forge tool requests and result rendering through the broker's wire seam.
 import { describe, expect, test } from "bun:test";
 import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
@@ -1309,12 +1297,7 @@ describe("forge parameter schemas", () => {
 		});
 	});
 
-	// Message-level coverage for the SHARED `nonBlank` helper path. The
-	// comms.test.ts sibling pins the hand-written descriptions; this pins the
-	// helper, which is where a rule can go missing (or get stuttered) for a dozen
-	// fields at once. Under omptype a `.describe()` shadows the narrow's
-	// `ctx.mustBe(...)` reason, so the description is the only channel the rule
-	// reaches the model through — and it must say it exactly once.
+	// Field descriptions are the only model-visible source of the shared non-blank rule.
 	test("the nonBlank helper states its rule in the message, exactly once", () => {
 		const out = createIssueParameters({ repo: "o/r", title: "   " });
 		if (!(out instanceof ArkErrors)) {

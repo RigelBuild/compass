@@ -1,16 +1,4 @@
-// The AckCursor's progress signal (RIG-1364 C4b follow-up hardening).
-//
-// `appliedCount` is not bookkeeping — the Control source's no-progress
-// reconnect budget reads it as its ONLY termination signal for a slow-flapping
-// socket. If a redelivery can inflate it, a Runner that redelivers the same op
-// forever reads as a session making progress and the budget never fires: the
-// exact unbounded reconnect the budget replaced a wall-clock window to fix.
-//
-// So the contract under test is narrow and load-bearing: exactly one increment
-// per GENUINELY NEW application, none for a re-ack, at either position relative
-// to the contiguous cursor. Unit tests rather than socket-level cases because a
-// redelivery landing above the cursor is a Runner behavior the live test server
-// would have to fake anyway, and the counter is the thing being pinned.
+// AckCursor counts only new applications because the reconnect budget uses this as its progress signal.
 
 import { expect, test } from "bun:test";
 import { toBinary } from "@bufbuild/protobuf";
@@ -100,11 +88,7 @@ test("each genuinely new application increments appliedCount exactly once", () =
 });
 
 test("a re-ack of a seq AT OR BELOW the contiguous cursor is not progress", () => {
-	// The redelivery-of-a-retired-op path (amended OQ-6): the source re-acks so
-	// the Runner retires it, and that must not read as the session getting
-	// anything done.
-	// Non-vacuity: without the `seq > #cursor` guard the count would climb on
-	// every redelivery → red.
+	// Re-acks after the cursor advances must not inflate appliedCount.
 	const { spine } = recordingSpine();
 	const acks = new AckCursor(spine);
 	acks.markApplied(1n);
@@ -116,16 +100,7 @@ test("a re-ack of a seq AT OR BELOW the contiguous cursor is not progress", () =
 });
 
 test("a re-ack of a seq applied OUT OF ORDER above the cursor is not progress either", () => {
-	// The half `seq > #cursor` alone misses, and the one that matters most: seq 3
-	// applied while 2 is still queued sits in `#above`, so it is applied AND
-	// above the cursor. A redelivery of it satisfies `seq > #cursor` and would
-	// increment on novelty-by-position alone.
-	//
-	// Non-vacuity (this is the regression this file was added for): drop the
-	// `!#above.has(seq)` half of the guard → the redelivery below counts as
-	// progress → appliedCount reads 3 instead of 2 → red. That is not a
-	// cosmetic miscount: it is the reconnect budget being reset by a Runner
-	// redelivering one op forever.
+	// An out-of-order applied op is already in #above; re-acking it must not count as new progress.
 	const { spine } = recordingSpine();
 	const acks = new AckCursor(spine);
 	acks.markApplied(1n); // cursor → 1
@@ -138,11 +113,7 @@ test("a re-ack of a seq applied OUT OF ORDER above the cursor is not progress ei
 });
 
 test("the contiguous-run prune collapses the set without inflating the count", () => {
-	// Applying the gap seq advances the cursor through the whole run at once. The
-	// count must move by ONE — the single new application — not by the length of
-	// the run it unblocked.
-	// Non-vacuity: increment per pruned entry inside the while loop → 5 instead
-	// of 4 → red.
+	// Filling a sequence gap advances the cursor but counts only the newly applied op.
 	const { spine } = recordingSpine();
 	const acks = new AckCursor(spine);
 	acks.markApplied(2n);
@@ -156,11 +127,7 @@ test("the contiguous-run prune collapses the set without inflating the count", (
 });
 
 test("isApplied and the cursor are unchanged by a re-ack — idempotence still holds", () => {
-	// The novelty guard tightened `markApplied`'s WRITE path; its dedup contract
-	// (amended OQ-6) must be untouched. A redelivered op still re-acks so the
-	// Runner retires it.
-	// Non-vacuity: make the guard swallow the emit as well → the frame count
-	// stops growing → red.
+	// Deduplicating progress must not suppress the ack that retires a redelivered op.
 	const { spine, frames } = recordingSpine();
 	const acks = new AckCursor(spine);
 	acks.markApplied(1n);
