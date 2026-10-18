@@ -10,6 +10,8 @@ database, and the agent runner as child processes on a Linux host. Agent
 sessions run in containers by default or in microVMs when selected. The
 [prerequisites](#prerequisites) describe shared and microVM-only requirements.
 
+<!-- LENGTH §Secrets: forge credentials, write scopes and agent repo grants share one operator reference -->
+
 ## Prerequisites
 
 Both tiers need Linux and rootless podman for the bundled database. They also
