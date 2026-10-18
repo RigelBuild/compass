@@ -25,27 +25,14 @@ import (
 	"github.com/RigelBuild/compass/go/internal/usage"
 )
 
-// The lifecycle sink is the Bridge board (internal/board): a session lifecycle
-// transition is recorded into the board's per-session projection AND fanned onto
-// SubscribeEvents, so GetAgentStatus can never disagree with the live stream. The
-// board is a strict superset of a bus-only sink, so it is the one lifecycle sink.
+// The Bridge board is the lifecycle sink: it records per-session state and
+// publishes events, keeping GetAgentStatus consistent with SubscribeEvents.
 
-// newRunnerHub's session-tail sink is the real per-session fan-out (sessionTail):
-// RelaySessionFrame repackages each internal frame to its public form and fans it
-// to that session's live SubscribeAgentSession subscribers. The same *sessionTail
-// instance is shared with the service — hub is the writer, service the reader.
+// The sessionTail sink repackages Runner frames for live SubscribeAgentSession
+// subscribers. RunnerHub writes it; the service reads the same instance.
 
-// newRunnerHub constructs the Server-side RunnerHub over its write-through sinks
-// and the agent-comms caller: the Bridge board as the lifecycle sink (a session
-// transition is recorded into the board projection and fanned onto
-// SubscribeEvents), the real per-session tail sink for SubscribeAgentSession
-// passed in by serve.go so the same instance is shared with the service, and
-// comms — the CommsService handler, which executes an agent-initiated comms call
-// under the account a session resolves to (RelayCommsCall). log carries the
-// hub's gap/unknown-frame diagnostics; nil falls back to slog.Default(). st is
-// the store of record: the hub's durable transcript lane (RIG-1667 T4)
-// write-throughs a relayed transcript_entry to it via SetTranscriptStore, wired
-// here so the one store instance backs the transcript commit path.
+// newRunnerHub constructs the server RunnerHub over its write-through sinks.
+// It stores durable transcripts; a nil logger uses slog.Default().
 func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.SessionTailSink, commsSvc *comms.Comms, log *slog.Logger) *runnerhub.Hub {
 	if log == nil {
 		log = slog.Default()
@@ -60,42 +47,28 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 	hub.SetSessionBlobStore(st)
 	// The Runner binds a resumed lifetime's rebase base through the same store.
 	hub.SetLifetimeBinder(st)
-	// RIG-3108 T4: the same store is the durable session-binding surface the hub's
-	// in-RAM maps are demoted to a read-through cache over (record on promote, delete
-	// on unbind, sweep on re-enroll). No RoutingFabric is wired: single-Server MVP, so
-	// the hub's own writes keep its cache honest (RIG-3107/T3 lands the NATS fabric).
+	// The durable store backs session bindings; without a RoutingFabric, hub
+	// writes keep its in-memory cache current on this single-server path.
 	hub.SetSessionBindingStore(st)
-	// RIG-1667 T5: the same store backs the resume-body reconstructor's read
-	// seam (SessionResumeSnapshot + ReadArchiveSegment), wired here beside the
-	// write seam so the one store instance serves both legs.
+	// The same store reads archived transcript segments for resume reconstruction.
 	hub.SetTranscriptReader(st)
 	hub.SetSessionEndSink(sessionEndArchiver{st: st})
 	return hub
 }
 
-// RIG-1641 T3: *lifecycleService satisfies the delivery-defined AgentWaker. The
-// assertion lives here in the server package, which imports both — so delivery never
-// imports server.
+// lifecycleService satisfies the delivery.AgentWaker seam; the assertion lives
+// here so delivery does not import the server package.
 var _ delivery.AgentWaker = (*lifecycleService)(nil)
 
-// Compass forge write path T8: *forgeService (the DL-050 write chokepoint) satisfies
-// the T5-defined runnerhub.ForgeCaller seam the hub relays RelayForgeCall into. The
-// assertion lives here in the server package (which imports both); T4 could not place
-// it because the runnerhub interface was not importable in its isolated slice.
+// forgeService satisfies runnerhub.ForgeCaller; the assertion lives here because
+// this package imports both the service and hub interface.
 var _ runnerhub.ForgeCaller = (*forgeService)(nil)
 
-// wireHubServiceCycles breaks the post-construction cycles between the hub and
-// the account-facing services that are built before it (the hub relays through
-// them, so they cannot take the hub at construction): the hub<->lifecycle cycle
-// (RIG-1618 T5, RelayLifecycleCall) and the hub<->board cycle (agent primary
-// lifecycle T3-a, RelayBoardCall — the board caller executes against the store +
-// the issue projection). Called once at assembly before any RPC is served.
+// wireHubServiceCycles installs callers after hub construction and before RPCs.
 func wireHubServiceCycles(hub *runnerhub.Hub, commsSvc *comms.Comms, st *store.Store, issueBrd *board.IssueProjection) {
 	hub.SetLifecycleCaller(newLifecycleService(st, hub, commsSvc))
 	hub.SetBoardCaller(newBoardService(st, issueBrd))
-	// The roster read (RIG-1721 T2) joins the hub's in-memory presence enum; the hub
-	// reads it from the T8 presence projection wired at startPresencePublisher.
-	// comms->hub is set here, hub->publisher when the publisher starts — both before
+	// Connect the roster read to the hub here; the publisher supplies it before
 	// any RPC is served.
 	commsSvc.SetPresenceSource(hubPresenceSource{hub})
 }
@@ -135,15 +108,8 @@ func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, fab fabric.E
 	g.Go(func() error { return c.Run(gctx) })
 }
 
-// startPresencePublisher builds the RIG-1569 T8 presence projection over the
-// comms bus (it both tails and publishes onto it) + the store's open-ask read
-// surface + the hub's Status relay for reconciliation, wires the
-// component<->hub construction cycle (the hub takes the component as its
-// PresenceSink; the component takes the hub as its Status relay — the
-// post-construction setter that breaks the cycle), and starts its bus-tail
-// goroutine on the serve group rooted on gctx (so it cancels at shutdown; it
-// also ends when the comms bus closes in drainDoors, so shutdown reaches it two
-// ways). Mirrors startDeliveryConsumer verbatim in shape.
+// startPresencePublisher wires the bus-backed presence projection to the hub
+// and runs its tail in the serve group so shutdown cancels it.
 func startPresencePublisher(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
 	p := presence.NewPublisher(commsBus, st, hub, log)
 	hub.SetPresenceSink(p)
@@ -193,24 +159,10 @@ func (c computeUsageCloser) CloseOrphanedComputeIntervals(ctx context.Context) (
 	return c.st.CloseOrphanedComputeIntervals(store.WithSystemRole(ctx))
 }
 
-// logFrameDiagnostics emits the hub's frame-loss snapshot as one line. Serve
-// calls it on shutdown, so every run states plainly how many relayed frames
-// never reached their surface.
-//
-// It exists because the counters had no non-test reader at all. Total frame loss
-// was observable only by reading per-frame warn lines and tallying them by hand
-// — which means, in practice, that a relay committing NOTHING looked exactly
-// like a relay committing everything to anyone not already suspicious. That is
-// the failure mode this whole classification split exists to expose, so leaving
-// the numbers unreadable would have undone it.
-//
-// It logs at Info: the three surviving loss signals (unknown_frames,
-// seen_sequence_gap, dropped_acks) are all recoverable — an unknown frame
-// reached no sink, a sequence gap the Client bus resync recovers, a dropped ack
-// costs only a redundant redeliver on the recipient's next reconnect sweep. This
-// is the minimum that makes the counters observable — the server has no metrics
-// surface to register a gauge on, and inventing one is not this change's job. A
-// future metrics or diagnostics RPC reads the same FrameDiagnostics snapshot.
+// logFrameDiagnostics reports frame-loss counters on shutdown, distinguishing
+// an empty relay commit from one that delivered everything. Remaining loss
+// signals are recoverable; Info is sufficient because the server has no metrics
+// surface.
 func logFrameDiagnostics(ctx context.Context, log *slog.Logger, hub *runnerhub.Hub) {
 	d := hub.FrameDiagnostics()
 	log.InfoContext(ctx, "relayed agent frame accounting",

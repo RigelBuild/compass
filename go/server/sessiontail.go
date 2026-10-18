@@ -1,10 +1,7 @@
 //go:build unix
 
-// The Server-side repackaging that turns an internal agent→Runner SessionFrame
-// into the public AgentSessionFrame streamed on SubscribeAgentSession. The
-// Runner relay is payload-agnostic — it forwards whole AgentFrame lines — so
-// the internal→public mapping happens here, at the tail sink, not on the relay
-// path.
+// SessionTail repackages internal Runner frames as public AgentSessionFrame
+// values at the subscription sink; the relay stays payload-agnostic.
 package server
 
 import (
@@ -14,33 +11,19 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// tailBuffer is the per-subscriber queue depth. A subscriber that falls this
-// far behind the live trace is dropped (its channel closed) rather than
-// stalling RelaySessionFrame — the observation pane is a live tail, so dropping
-// one slow subscriber must never block delivery to the session's others. A
-// dropped client sees a clean stream end and recovers by re-subscribing from the
-// current tail (there is no lag signal or replay this increment). Sized to
-// absorb a normal render-loop hiccup without dropping.
+// tailBuffer is the per-subscriber queue depth. Full queues close only that
+// subscriber rather than stalling other consumers.
 const tailBuffer = 256
 
-// sessionTail is the real SessionTailSink: a per-session live
-// fan-out from the single RelaySessionFrame writer (the RunnerHub delivery path)
-// to the N SubscribeAgentSession subscribers of that session. It is the
-// live-tail wiring the design record scopes for this increment — no replay ring,
-// no resync, no reattach window (those are the deferred daemon-lifecycle
-// machinery, compass.proto AgentSessionState notes). A subscriber joins at the
-// live head and receives frames until it disconnects, the session ends, or it
-// lags past its buffer. Safe for concurrent use.
+// sessionTail fans Runner frames to live subscribers. Subscribers join at the
+// live head and end on disconnect, session end, or lag; there is no replay.
 type sessionTail struct {
 	mu   sync.Mutex
 	subs map[string]map[*tailSub]struct{}
 }
 
-// tailSub is one SubscribeAgentSession subscriber's live queue: the buffered
-// channel the fan-out sends on and the handler receives from. A full buffer
-// drops the subscriber by closing this channel, which the handler sees as a
-// clean stream end — a lag-drop is deliberately indistinguishable from any other
-// end this increment (no lag signal until the deferred resync work lands).
+// tailSub holds one subscriber queue; a full buffer closes its stream without
+// distinguishing lag from other ends.
 type tailSub struct {
 	ch chan *compassv1.AgentSessionFrame
 }
@@ -49,31 +32,10 @@ func newSessionTail() *sessionTail {
 	return &sessionTail{subs: make(map[string]map[*tailSub]struct{})}
 }
 
-// RelaySessionFrame is the SessionTailSink implementation: repackage the
-// internal frame to its public form once and fan it out to every live
-// subscriber of sessionID. The send is non-blocking — a subscriber whose buffer
-// is full has its channel closed, dropping it rather than stalling delivery for
-// its session's other subscribers; the dropped client sees a clean stream end
-// and recovers by re-subscribing from the current tail. A session with no
-// subscribers is a no-op.
-//
-// When the frame carries a terminal lifecycle state (STOPPED or ERRORED), the
-// session has ended: after delivering it, close every remaining subscriber so a
-// healthy client drains the final frame from its buffer and then sees EOF,
-// rather than blocking forever on a stream that will never carry another frame.
-// DISCONNECTED is NOT terminal — a dropped Runner link awaits reattach within a
-// bounded window (compass.proto AgentSessionState), so those subscribers stay
-// open.
-//
-// Concurrency preconditions (both upheld by the RunnerHub delivery path, the
-// sole caller): (1) frames are single-writer per session — RelaySessionFrame is
-// called serially for a given sessionID, so the per-call mutex gives frame
-// ORDERING, not just per-call atomicity; a second concurrent relay for one
-// session would interleave nondeterministically at subscribers. (2) The public
-// frame (and the SessionEvent pointer it shares) is treated as immutable once
-// relayed: one *AgentSessionFrame is fanned out to all subscribers and marshaled
-// concurrently by their stream.Send goroutines, which is race-free only because
-// nothing mutates the frame or its typed_event after this point.
+// RelaySessionFrame repackages frames and fans them out without blocking; a full
+// buffer drops only that subscriber. Terminal frames close subscribers, but
+// DISCONNECTED stays open during the bounded reattach window. The hub serializes
+// writes per session, so subscribers can marshal shared frames concurrently.
 func (t *sessionTail) RelaySessionFrame(sessionID string, frame *compassv1internal.SessionFrame) {
 	public := toPublicFrame(sessionID, frame)
 	t.mu.Lock()
@@ -102,19 +64,15 @@ func (t *sessionTail) RelaySessionFrame(sessionID string, frame *compassv1intern
 	}
 }
 
-// isTerminalState reports whether a lifecycle state ends the session's live
-// tail. STOPPED (clean end) and ERRORED (unexpected exit; recovery is an
-// explicit ReloadAgentSession, never an auto-reconnect) are terminal.
-// DISCONNECTED is not: a dropped Runner link awaits reattach within a bounded
-// window, so its subscribers keep waiting rather than seeing a false EOF.
+// STOPPED and ERRORED end live tails; ERRORED requires explicit recovery.
+// DISCONNECTED waits for bounded Runner reattach and must not appear as EOF.
 func isTerminalState(s compassv1.AgentSessionState) bool {
 	return s == compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED ||
 		s == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED
 }
 
-// subscribe registers a live subscriber for sessionID and returns it. The caller
-// (SubscribeAgentSession) MUST call unsubscribe when its stream ends, on every
-// exit path, to free the fan-out slot.
+// subscribe registers a live subscriber; the handler MUST always unsubscribe
+// when its stream ends to free the fan-out slot.
 func (t *sessionTail) subscribe(sessionID string) *tailSub {
 	sub := &tailSub{ch: make(chan *compassv1.AgentSessionFrame, tailBuffer)}
 	t.mu.Lock()
@@ -128,8 +86,8 @@ func (t *sessionTail) subscribe(sessionID string) *tailSub {
 	return sub
 }
 
-// unsubscribe removes a subscriber and closes its channel, so a handler blocked
-// on receive unblocks. Idempotent-safe for a given sub via the presence check.
+// unsubscribe removes a subscriber and closes its channel to unblock receives.
+// Repeated calls are safe because removal checks membership.
 func (t *sessionTail) unsubscribe(sessionID string, sub *tailSub) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -146,15 +104,9 @@ func (t *sessionTail) unsubscribe(sessionID string, sub *tailSub) {
 	}
 }
 
-// toPublicFrame maps an internal SessionFrame (the agent→Runner envelope) onto
-// the public AgentSessionFrame the SubscribeAgentSession stream carries. The
-// typed_event is already the PUBLIC SessionEvent type — the internal envelope
-// references it across the internal→public import — so it transfers by pointer
-// with no re-encoding. state transfers as-is: AGENT_SESSION_STATE_UNSPECIFIED
-// means "no transition, trace only" and a nil typed_event means "pure lifecycle
-// frame", so a frame carrying only one of the two maps faithfully (the other
-// field stays at its zero value, which is exactly its "absent" encoding). The
-// session_id is stamped from the tail sink's routing key, not the frame body.
+// toPublicFrame maps the internal envelope to the public stream frame. The
+// public typed_event transfers by pointer; state and nil-event zero values retain
+// their meanings. The session ID comes from the tail's routing key.
 func toPublicFrame(sessionID string, f *compassv1internal.SessionFrame) *compassv1.AgentSessionFrame {
 	return &compassv1.AgentSessionFrame{
 		SessionId:    sessionID,

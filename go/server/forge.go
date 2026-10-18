@@ -35,22 +35,15 @@ type forgeCoordinate struct {
 	host     string
 }
 
-// forgeProviderRoles carries the TWO credential-role clients a coordinate holds
-// (F1): the AUTHOR client every ordinary write dispatches on, and the REVIEWER
-// client submit_review dispatches on — a distinct GitHub identity so an agent
-// approving a PR it authored is a different account, dissolving the
-// author-approving-own-PR rejection at the credential layer, not with a code
-// special-case.
+// forgeProviderRoles separates author and reviewer identities so GitHub can
+// distinguish an agent's approval from its author account.
 type forgeProviderRoles struct {
 	author   forge.Provider
 	reviewer forge.Provider
 }
 
-// forgeProviderRegistry maps a ForgeRef coordinate to its author+reviewer
-// providers. A nil/unset ForgeRef (or an UNSPECIFIED provider) resolves the
-// default coordinate; an empty host on an otherwise-set ref resolves the
-// provider's default host (A3). T8 populates it at serve assembly with the real
-// author/reviewer GitHub clients (and Linear); the tests drive it with fakes.
+// forgeProviderRegistry maps provider+host coordinates to clients. Unset refs
+// use the registered default; empty hosts use provider defaults.
 type forgeProviderRegistry struct {
 	entries     map[forgeCoordinate]forgeProviderRoles
 	defaultHost map[compassv1.ForgeProvider]string
@@ -120,13 +113,8 @@ func (r *forgeProviderRegistry) resolve(ref *compassv1.ForgeRef) (resolvedForge,
 	}, true
 }
 
-// forgeStore is the narrow store surface the chokepoint needs: resolve the
-// caller's attribution (agent handle + owning user), the F3 idempotency-memo
-// lookup, the DL-055 ownership-row + memo write, and the state-transition memo
-// write. Satisfied by *store.Store; a narrow interface (the issueStore /
-// CommsCaller pattern) so the stamp/dedup/record ordering — and the transition
-// arms' memo-strictly-after-provider-success ordering — is provable in the
-// default lane against a fake, not only behind the pgtest tag.
+// forgeStore is the narrow persistence surface for writes, attribution, scope,
+// mirror mode, and tracked PR reads.
 type forgeStore interface {
 	GetAccount(ctx context.Context, id store.AccountID) (store.Account, error)
 	AuthoredArtifactByRequestID(ctx context.Context, agent store.AccountID, clientRequestID string) (store.AuthoredArtifact, bool, error)
@@ -140,12 +128,8 @@ type forgeStore interface {
 	PullRequestsByCoords(ctx context.Context, coords []store.ForgeCoord) ([]store.PullRequestRow, error)
 }
 
-// forgeService is the ForgeCaller implementation and the DL-050 write
-// chokepoint. It holds the narrow store (attribution + ownership index), the
-// issue projection (the OQ-A tracked-read source), the provider registry
-// (author/reviewer clients per coordinate), and an injectable clock (the DL-055
-// row's created_at). The mirror fields bound detached mirror drives and recheck
-// timers to the server's lifetime.
+// forgeService implements ForgeCaller and the forge write chokepoint. It owns
+// attribution, issue projection, provider clients, and mirror timers.
 type forgeService struct {
 	store         forgeStore
 	issueBrd      *board.IssueProjection
@@ -172,26 +156,15 @@ type mirrorTimer struct {
 	once sync.Once
 }
 
-// newForgeService constructs the forge caller over the store, the issue
-// projection (tracked reads), and the provider registry. Wired at serve
-// assembly with hub.SetForgeCaller after all three exist (T8), breaking the
-// hub<->forgeService construction cycle exactly as newBoardService does
-// (sinks.go).
+// newForgeService constructs the caller; Serve wires it after dependencies exist
+// to break the hub cycle.
 func newForgeService(st *store.Store, issueBrd *board.IssueProjection, providers *forgeProviderRegistry) *forgeService {
 	return &forgeService{store: st, issueBrd: issueBrd, providers: providers, now: time.Now, mirrorStoreDB: st}
 }
 
-// ExecuteForgeCallAsAccount is the ForgeCaller entry point and the per-arm
-// dispatch. It fails a missing caller closed as a Connect error (never a stale
-// account), and an unset/unknown oneof arm as CodeInvalidArgument (the
-// executeBoardCall default-arm convention, relay_board.go:115-119) — a malformed
-// request, not a tool failure. Every other outcome, success or tool fault, is
-// returned in-band on the ForgeCallResult (the caller stamps call_id).
-//
-// The signature is byte-exact with the T5 runnerhub.ForgeCaller definition; T8
-// adds `var _ runnerhub.ForgeCaller = (*forgeService)(nil)` once it can import
-// the interface (it does not exist in this slice's workspace, so the assertion
-// cannot compile here yet).
+// ExecuteForgeCallAsAccount dispatches one forge call. Missing callers and
+// malformed arms return Connect errors; tool outcomes are in-band results.
+// The caller stamps call_id on each result.
 func (s *forgeService) ExecuteForgeCallAsAccount(
 	ctx context.Context,
 	caller store.AccountID,
@@ -380,13 +353,8 @@ func (s *forgeService) dedup(ctx context.Context, caller store.AccountID, client
 	return hit, ok, nil
 }
 
-// record writes the DL-055 ownership-index row AND the F3 memo in the ONE
-// ordered step RecordAuthoredArtifact performs, strictly AFTER a create's forge
-// success — so a rejected write leaves no row and a stamp failure never orphans
-// one (#995 design.md:2487-2488). Only create_issue / create_pull_request mint
-// an artifact coordinate (kind issue|pull_request); the comment/review arms have
-// no coordinate to record, so they never reach here (F3 is create-only per the
-// ruling, design.md:149-155/971-982).
+// record writes ownership and idempotency after a forge create. Only issue and
+// pull-request creates have artifact coordinates to record.
 func (s *forgeService) record(ctx context.Context, rf resolvedForge, id callerIdentity, caller store.AccountID, sessionID, clientRequestID, repo string, kind store.ForgeArtifactKind, number uint64) *compassv1internal.ForgeCallError {
 	if err := s.store.RecordAuthoredArtifact(ctx, s.authoredArtifact(rf, id, caller, sessionID, clientRequestID, repo, kind, number)); err != nil {
 		return storeForgeError(err)
@@ -602,12 +570,9 @@ func (s *forgeService) commentOnPullRequest(ctx context.Context, caller store.Ac
 	}
 }
 
-// submitReview stamps the top-level review body normally (author identity) but
-// dispatches on the REVIEWER client (F1). Every inline review-comment body is
-// STRIPPED of any owner-header block and NEVER stamped (A6): ingestion parses
-// owner headers out of comment bodies, so a hand-written header in an unstamped
-// inline body would otherwise impersonate another agent. A review mints no
-// artifact coordinate, so it is neither F3-deduped nor DL-055-recorded.
+// submitReview stamps the top-level body and dispatches as the reviewer.
+// Inline bodies are stripped, not stamped, because ingestion parses owner
+// headers; reviews create no artifact coordinate to record or deduplicate.
 func (s *forgeService) submitReview(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.SubmitReviewRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
@@ -662,13 +627,9 @@ func transitionStateDomain(state string) *compassv1internal.ForgeCallError {
 	return nil
 }
 
-// screenIssueRefinements is the refinement/provider screen: close_reason is a
-// GitHub-ISSUE concept and workflow_state is a Linear one, so a refinement the
-// ADDRESSED provider cannot express is rejected HERE, in-band, before any
-// provider call. Silently dropping it is rejected — the caller asked for
-// something specific and the write would not do it. Screening at the arm is
-// also what lets forge.TransitionState document that a provider may safely
-// ignore a foreign field.
+// screenIssueRefinements rejects provider-specific fields the selected forge
+// cannot express. It must reject rather than silently drop caller intent;
+// this permits providers to ignore only foreign fields safely.
 func screenIssueRefinements(rf resolvedForge, closeReason, workflowState string) *compassv1internal.ForgeCallError {
 	if closeReason != "" && rf.provider != compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB {
 		return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf(
@@ -681,29 +642,9 @@ func screenIssueRefinements(rf resolvedForge, closeReason, workflowState string)
 	return nil
 }
 
-// rememberTransition writes the actor memo (§Actor attribution) at the
-// transitioned coordinate, STRICTLY AFTER the provider succeeded — so a rejected
-// transition leaves no memo, mirroring record's "strictly AFTER a create's forge
-// success" ordering. The memo carries the REQUESTED portable state, not the
-// returned artifact's raw one: the notify lane matches it against the echoed
-// STATE event's portable state, and a raw PR state can be "merged", outside that
-// domain. There is no DL-055 row and no F3 memo here: a transition mints no
-// coordinate, and the authored row at this coordinate is a write-once authorship
-// fact whose upsert would destroy the original create's idempotency memo.
-//
-// COORDINATE CONTRACT (load-bearing, unguarded): the memo is keyed on the
-// CALLER-supplied repo string plus the PROVIDER-returned number, while the
-// notify lane's ConsumeStateTransition keys on the coordinate the WEBHOOK
-// carries — wh.Repository.FullName on GitHub (canonical "owner/name",
-// githubapp_webhook.go) and de.Data.Team.Key on Linear (canonical team key,
-// linearagent/data_event.go). So req.GetRepo() MUST already equal that
-// canonical form for the memo to resolve. A caller addressing the same repo in
-// different casing (or any other non-canonical spelling) writes a memo the
-// webhook can never match, and the transition goes UNATTRIBUTED — the
-// documented fail-open (one redundant wake, never a lost cross-agent signal),
-// so the divergence is SILENT: nothing here normalizes, guards, or asserts it.
-// Normalizing would change the coordinate's canonical form, which is a design
-// decision, not a fix applied here.
+// rememberTransition records attribution after provider success. Webhooks match
+// canonical repo names; non-canonical input leaves the event unattributed,
+// causing only a redundant wake rather than a lost signal.
 func (s *forgeService) rememberTransition(ctx context.Context, rf resolvedForge, caller store.AccountID, repo string, kind store.ForgeArtifactKind, number uint64, state string) *compassv1internal.ForgeCallError {
 	if err := s.store.RecordStateTransition(ctx, store.ForgeProvider(rf.provider), rf.host, repo, kind, number, state, caller, s.now()); err != nil {
 		// The provider write ALREADY LANDED, so the error must name what succeeded:
@@ -718,14 +659,9 @@ func (s *forgeService) rememberTransition(ctx context.Context, rf resolvedForge,
 	return nil
 }
 
-// transitionIssueState moves an existing issue between forge states: resolve
-// target, screen the state domain and the refinement/provider match, dispatch on
-// the AUTHOR client, flatten, write the actor memo on success, and return the
-// UPDATED issue on the EXISTING Issue result arm — the caller sees
-// post-transition truth the same way a create's caller sees the created
-// artifact. No stamp (a transition has no body) and no F3 dedup
-// (client_request_id is ignored on non-create arms; a retried transition
-// converges on the target state rather than duplicating anything).
+// transitionIssueState validates and dispatches state, then records attribution
+// after provider success. Retries converge on the target state; no artifact is
+// stamped or deduplicated.
 func (s *forgeService) transitionIssueState(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.TransitionIssueStateRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
@@ -756,13 +692,8 @@ func (s *forgeService) transitionIssueState(ctx context.Context, caller store.Ac
 	}
 }
 
-// transitionPullRequestState is the PR twin of transitionIssueState. The PR arm
-// accepts NO refinement fields at all — close_reason is a GitHub *issue*
-// concept and workflow_state a Linear one, and merge is a separate concern never
-// expressed as a transition — so the wire message carries none and the dispatched
-// forge.TransitionState is state-only. A provider with no PR model answers
-// ErrUnsupported, which mapForgeError flattens to unimplemented naming
-// provider+op.
+// transitionPullRequestState accepts portable state only; merging is separate.
+// Providers without a PR model return ErrUnsupported.
 func (s *forgeService) transitionPullRequestState(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.TransitionPullRequestStateRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
@@ -786,9 +717,8 @@ func (s *forgeService) transitionPullRequestState(ctx context.Context, caller st
 	}
 }
 
-// getIssue answers from the issue projection for a TRACKED artifact (OQ-A), else
-// composes a live author-client fetch + TranslateIssue. Read bodies are stripped
-// of the owner header (never stamped) — provider truth, not attribution.
+// getIssue reads tracked artifacts from the projection; others are fetched live.
+// Provider bodies are stripped of owner attribution, never stamped.
 func (s *forgeService) getIssue(ctx context.Context, call *compassv1internal.ForgeCallRequest, req *compassv1internal.GetIssueRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
@@ -804,9 +734,7 @@ func (s *forgeService) getIssue(ctx context.Context, call *compassv1internal.For
 	return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_Issue{Issue: translateIssue(iss, rf, req.GetRepo())}}
 }
 
-// getPullRequest composes a live author-client fetch + TranslatePullRequest. The
-// projection holds only issues, so a PR has no tracked source; every PR read is
-// live (see summary: tracked-PR-read follow-up seam).
+// getPullRequest fetches live because the projection stores issues only.
 func (s *forgeService) getPullRequest(ctx context.Context, call *compassv1internal.ForgeCallRequest, req *compassv1internal.GetPullRequestRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
@@ -859,11 +787,8 @@ func listIssuesLimit(limit uint32) int {
 	}
 }
 
-// trackedIssue returns the projection's canonical Issue at the coordinate if the
-// artifact is tracked (ingested), matching on provider+host+repo+number. The
-// scan is O(n) over the snapshot (the projection carries no by-coordinate
-// index); acceptable at the MVP's agent-read volume, a keyed lookup is the
-// follow-up if it ever matters.
+// trackedIssue finds an ingested issue by forge coordinate. It scans the
+// projection snapshot (O(n)); there is no coordinate index.
 func (s *forgeService) trackedIssue(rf resolvedForge, repo string, number uint32) (*compassv1.Issue, bool) {
 	if s.issueBrd == nil {
 		return nil, false
@@ -879,11 +804,8 @@ func (s *forgeService) trackedIssue(rf resolvedForge, repo string, number uint32
 	return nil, false
 }
 
-// translateIssue strips the owner header off a raw forge issue's body (read
-// bodies never carry an owner-attribution header on the wire — provider truth, DL-050),
-// parses the display attribution, translates to the canonical Issue, and stamps
-// the forge coordinate the pure translator leaves zero (mirrors
-// ingest.translateOne).
+// translateIssue strips owner attribution from the provider body before
+// translating, then stamps provider+host+repo left zero by the translator.
 func translateIssue(raw forge.Issue, rf resolvedForge, repo string) *compassv1.Issue {
 	clean, author, ok := forge.StripOwner(raw.Body)
 	raw.Body = clean
@@ -912,10 +834,8 @@ func translatePR(raw forge.PullRequest, rf resolvedForge, repo string) *compassv
 	return out
 }
 
-// coordinateResult builds the F3 memo-hit result: the recorded coordinate as the
-// arm matching the STORED kind — a create retried with the same
-// client_request_id but a different arm returns the originally-recorded artifact
-// (and its kind) so the mismatch is observable to the caller (F3 ruling).
+// coordinateResult returns the recorded artifact arm on an F3 memo hit, even
+// when a retry uses a different arm, so the original artifact kind is visible.
 func coordinateResult(a store.AuthoredArtifact) *compassv1internal.ForgeCallResult {
 	ref := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider(a.Provider), Host: a.Host}
 	if a.Kind == store.ForgeArtifactKindPullRequest {
@@ -928,9 +848,8 @@ func coordinateResult(a store.AuthoredArtifact) *compassv1internal.ForgeCallResu
 	}}
 }
 
-// forgeOp carries the context the single error-mapping function needs to name a
-// fault: the provider + operation (unsupported), and the body size + limit (an
-// over-limit body names the overage).
+// forgeOp carries provider and operation context, plus body size and limit for
+// oversized-body errors.
 type forgeOp struct {
 	provider  string
 	op        string
@@ -938,21 +857,8 @@ type forgeOp struct {
 	bodyLimit int
 }
 
-// mapForgeError is the SINGLE source flattening a stamp/provider/transport fault
-// onto an in-band ForgeCallError (design.md:700-713): ErrBodyTooLarge →
-// invalid_argument naming the overage; *StatusError{403} ≡ *StatusError{404} →
-// byte-identical not_found (the #995 flattening — the message is fixed, never the
-// forge's, so 403 and 404 are indistinguishable); *StatusError{422} →
-// invalid_argument carrying the forge's validation message; ErrUnsupported →
-// unimplemented naming provider+op; ErrBudgetExhausted / *StatusError{429} →
-// resource_exhausted; everything else → internal. ForgeCallError.RetryAfterMs
-// carries "time until a retry stops fail-fasting": a *forge.RateLimitError
-// (RIG-2255) recovered via errors.AsType on the budget-exhausted arm supplies its
-// RetryAfter, clamped to [0, math.MaxUint32] ms; a value of 0 means no hint (a
-// bare ErrBudgetExhausted sentinel, a header-less live rate limit, or a
-// *StatusError{429} that isRateLimited did not classify as a skip). The value is
-// a superset of provider-stated Retry-After hints — an armed fail-fast gate
-// yields a truthful reset instant even when the provider gave no header.
+// mapForgeError maps provider faults to Connect codes; 422 preserves its
+// message, and rate-limit errors carry a clamped RetryAfterMs hint.
 func mapForgeError(err error, op forgeOp) *compassv1internal.ForgeCallError {
 	switch {
 	case errors.Is(err, forge.ErrBodyTooLarge):
@@ -1006,8 +912,7 @@ func storeForgeError(err error) *compassv1internal.ForgeCallError {
 	}
 }
 
-// forgeErr builds an in-band ForgeCallError with the Connect status token as its
-// code (mirrors boardCallError: code = connect.CodeOf(err).String()).
+// forgeErr builds an in-band ForgeCallError using the Connect status token.
 func forgeErr(code connect.Code, msg string) *compassv1internal.ForgeCallError {
 	return &compassv1internal.ForgeCallError{Code: code.String(), Message: msg}
 }
@@ -1018,9 +923,8 @@ func artifactNotFound() *compassv1internal.ForgeCallError {
 	return forgeErr(connect.CodeNotFound, "forge: artifact not found")
 }
 
-// forgeErrorResult wraps an in-band ForgeCallError as the Error arm of a
-// ForgeCallResult — a tool-level failure the agent renders, with the transport
-// intact (never a Connect error).
+// forgeErrorResult wraps an in-band failure as the result's Error arm; transport
+// remains successful so the agent can render the tool-level failure.
 func forgeErrorResult(fe *compassv1internal.ForgeCallError) *compassv1internal.ForgeCallResult {
 	return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_Error{Error: fe}}
 }

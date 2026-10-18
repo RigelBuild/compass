@@ -22,37 +22,27 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// dmOpener opens the manager<->peer DM at spawn time (R8). A narrow seam so
-// lifecycleService does not pull the whole Comms handler in — satisfied by
-// *comms.Comms via OpenDMAsAccount. It takes the PUBLIC compassv1 OpenDM types
-// (the agent-caller adapter's signature).
+// dmOpener is the narrow Comms seam lifecycleService uses to open a
+// manager-to-peer DM after spawn; *comms.Comms satisfies it.
 type dmOpener interface {
 	OpenDMAsAccount(ctx context.Context, account store.AccountID, req *compassv1.OpenDMRequest) (*compassv1.OpenDMResponse, error)
 }
 
-// lifecycleService is the LifecycleCaller implementation. It holds the store (of
-// record for accounts + placements) and the hub (Provision/Start/Stop/Remove
-// relays to the owning Runner) — the same two dependencies the provision/start
-// handlers use, wired here as the agent-initiated door — plus the dmOpener seam
-// that auto-opens the manager<->peer DM after a spawn (R8).
+// lifecycleService handles LifecycleCaller requests with the store, runner hub,
+// and DM opener used after spawn to open the manager-peer DM.
 type lifecycleService struct {
 	store *store.Store
 	hub   *runnerhub.Hub
-	// dm opens the manager<->new-peer DM at spawn time (R8). Nil for instances
-	// that never spawn (the waker), in which case autoOpenSpawnDM returns an
-	// empty name.
+	// dm opens the post-spawn manager-peer DM; nil for the waker, which never
+	// spawns and therefore has no channel name to return.
 	dm dmOpener
-	// wakeGroup coalesces concurrent WakeAgent calls for the SAME agent onto one
-	// start (RIG-1641 T3 cost control, §Decisions OQ-2): a burst of messages at
-	// one offline agent produces exactly one resume/Start, not a start-storm. A
-	// zero-value Group is ready, so newLifecycleService needs no init.
+	// wakeGroup coalesces concurrent WakeAgent calls per agent into one start.
+	// The zero-value group needs no initialization.
 	wakeGroup singleflight.Group
 }
 
-// newLifecycleService constructs the lifecycle caller over the store, hub, and
-// the DM-opener seam. Wired at serve assembly with hub.SetLifecycleCaller after
-// all three exist, breaking the hub<->lifecycleService construction cycle
-// (serve.go).
+// newLifecycleService constructs the caller. Serve wires it after hub creation
+// to break the hub-service cycle.
 func newLifecycleService(st *store.Store, hub *runnerhub.Hub, dm dmOpener) *lifecycleService {
 	return &lifecycleService{store: st, hub: hub, dm: dm}
 }
@@ -105,29 +95,20 @@ func (l *lifecycleService) WakeAgent(ctx context.Context, agent store.AccountID)
 	slog.InfoContext(ctx, "agent wake", "outcome", outcome, "agent_account_id", agent)
 }
 
-// spawnChainTimeout bounds the whole spawn (and despawn) relay chain. Like
-// rollbackStopTimeout (service.go) the runnerhub dispatch path has no deadline
-// of its own, so a wedged-but-connected Runner that accepts a command but never
-// answers would otherwise hang the agent's spawn/despawn call forever. A package
-// var rather than a const only so a test can shorten it; never reassigned in
-// production.
+// spawnChainTimeout bounds spawn and despawn relay chains; RunnerHub calls have
+// no deadline, so a stalled Runner could hang either request. Tests may shorten it.
 var spawnChainTimeout = 60 * time.Second
 
 // errCannotDespawnSelf is the in-band cause for a self-despawn: an agent cannot
 // tear down its own compute out from under itself. CodeInvalidArgument.
 var errCannotDespawnSelf = errors.New("cannot despawn self")
 
-// errPeerNotFound is the in-band cause a despawn returns for EVERY unauthorized
-// or unknown target — unknown handle, non-agent handle, and foreign-owner peer
-// all collapse to this one message so the caller can never distinguish a peer it
-// may not touch from one that does not exist (the not-found/forbidden merge).
-// CodeNotFound.
+// errPeerNotFound collapses unauthorized and unknown despawn targets so callers
+// cannot distinguish inaccessible peers from missing ones.
 var errPeerNotFound = errors.New("peer not found")
 
-// errHandleTaken is the in-band cause when a spawn handle is already taken by an
-// agent the caller does not own (or by a non-agent account): the same
-// already_exists collapse a human caller gets for a duplicate handle, and it
-// never reveals whose it is. CodeAlreadyExists.
+// errHandleTaken hides whether another owner or a non-agent holds the handle.
+// The caller sees the same already_exists error as for its own duplicate.
 var errHandleTaken = errors.New("handle already taken")
 
 // errCallerNotAgent is the fail-closed cause when the resolved caller does not
@@ -340,13 +321,8 @@ func (l *lifecycleService) resolveDespawnTarget(ctx context.Context, callerOwner
 	return acc.ID, nil
 }
 
-// autoOpenSpawnDM opens the manager<->new-peer DM (R8) and returns its channel
-// name, or "" on any failure. caller is the MANAGER (the spawn's caller); peerID
-// is the created/resolved peer's account id. OpenDM addresses the peer by HANDLE,
-// so the peer's handle is resolved from its account. On ANY error — a nil opener
-// (an unwired test), a handle resolve miss, or the open itself — it LOGS and
-// returns an empty name rather than failing the spawn: the DM is recoverable next
-// turn via comms_open_dm, never a spawn rollback (design.md T3:755-762).
+// autoOpenSpawnDM opens the manager-peer DM after spawn. Failures are logged,
+// never roll back the spawn, and can be recovered through comms_open_dm.
 func (l *lifecycleService) autoOpenSpawnDM(ctx context.Context, caller, peerID store.AccountID) string {
 	if l.dm == nil {
 		return ""
@@ -366,14 +342,9 @@ func (l *lifecycleService) autoOpenSpawnDM(ctx context.Context, caller, peerID s
 	return resp.GetChannel().GetName()
 }
 
-// resumeOrReject handles a spawn whose handle is already taken in the CALLER'S
-// OWN owner namespace (CreateAgent conflicted on the per-owner agent index). An
-// already-placed agent is an idempotent success returning the existing
-// container/session; an unplaced one is resumed. The handle is guaranteed to
-// resolve to a same-owner agent here: the shadow guard already excluded
-// user/system handles, and a foreign owner's same-name agent lives in a
-// separate namespace partition that never conflicts on insert — so a miss is an
-// invariant violation, not a foreign or non-agent handle to collapse.
+// resumeOrReject handles a same-owner collision: return the placed agent or
+// resume it if unplaced. The owner-scoped index guarantees identity; a miss is
+// an invariant violation, not an authorization case.
 func (l *lifecycleService) resumeOrReject(
 	ctx context.Context,
 	callerOwner store.AccountID,
@@ -381,21 +352,18 @@ func (l *lifecycleService) resumeOrReject(
 ) (*compassv1internal.SpawnPeerResponse, error) {
 	existing, err := l.store.AgentByHandle(ctx, callerOwner, req.GetHandle())
 	if err != nil {
-		// CreateAgent conflicted on the caller's own agent namespace, so the
-		// handle MUST resolve to a same-owner agent here. A miss is an invariant
-		// violation (a torn index or a concurrent delete), not a routine outcome
-		// — surface it rather than masking a real fault as already_exists.
+		// CreateAgent conflicted in the caller's namespace, so the handle must
+		// resolve to a same-owner agent. A miss is an invariant violation.
 		wrappedErr := fmt.Errorf("resolving existing handle: %w", err)
 		return nil, connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
 	}
 
-	// Same owner: is it already placed (live), or unplaced (resumable)?
+	// Same owner: return a placed agent or resume it if unplaced.
 	_, container, err := l.store.PlacementForAgent(ctx, existing.ID)
 	switch {
 	case err == nil:
-		// Already spawned and placed: idempotent success. Return the existing
-		// container and its live session (if any) rather than provisioning a
-		// second — a completed-call retry gets its original answer.
+		// Return the existing placement and live session on retry; do not provision
+		// a second container.
 		sessionID, _ := l.hub.SessionForAccount(ctx, existing.ID)
 		return &compassv1internal.SpawnPeerResponse{
 			AgentAccountId: string(existing.ID),
@@ -403,8 +371,7 @@ func (l *lifecycleService) resumeOrReject(
 			SessionId:      sessionID,
 		}, nil
 	case errors.Is(err, store.ErrNotFound):
-		// Unplaced: a spawn that crashed after CreateAgent (or was rolled back).
-		// Resume — re-provision and start the existing account, not a second.
+		// Unplaced agent: re-provision and start the existing account.
 		return l.provisionAndStart(ctx, existing.ID, existing.Agent.Persona, existing.Agent.Role, req)
 	default:
 		wrappedErr := fmt.Errorf("resolving placement for existing agent: %w", err)
@@ -412,14 +379,8 @@ func (l *lifecycleService) resumeOrReject(
 	}
 }
 
-// provisionAndStart runs the placement/session chain for agentID: Provision
-// (threading the client_request_id idempotency key), record the durable
-// placement, Start, record the session ownership. On any post-Provision failure
-// it rolls the container back (bounded Stop + Remove + DeleteAgentPlacement) so
-// the account is left UNPLACED and the handle is not burned — a re-spawn of the
-// same handle then resumes. persona and role are the store's server-
-// authoritative values for the account, threaded to the Runner so no caller
-// value is trusted.
+// provisionAndStart records placement, starts the session, and records
+// ownership. Failures roll back; persona and role come from the store.
 func (l *lifecycleService) provisionAndStart(
 	ctx context.Context,
 	agentID store.AccountID,
@@ -466,15 +427,9 @@ func (l *lifecycleService) provisionAndStart(
 	}, nil
 }
 
-// rollbackSpawn tears a partially-spawned container back down so the account is
-// left UNPLACED and its handle is not burned — the resume path (no live
-// placement) then re-spawns cleanly. Best-effort and bounded on
-// context.WithoutCancel(ctx): the caller's context may already be cancelled (a
-// client that gave up is one plausible reason the store write failed), and the
-// container is live regardless — the same discipline abandonStartedSession uses.
-// The container release order is Stop (if a session started) -> Remove ->
-// DeleteAgentPlacement; each failure is logged, none masks the original cause the
-// caller already returns.
+// rollbackSpawn best-effort stops, removes, and unplaces under bounded
+// context.WithoutCancel; caller cancellation does not stop a live container.
+// Cleanup failures are logged and do not mask the original cause.
 func (l *lifecycleService) rollbackSpawn(ctx context.Context, container, sessionID string) {
 	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), spawnChainTimeout)
 	defer cancel()
@@ -504,19 +459,11 @@ const (
 	wakeOutcomeFailed       = "failed"
 )
 
-// errWakeNoPlacement is the internal sentinel resumeSession returns when the
-// agent has a prior session but no current placement (a despawned agent —
-// despawn deletes the placement, agent_sessions rows are never deleted).
-// wakeOnce maps it to the benign outcome=no-placement, the same disposition
-// freshStart gives a never-provisioned agent (§Decisions OQ-7). It never
-// escapes the wake path.
+// errWakeNoPlacement marks a prior-session agent with no placement after
+// despawn; wakeOnce maps it to benign no-placement rather than returning it.
 var errWakeNoPlacement = errors.New("agent wake: no placement for prior-sessioned agent")
 
-// wakeOnce runs one non-coalesced wake attempt for agent and returns the outcome
-// string the caller logs — one of "resumed", "fresh-started", "no-placement", or
-// "failed". It never returns an error: the singleflight fn's error slot is
-// unused because a wake is void/best-effort, so every fault is captured here as
-// outcome=failed with the cause logged, not propagated.
+// wakeOnce returns a logged outcome rather than an error; faults become failed.
 func (l *lifecycleService) wakeOnce(ctx context.Context, agent store.AccountID) string {
 	sessionID, ok, err := l.store.LatestSessionForAccount(ctx, agent)
 	if err != nil {
@@ -528,10 +475,8 @@ func (l *lifecycleService) wakeOnce(ctx context.Context, agent store.AccountID) 
 		case err == nil:
 			return wakeOutcomeResumed
 		case errors.Is(err, errWakeNoPlacement):
-			// A prior session with no current placement is a despawned agent
-			// (despawn deletes the placement; agent_sessions rows are never deleted).
-			// Benign and common — a logged no-op, NOT outcome=failed. Emitting ERROR
-			// here would trip error-rate alerting on a routine path.
+			// A prior session without placement is a routine no-op: despawn removes
+			// placement but keeps session rows. Do not emit an error-rate alert.
 			return wakeOutcomeNoPlacement
 		default:
 			slog.ErrorContext(ctx, "agent wake: resume failed", "agent_account_id", agent, "session_id", sessionID, "error", err)
@@ -541,21 +486,15 @@ func (l *lifecycleService) wakeOnce(ctx context.Context, agent store.AccountID) 
 	return l.freshStart(ctx, agent)
 }
 
-// resumeSession runs the SYSTEM-AUTHORIZED internal resume of sessionID: the same
-// ordered chain startResumeSession runs (ReconstructSessionBody → hub.StartResume)
-// MINUS RequireAgentSessionSubscriber — the wake holds an agent_account_id, not a
-// caller, and the wake IS the authorization (§Decisions OQ-2). The Runner binds
-// the lifetime after it accepts the Start. StartResume relays on the CONTAINER
-// (Hub.StartResume), so the container is resolved from the durable placement
-// while the reconstruct leg keys on the stable logical session_id.
+// resumeSession performs the system-authorized wake resume: agent_account_id
+// authorizes it, placement locates the container, and session ID reconstructs it.
 func (l *lifecycleService) resumeSession(ctx context.Context, agent store.AccountID, sessionID string) error {
-	// Resolve the container the resume relays on FIRST (StartResume keys on it),
-	// so a placement miss fails before any reconstruct work.
+	// Resolve placement first; StartResume requires its container, so a miss must
+	// fail before transcript reconstruction.
 	_, container, err := l.store.PlacementForAgent(ctx, agent)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			// Signal a benign no-placement to wakeOnce (mirrors freshStart): a
-			// despawned prior-sessioned agent is a routine no-op, not a fault.
+			// Despawned prior-session agents without placement are benign no-ops.
 			return errWakeNoPlacement
 		}
 		return fmt.Errorf("resolving placement: %w", err)
@@ -578,8 +517,7 @@ func (l *lifecycleService) resumeSession(ctx context.Context, agent store.Accoun
 	return nil
 }
 
-// reprovision re-creates the container for an agent whose placement names one the
-// Runner no longer has (a redeploy or Runner restart), and moves the placement to it.
+// reprovision recreates a missing Runner container and updates its placement.
 func (l *lifecycleService) reprovision(ctx context.Context, agent store.AccountID, stale string) (string, error) {
 	acct, err := l.store.GetAccount(ctx, agent)
 	if err != nil {
@@ -597,8 +535,7 @@ func (l *lifecycleService) reprovision(ctx context.Context, agent store.AccountI
 		return "", fmt.Errorf("re-provisioning lost container %q: %w", stale, err)
 	}
 	container := resp.GetContainerName()
-	// No rollback: the Runner derives the name from the account, so it usually equals the
-	// stale row's, and releasing that row would leave the agent permanently unplaced.
+	// No rollback: releasing the stale placement could leave the account unplaced.
 	if err := l.store.RecordAgentPlacement(ctx, agent, runnerID, container); err != nil {
 		return "", fmt.Errorf("recording re-provisioned placement: %w", err)
 	}
@@ -606,12 +543,8 @@ func (l *lifecycleService) reprovision(ctx context.Context, agent store.AccountI
 	return container, nil
 }
 
-// freshStart is the no-prior-session fallback: an agent that has never had a
-// session recorded has no session_id to reconstruct, so the wake mints a fresh
-// one over the existing start chain (provisionAndStart's tail, lifecycle.go:323).
-// A never-provisioned agent has no placement — a logged no-op (outcome
-// "no-placement"), the owed row / cursor waits for any future natural start. It
-// returns the outcome string the caller logs.
+// freshStart mints a session for an agent without prior session history. With no
+// placement it returns no-placement for a future natural start.
 func (l *lifecycleService) freshStart(ctx context.Context, agent store.AccountID) string {
 	_, container, err := l.store.PlacementForAgent(ctx, agent)
 	if err != nil {
@@ -632,19 +565,16 @@ func (l *lifecycleService) freshStart(ctx context.Context, agent store.AccountID
 		return wakeOutcomeFailed
 	}
 	if err := l.store.RecordAgentSession(ctx, startResp.GetSessionId(), agent); err != nil {
-		// The session is already live and started, and the pending message delivers
-		// via the live sweep this Start fired — so we deliberately do NOT roll the
-		// container back here. The only cost is that a FUTURE wake fresh-starts
-		// again; acceptable for a best-effort void wake. outcome=failed flags it.
+		// The live sweep already delivers the pending message. Keep the container;
+		// a later wake may retry. Log failure without treating it as recoverable.
 		slog.ErrorContext(ctx, "agent wake: recording fresh session failed", "agent_account_id", agent, "session_id", startResp.GetSessionId(), "error", err)
 		return wakeOutcomeFailed
 	}
 	return wakeOutcomeFreshStarted
 }
 
-// wakeCtx scopes a wake to the agent's tenant. The delivery loop wakes under the
-// system role, which sets no tenant, so rows the wake writes (agent_sessions,
-// bindings) would land with an empty tenant_id, invisible to every tenant.
+// wakeCtx assigns the agent's tenant to system-role wake writes; without it,
+// they would use an empty tenant_id and be invisible to every tenant.
 func (l *lifecycleService) wakeCtx(ctx context.Context, agent store.AccountID) (context.Context, bool) {
 	if !store.IsSystemRole(ctx) {
 		return ctx, true

@@ -22,11 +22,7 @@ const (
 	// githubWebhookPath is the ingress path T7 mounts this handler at.
 	githubWebhookPath = "/webhooks/github"
 
-	// githubWebhookMaxBody bounds a webhook request body (bytes). The 1 MiB
-	// ceiling keeps the per-request buffered-body allocation small — these
-	// events are single-digit KB — and rejects anything larger before
-	// buffering it, closing the memory-amplification window the raw-body HMAC
-	// read would otherwise open.
+	// githubWebhookMaxBody caps buffering at 1 MiB; larger bodies are rejected first.
 	githubWebhookMaxBody = 1 << 20
 
 	// githubDeliveryLRUSize is the number of recent X-GitHub-Delivery ids the
@@ -40,20 +36,13 @@ const (
 	githubSignatureHeader = "X-Hub-Signature-256"
 )
 
-// ForgeEventSink receives a normalized event the webhook ingress accepted. T4's
-// router satisfies it; the handler calls Enqueue after acking 200, so a slow
-// downstream never delays the ack GitHub's delivery timeout depends on.
+// ForgeEventSink receives normalized events accepted by webhook ingress. Enqueue
+// runs after the 200 ack so downstream latency cannot delay GitHub.
 type ForgeEventSink interface {
-	// Enqueue MUST NOT block: it hands the event off to the async drain loop
-	// and returns immediately, so the ack is never on its latency path.
-	//
-	// The event is READ-ONLY to every sink. One accepted delivery fans out to
-	// multiple sinks (the board arm and the notify arm via fanoutSink), which
-	// drain on independent goroutines; ev carries pointer fields (Comment,
-	// Checks) whose pointees are aliased across those goroutines. A sink MUST
-	// treat ev and everything it points at as immutable — mutating through
-	// ev.Comment/ev.Checks would be a cross-goroutine data race no test or the
-	// compiler catches. A sink that needs to mutate copies first.
+	// Enqueue MUST NOT block: it hands off to the async drain loop, keeping
+	// downstream latency off GitHub's already-sent acknowledgement.
+	// Events and pointer fields are shared across concurrent sinks. Sinks MUST
+	// treat them as immutable and copy before mutation.
 	Enqueue(ctx context.Context, ev forge.ForgeEvent)
 }
 

@@ -10,19 +10,13 @@ import (
 	"strings"
 )
 
-// errNoPublicURL is the boot rejection for an empty public base URL. A
-// deployment that consumes Linear webhooks needs a reachable public URL to build
-// the "Open in Compass" deep link (design T5); an empty base would silently emit
-// a scheme-less relative link that opens nothing, so the responder assembly
-// fails fast at boot rather than degrading to a broken link per event.
+// errNoPublicURL rejects webhook setup without a public base URL, which would
+// otherwise make emitted deep links unusable.
 var errNoPublicURL = errors.New(
 	"a public base URL is required to build Linear deep links: pass --public-url or set $COMPASS_PUBLIC_URL")
 
-// requirePublicURL is the boot guard the responder assembly calls before wiring
-// the Linear webhook path: it rejects an empty base with a legible error rather
-// than letting deepLinkFor emit a base-less relative link at request time. There
-// is no default base, so this fires whenever a deploy enables Linear webhooks
-// without setting --public-url / $COMPASS_PUBLIC_URL.
+// requirePublicURL rejects an empty base before Linear webhook setup; links
+// have no default deployment URL.
 func requirePublicURL(base string) error {
 	if strings.TrimSpace(base) == "" {
 		return errNoPublicURL
