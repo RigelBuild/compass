@@ -76,6 +76,7 @@ type Querier interface {
 	AskForForgeMirror(ctx context.Context, arg AskForForgeMirrorParams) (AskForForgeMirrorRow, error)
 	AskForgeMirrors(ctx context.Context, askIds []string) ([]AskForgeMirrorsRow, error)
 	AuthoredArtifactByCoordinate(ctx context.Context, arg AuthoredArtifactByCoordinateParams) (ForgeAuthoredArtifact, error)
+	AuthoredArtifactByCoordinateFold(ctx context.Context, arg AuthoredArtifactByCoordinateFoldParams) (ForgeAuthoredArtifact, error)
 	AuthoredArtifactByRequestID(ctx context.Context, arg AuthoredArtifactByRequestIDParams) (ForgeAuthoredArtifact, error)
 	AuthoredCoordsForAgents(ctx context.Context, arg AuthoredCoordsForAgentsParams) ([]AuthoredCoordsForAgentsRow, error)
 	BeginForgeMirrorAttempt(ctx context.Context, arg BeginForgeMirrorAttemptParams) (BeginForgeMirrorAttemptRow, error)
@@ -117,6 +118,7 @@ type Querier interface {
 	// The tenant id comes from each start because this sweep has no tenant GUC.
 	CloseOrphanedComputeIntervals(ctx context.Context) (int64, error)
 	CollectSegment(ctx context.Context, arg CollectSegmentParams) ([]CollectSegmentRow, error)
+	CompleteForgeWriteIntent(ctx context.Context, arg CompleteForgeWriteIntentParams) (int64, error)
 	// ComputeUsagePruneHorizon pins the horizon while the rebuild replaces newer rows.
 	ComputeUsagePruneHorizon(ctx context.Context) (pgtype.Timestamptz, error)
 	// ComputeUsageSeries sums matching rows at one pre-aggregated granularity.
@@ -196,6 +198,7 @@ type Querier interface {
 	// The account owner is read in SQL so callers continue to supply only the
 	// session binding identity.
 	EndComputeUsageInterval(ctx context.Context, arg EndComputeUsageIntervalParams) error
+	EndForgeWriteIntent(ctx context.Context, arg EndForgeWriteIntentParams) (int64, error)
 	// Agent-forge-subscription / artifact-cursor queries (sqlc adoption T6,
 	// RIG-3034). These replace the inline SQL literals in
 	// internal/store/forge_subscriptions.go; the hand-written Store methods keep
@@ -557,6 +560,7 @@ type Querier interface {
 	// LockTokenUsage serializes one tenant's appends and rebuilds. A rebuild beside
 	// an append would count the append's events twice or lose them.
 	LockTokenUsage(ctx context.Context) error
+	LockWriteIntent(ctx context.Context, id string) (ForgeWriteIntent, error)
 	MarkForgeMirror(ctx context.Context, arg MarkForgeMirrorParams) (int64, error)
 	MarkMentionsRouted(ctx context.Context, arg MarkMentionsRoutedParams) error
 	MarkPRsBackfilled(ctx context.Context, arg MarkPRsBackfilledParams) (int64, error)
@@ -580,6 +584,8 @@ type Querier interface {
 	OwnerSetLostChannelVisibility(ctx context.Context, arg OwnerSetLostChannelVisibilityParams) ([]string, error)
 	OwnersPeered(ctx context.Context, arg OwnersPeeredParams) (bool, error)
 	OwnersPeeredRowsForShare(ctx context.Context, arg OwnersPeeredRowsForShareParams) ([]OwnersPeeredRowsForShareRow, error)
+	PRWriteIntentByHead(ctx context.Context, arg PRWriteIntentByHeadParams) (ForgeWriteIntent, error)
+	PendingForgeWriteIntents(ctx context.Context, arg PendingForgeWriteIntentsParams) ([]ForgeWriteIntent, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
 	PlacementForAgent(ctx context.Context, agentAccountID string) (PlacementForAgentRow, error)
 	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) (int64, error)
@@ -616,6 +622,9 @@ type Querier interface {
 	// owner_user_id, so a re-land never rewrites who authored the artifact.
 	RecordAuthoredArtifact(ctx context.Context, arg RecordAuthoredArtifactParams) error
 	RecordForgeMirrorRequest(ctx context.Context, arg RecordForgeMirrorRequestParams) (int64, error)
+	// Durable create attempts. Failed attempts may reuse a request key; pending,
+	// done, and lost attempts retain it as the idempotency result.
+	RecordForgeWriteIntent(ctx context.Context, arg RecordForgeWriteIntentParams) (ForgeWriteIntent, error)
 	// Runs under the BYPASSRLS system role (delivery consumer, no tenant GUC), so
 	// tenant_id is stamped explicitly from the owning account's FK rather than the
 	// column DEFAULT (which would NULL-violate with no GUC). The INSERT..SELECT
@@ -826,6 +835,7 @@ type Querier interface {
 	// fires on the ON CONFLICT DO UPDATE path — never set here.
 	UpsertSecret(ctx context.Context, arg UpsertSecretParams) error
 	UserPeerPair(ctx context.Context, arg UserPeerPairParams) (UserPeerPairRow, error)
+	WriteIntentByID(ctx context.Context, id string) (ForgeWriteIntent, error)
 }
 
 var _ Querier = (*Queries)(nil)
