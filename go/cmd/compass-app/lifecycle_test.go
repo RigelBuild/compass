@@ -2,11 +2,9 @@
 
 package main
 
-// Quit-lifecycle gate. The explicit "Quit and stop stack" orchestration is
-// exercised through quitController with INJECTED seams — a recording stackDown
-// stub and a counting quit — so the down argv, the happy-path quit, and the
-// quit-anyway-on-failure default (OQ-6) are all verified deterministically, with
-// no real compass-stack exec and no display.
+// Tests the explicit quitController path with injected stackDown and quit
+// functions, covering argv, successful quit, and quit-after-down-failure without
+// executing compass-stack or opening a display.
 
 import (
 	"context"

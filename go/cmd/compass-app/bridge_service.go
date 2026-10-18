@@ -46,22 +46,9 @@ type eventEmitter interface {
 	Emit(name string, data ...any) bool
 }
 
-// windowDispatcher is the per-window analogue of the eventEmitter seam: it
-// delivers one response frame to a SINGLE originating webview window, rather
-// than app-wide. The real Wails *application.WebviewWindow satisfies it via
-// DispatchWailsEvent (webview_window.go:1372); a test substitutes a fake that
-// records deliveries with no webview.
-//
-// The seam is why this file stays //go:build unix and imports no
-// github.com/wailsapp/wails/v3/pkg/application: that package only compiles under
-// the GTK4/WebKitGTK 6.0 stack, which the untagged toolchain has no pkg-config
-// for (main_nogtk4.go documents it repo-wide), so a direct import
-// would break the untagged module build and the unix-tagged tests. The concrete
-// window handle is captured from the bound-method ctx by windowFromContext, a
-// build-tagged helper (bridge_service_window_gtk4.go reads application.WindowKey
-// and returns the window; the nogtk4 stub returns nil), mirroring the
-// main.go / main_nogtk4.go split. §A4/§M3 mandate exactly this: per-window
-// routing behind the existing eventEmitter seam.
+// windowDispatcher routes response frames to their originating webview.
+// Keeping Wails types behind this seam lets unix builds and tests avoid the
+// GTK-only application package while preserving per-window delivery.
 type windowDispatcher interface {
 	// dispatch delivers one frame to this window's webview under the given event
 	// name. It no-ops for a destroyed window (the real DispatchWailsEvent guards
@@ -112,15 +99,9 @@ type shellStateResult struct {
 type inflightCall struct {
 	cancel context.CancelFunc
 
-	// window is the originating webview window for this call, captured from the
-	// bound-method ctx by windowFromContext at register time — it is gone from
-	// ctx by the time the pump goroutine emits, so it is captured up front and
-	// stored here (record §M3:354). This call's response frames route to this
-	// window only, via the windowDispatcher seam; nil means no originating window
-	// was in context (a windowless transport, a non-gtk4 build, or a direct test
-	// call), and the frames fall back to the app-wide eventEmitter. The interface
-	// value is comparable, so it is also the index M3b's close-time
-	// cancel-all-for-window keys on.
+	// window is captured from the bound-method context before the pump goroutine
+	// outlives that call. Frames route to this window; nil uses app-wide emission.
+	// Its comparable value also keys close-time cancellation.
 	window windowDispatcher
 }
 
@@ -201,12 +182,9 @@ type cancelRequest struct {
 	RequestID string `json:"requestId"`
 }
 
-// responseFrame is the JS ResponseFrame payload emitted per pump frame
-// (daemon-transport.ts:19-23): a tagged head/body/end/error union. Kind selects
-// which of the optional fields is populated; head headers are [name,value] tuple
-// arrays (marshalling to [["name","value"],...]) matching the JS [string,string][]
-// contract, and body chunks are standard base64 so they ride the JSON event
-// channel as strings (the JS decodeChunk does atob).
+// responseFrame is the JS payload emitted per pump frame: a tagged
+// head/body/end/error union. Headers are [name,value] pairs, and body chunks
+// are base64 strings decoded with atob in the JS client.
 type responseFrame struct {
 	Kind    string      `json:"kind"`
 	Status  int         `json:"status,omitempty"`
@@ -224,17 +202,10 @@ const (
 	frameKindError = "error"
 )
 
-// CompassRPC forwards one gRPC-Web call to the daemon and streams the response
-// back as runtime events keyed by requestId. It returns as soon as the call is
-// launched; the pump runs on its own goroutine and each ordered frame is emitted
-// as "compass_rpc:"+requestId in frame order.
-//
-// The forwarding context is derived from the caller's ctx with WithoutCancel so
-// request-scoped values propagate, but detached from the bound-method
-// invocation's lifetime — the stream must outlive this method's return and is
-// torn down only by a terminal frame or an explicit compass_rpc_cancel, never by
-// Wails reclaiming the call context. WithCancel supplies the cancel stored for
-// compass_rpc_cancel.
+// CompassRPC launches a gRPC-Web call and emits its ordered frames as
+// "compass_rpc:" + requestId. Its detached context preserves caller values but
+// outlives the Wails method call; only a terminal frame or explicit cancel ends
+// the stream.
 func (s *bridgeService) CompassRPC(ctx context.Context, req rpcRequest) {
 	callCtx, call := s.register(ctx, req.RequestID)
 	go s.run(callCtx, call, req)
@@ -446,15 +417,10 @@ func (s *bridgeService) probe(ctx context.Context, target *bridge.Target, token 
 	}
 }
 
-// cancelWindow cancels every in-flight call registered to a closing window and
-// drops their entries, driving the same id-keyed teardown as compass_rpc_cancel
-// (a canceled pump stops silently — no further frames — so the server-side
-// subscription terminates). It is the close-time leak gate (record §M3b): a
-// window closing without this leaves its calls' pump goroutines and server
-// subscriptions live for the app's lifetime. Matching is by the comparable
-// windowDispatcher the call captured at register time (bridge_service.go window
-// field); a nil win matches nothing (fallback/windowless calls are never swept
-// by a close). Cancels run outside the lock, matching CompassRPCCancel.
+// cancelWindow cancels and removes calls for a closing window. Without this,
+// their pump goroutines and server subscriptions outlive the window. Matching
+// uses the comparable windowDispatcher captured at registration; nil matches
+// nothing. Cancellation runs outside the lock.
 func (s *bridgeService) cancelWindow(win windowDispatcher) {
 	if win == nil {
 		return
@@ -488,26 +454,10 @@ func (s *bridgeService) shellState() (mode, serverURL string) {
 	return "", ""
 }
 
-// register derives the forwarding context for a call and records the call's
-// teardown handle under requestID, cancelling any prior call already under that
-// id first (so a stale forwarder can never keep emitting onto the same event).
-// It returns the created *inflightCall so run/finish can guard deletion by
-// pointer identity — a re-registered id never has its live entry mis-deleted by
-// a prior call's deferred finish. The context is derived from the caller's ctx
-// with WithoutCancel so request-scoped values propagate, but detached from the
-// bound-method invocation's lifetime — the stream must outlive CompassRPC's
-// return and is torn down only by a terminal frame or an explicit
-// compass_rpc_cancel, never by Wails reclaiming the call context.
-//
-// The originating window is captured HERE, off the still-live bound-method ctx,
-// by windowFromContext (a build-tagged helper: the gtk4 build reads
-// application.WindowKey, set by Wails at messageprocessor_call.go:136, and
-// returns the window; the nogtk4 build returns nil). WithoutCancel would preserve
-// the value on callCtx too, but the frames emit on the pump goroutine after
-// CompassRPC has returned, so the handle is read synchronously up front and
-// stored (record §M3:354). A nil result (no window in ctx — a windowless
-// transport, a non-gtk4 build, or a direct test call) routes frames to the
-// app-wide fallback.
+// register detaches the pump context from the bound-method lifetime while
+// preserving request values; the stream ends only on a terminal frame or
+// explicit cancellation. It captures the originating window before the call
+// returns so emitted frames route correctly.
 func (s *bridgeService) register(ctx context.Context, requestID string) (context.Context, *inflightCall) {
 	win := windowFromContext(ctx)
 	callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -521,7 +471,7 @@ func (s *bridgeService) register(ctx context.Context, requestID string) (context
 	return callCtx, call
 }
 
-// run loads once so a request cannot switch transports midway through setup.
+// run snapshots the connection so setup cannot switch transports mid-request.
 func (s *bridgeService) run(callCtx context.Context, call *inflightCall, req rpcRequest) {
 	defer s.finish(req.RequestID, call)
 	eventName := "compass_rpc:" + req.RequestID
@@ -543,21 +493,8 @@ func (s *bridgeService) run(callCtx context.Context, call *inflightCall, req rpc
 	})
 }
 
-// emitFrame is the per-call response-frame sink: it routes one frame to the
-// call's originating window when one was captured, else to the app-wide emitter.
-//
-// A captured window gets the frame via the windowDispatcher seam — the real one
-// is *application.WebviewWindow.DispatchWailsEvent (per-window delivery,
-// webview_window.go:1372), so the app-wide broadcast (transport_event_ipc.go) is
-// bypassed and a frame never reaches a non-owning window. That method internally
-// no-ops once the window isDestroyed() (webview_window.go:1373), so a frame for a
-// call whose window has since closed is silently dropped rather than broadcast —
-// M3 routes and inherits that drop; it adds no destroyed check of its own (A4).
-//
-// A nil window (no window in the caller's ctx — a windowless transport, a
-// non-gtk4 build, or a direct test call) falls back to the app-wide eventEmitter
-// seam (main.go:104), preserving both non-window callers and the fake-emitter
-// test path (§M3).
+// emitFrame routes each response to its originating window; closed-window
+// dispatchers drop frames. Calls without a window use the app-wide emitter.
 func (s *bridgeService) emitFrame(call *inflightCall, name string, resp responseFrame) {
 	if call.window != nil {
 		call.window.dispatch(name, resp)
@@ -566,11 +503,9 @@ func (s *bridgeService) emitFrame(call *inflightCall, name string, resp response
 	s.events.Emit(name, resp)
 }
 
-// finish drops the in-flight entry for a completed call, then cancels its own
-// context (idempotent). Deletion is guarded by pointer identity: it removes the
-// entry only if the CURRENT entry under requestID is still THIS call, so a call
-// whose id was re-registered by a later call leaves the live entry untouched and
-// only cancels its own (already-finished) context.
+// finish removes the in-flight entry only if it still points to this call,
+// so an older call cannot delete a replacement registered under the same id.
+// It then cancels this call's context.
 func (s *bridgeService) finish(requestID string, call *inflightCall) {
 	s.mu.Lock()
 	if cur, ok := s.inflight[requestID]; ok && cur == call {
@@ -607,16 +542,13 @@ func frameToResponse(f bridge.Frame) responseFrame {
 	case bridge.ErrorFrame:
 		return responseFrame{Kind: frameKindError, Message: frame.Message}
 	}
-	// Unreachable: bridge.Frame is a sealed union and the switch above is
-	// exhaustive. Returning an error frame keeps go-no-panic-in-lib clean rather
-	// than panicking on a hypothetical new variant.
+	// The sealed bridge.Frame union makes this unreachable; return an error frame
+	// rather than panic if a future variant is added.
 	return responseFrame{Kind: frameKindError, Message: "compass bridge: unknown response frame"}
 }
 
-// clientAPIVersion is the compass API version the app speaks. The server's own
-// apiVersion constant is unexported (go/server/service.go), so the app pins its
-// OWN literal and a drift-guard test cross-checks it against a live
-// GetServerInfo. Keep in sync with go/server/service.go apiVersion.
+// clientAPIVersion is pinned because the server's constant is unexported. A
+// live GetServerInfo test guards drift.
 const clientAPIVersion = "compass.v1"
 
 // connectKind* is the sealed failure-kind vocabulary a Connect probe returns
@@ -642,16 +574,10 @@ type connectRequest struct {
 	Server *serverChoice `json:"server,omitempty"`
 }
 
-// connectResult is the Connect outcome the webview renders. Kind is the sealed
-// failure vocabulary. Message NEVER contains the token, but it is NOT fully
-// app-controlled: the version-mismatch Message, and the ServerVersion /
-// APIVersion fields, echo strings the remote server reported — untrusted input
-// (a spoofed daemon can return any bytes). The renderer (T5.5/T5.6) MUST treat
-// Message, ServerVersion and APIVersion as plain text — escaped, never injected
-// as HTML — so a hostile server cannot script the webview.
-// AccountID rides in the result only — it is deliberately NOT written to the
-// service's set-once accountID field, which is read without a lock and would
-// race a webview-goroutine Connect (bridge_service.go accountID doc).
+// connectResult is rendered by the webview. Message, ServerVersion and
+// APIVersion can contain untrusted server text and MUST be escaped, not
+// injected as HTML. AccountID is returned here, not stored on the service,
+// whose unlocked field would race concurrent Connect calls.
 type connectResult struct {
 	OK            bool   `json:"ok"`
 	Kind          string `json:"kind"`    // "" | "bad-url" | "bad-cert" | "bad-token" | "invalid-url" | "invalid-ca" | "version-mismatch" | "other"
@@ -662,10 +588,8 @@ type connectResult struct {
 	ServerURL     string `json:"serverUrl"`
 }
 
-// classifyConnectErr maps a probe error to a sealed connect kind + safe message.
-// connect wraps transport failures, so a TLS/dial cause surfaces as a
-// *connect.Error (CodeUnavailable) wrapping the net/tls error; errors.AsType reaches
-// the underlying cause THROUGH the connect wrapper.
+// classifyConnectErr maps wrapped TLS/dial failures to sealed connect kinds;
+// errors.AsType reaches their causes through the Connect wrapper.
 func classifyConnectErr(err error) (kind, message string) {
 	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); ok {
 		return connectKindBadCert, "The server's certificate is not trusted"
@@ -683,12 +607,9 @@ func classifyConnectErr(err error) (kind, message string) {
 		return connectKindBadURL, "Could not reach the server at this URL"
 	}
 
-	// The sealed mapping follows the design record (T5.3): only
-	// CodeUnauthenticated is bad-token, deadline is folded into bad-url above,
-	// and every other code — CodePermissionDenied (403 on a revoked token),
-	// CodeUnavailable with no net/tls cause, etc. — is the explicit `other`
-	// residual, never a silent fallthrough. Widening it is a contract change
-	// (a new design record), not an inline tweak.
+	// Only CodeUnauthenticated maps to bad-token; deadlines map to bad-url and
+	// other codes remain the explicit residual. Widening this mapping changes the
+	// contract and requires a design record.
 	if connect.CodeOf(err) == connect.CodeUnauthenticated {
 		return connectKindBadToken, "The server rejected this token"
 	}

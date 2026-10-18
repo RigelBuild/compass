@@ -14,21 +14,14 @@ import (
 	runtimelib "github.com/RigelBuild/compass/go/internal/runtime"
 )
 
-// preflight is the T9 host bring-up gate: it surfaces the KVM/podman/microVM and
-// secretspec-CLI prerequisites at install-time rather than at first `up`. A thin
-// consumer of the runtime lane's internal/hostcheck core, keeping only the
-// stack-specific podman-rootless and secretspec-CLI checks. The server's secret
-// read path spawns that CLI, and operators rotate with it. Do not grow it.
+// preflight reuses runtime host checks and adds stack-specific rootless-podman
+// and secretspec CLI checks needed by server secret reads and rotation.
 
 // podmanBinary is the podman executable name, resolved on PATH. It is the check
 // name and the LookPath target, so it is named once here (goconst).
 const podmanBinary = "podman"
 
-// decidePodman is the pure verdict for the podman check. lookErr is the
-// exec.LookPath result (nil = podman on PATH); infoErr and rootless are the
-// result of `podman info` reporting Host.Security.Rootless. podman must be both
-// present and rootless-capable (the stack runs postgres as a rootless container,
-// S4).
+// decidePodman requires podman on PATH and rootless capability from podman info.
 func decidePodman(lookErr, infoErr error, rootless bool) hostcheck.Result {
 	if lookErr != nil {
 		return hostcheck.Result{Name: podmanBinary, OK: false, Detail: fmt.Sprintf("podman not found on PATH: %v", lookErr)}

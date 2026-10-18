@@ -2,11 +2,7 @@
 
 package main
 
-// Unit tests for the two pure seams of the cert-gen CLI: parseHosts (SAN list
-// splitting) and shouldSkipGen (the skip-if-present idempotence gate). run()
-// itself is a thin flag wrapper over certgen.Generate/WriteFiles, which are
-// tested in internal/certgen; the gate is the one stateful decision the binary
-// owns, so it is extracted and tested directly.
+// Tests the pure parseHosts and shouldSkipGen seams; run() is only a flag wrapper.
 
 import (
 	"bytes"

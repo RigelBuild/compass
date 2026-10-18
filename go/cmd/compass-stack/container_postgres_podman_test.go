@@ -2,32 +2,9 @@
 
 package main
 
-// T8 (RIG-2759) container-backed postgres integration proof, mirroring
-// cross_process_podman_test.go's cross-process harness: it drives the REAL
-// compass-stack binary as separate up/down processes against a REAL rootless
-// podman postgres container, and proves the S4 container path end to end:
-//
-//	up (--postgres-image) -> probe DSN reachable -> fresh-process down ->
-//	container gone (`podman container exists` false) -> pgid record removed.
-//
-// Plus the S4 external-DB opt-out: a throwaway host postgres CONTAINER stands in
-// for "the operator's own postgres", and `up --database-external --database
-// <its DSN>` brings the stack up WITHOUT starting a compass postgres component,
-// probing the external DSN as-is.
-//
-// Build-tagged `podman` (out of the hermetic unit lane) and podmanUsable()-guarded
-// so a container-less sandbox skips rather than fails.
-//
-// PROCESS SAFETY (rule://process-safety): the compass postgres container is torn
-// down only by `compass-stack down` (which reads the stack's OWN v2 pgid record
-// and drives podman stop/rm by the recorded name) or by an explicit
-// podman-rm of a container THIS test created by a unique name — never a
-// pattern/name-scan kill. The external stand-in postgres is a container this
-// test created and removes by its exact name on cleanup.
-//
-// DETERMINISM: no sleeps for readiness — up returns only after Ready, so its
-// exit 0 is the gate; every post-condition polls an event (DSN reachable, the
-// container's presence, the pgid file) under a bounded budget.
+// Container tests drive separate up/down processes against rootless podman.
+// They cover bundled postgres and the external-database opt-out with a throwaway
+// container; cleanup targets only test-owned or stack-recorded containers.
 
 import (
 	"context"
@@ -54,15 +31,14 @@ import (
 // exercises the shipped image, not a drift.
 const pgImagePinned = "docker.io/library/postgres:18@sha256:1957b2ff3137e4ef7f3bc813e74fff50b1e1ffddc85c8b9d6f14ade972be8687"
 
-// dsnReachableBudget bounds the post-up poll for the DSN to accept a pgx
-// connection. up returns after Ready (which already gated on postgres
-// reachability), so this is a fast confirmation, not the readiness wait.
+// dsnReachableBudget bounds a post-up confirmation; Ready already checks the
+// postgres connection.
 const dsnReachableBudget = 30 * time.Second
 
-// containerGoneBudget bounds the post-down poll for the container to disappear.
+// containerGoneBudget bounds the post-down container-disappearance poll.
 const containerGoneBudget = 30 * time.Second
 
-// TestContainerPostgresUpDown drives the S4 container path end to end.
+// TestContainerPostgresUpDown covers the bundled postgres container path.
 func TestContainerPostgresUpDown(t *testing.T) {
 	if !podmanUsable(t) {
 		t.Skip("rootless podman not usable in this environment")
@@ -134,8 +110,8 @@ func TestContainerPostgresUpDown(t *testing.T) {
 	}
 }
 
-// TestExternalDatabaseUpDown drives the S4 external-DB opt-out against a
-// throwaway host postgres container standing in for the operator's own DB.
+// TestExternalDatabaseUpDown covers the external-DB opt-out with a throwaway
+// container standing in for the operator's database.
 func TestExternalDatabaseUpDown(t *testing.T) {
 	if !podmanUsable(t) {
 		t.Skip("rootless podman not usable in this environment")
@@ -171,8 +147,8 @@ func TestExternalDatabaseUpDown(t *testing.T) {
 		t.Fatalf("compass-stack up (external db): %v\n%s", err, out)
 	}
 
-	// The stack is live against the external DB. No compass postgres component
-	// started, so the pgid record carries NO postgres entry — server+runner only.
+	// No postgres process is started for an external DB; the record has only
+	// server and runner process entries.
 	waitServerAnswering(t, fx.deps, cfg.SocketPath)
 	assertRecordHasNoPostgresEntry(t, recordPath)
 
@@ -190,19 +166,14 @@ func TestExternalDatabaseUpDown(t *testing.T) {
 	}
 }
 
-// containerFixture is a container-path stack config plus the wired deps the
-// probes use. Like newFixture but the DSN socket dir is a SIBLING of PGDATA (not
-// nested), which the container path requires; buildDeps is the real composition
-// root (so the container adapter and its OS-user superuser are wired exactly as
-// production).
+// containerFixture pairs a container-path config with wired dependencies.
+// Its socket directory is a PGDATA sibling; nesting it makes initdb fail.
 type containerFixture struct {
 	cfg  containerCfg
 	deps stack.Deps
 }
 
-// containerCfg wraps stack config values plus a helper to emit the shared
-// up/down flag set, so the two subcommands can never drift on the flags that
-// identify the same stack.
+// containerCfg holds shared stack flags so up and down identify the same stack.
 type containerCfg struct {
 	StateDir    string
 	SocketPath  string
@@ -212,10 +183,7 @@ type containerCfg struct {
 	RuntimeDir  string
 }
 
-// args builds the full compass-stack argv for subcommand sub with the shared
-// stack-identifying flags, plus any extra flags. Returning one slice (rather
-// than a spread the caller must mix with fixed args) keeps every callsite a
-// single mustRunStack/runStack argument and the up/down flag sets in lockstep.
+// args builds a shared up/down flag set with optional extra arguments.
 func (c containerCfg) args(sub string, extra ...string) []string {
 	out := make([]string, 0, 13+len(extra))
 	out = append(out,
@@ -230,21 +198,16 @@ func (c containerCfg) args(sub string, extra ...string) []string {
 	return append(out, extra...)
 }
 
-// newContainerFixture builds a short-path, free-port container-path stack config
-// and wires the real deps via buildDeps. The DSN socket dir is <root>/pgsock — a
-// SIBLING of PGDATA (<StateDir>/postgres), which the container path requires
-// (podman bind-mounts PGDATA and initdb refuses a non-empty PGDATA, so a nested
-// socket dir would break it). StateDir is the same short root so the whole stack
-// lives under one unique per-pid dir.
+// newContainerFixture builds short paths and real deps. Its DSN socket dir must
+// be a PGDATA sibling; nesting makes PGDATA non-empty and initdb fails.
 func newContainerFixture(ctx context.Context, t *testing.T, root string) containerFixture {
 	t.Helper()
 	ports := freePorts(ctx, t, 2)
 	return newContainerFixtureOnPorts(t, root, ports[0], ports[1])
 }
 
-// newContainerFixtureOnPorts takes its ports from the caller, so a caller that
-// needs more ports draws them all in one freePorts call; separate calls can
-// hand back a port the previous call just released.
+// newContainerFixtureOnPorts accepts ports from one reservation call; separate
+// calls could reuse a port after it is released.
 func newContainerFixtureOnPorts(t *testing.T, root string, listenPort, pgPort int) containerFixture {
 	t.Helper()
 	pgSockDir := filepath.Join(root, "pgsock")
@@ -283,18 +246,15 @@ func newContainerFixtureOnPorts(t *testing.T, root string, listenPort, pgPort in
 	return containerFixture{cfg: cfg, deps: deps}
 }
 
-// derivedContainerName reproduces stack.containerName (package-internal to
-// stack): sha256 of the cleaned state dir, first 6 bytes hex, with the
-// compass-postgres- prefix. Kept in lockstep with the production derivation so
-// the test asserts against the exact name a fresh down reconstructs.
+// derivedContainerName reproduces stack's private name: the cleaned state dir's
+// SHA-256 prefix with the compass-postgres- prefix. Down reconstructs this name.
 func derivedContainerName(stateDir string) string {
 	sum := sha256.Sum256([]byte(filepath.Clean(stateDir)))
 	return "compass-postgres-" + hex.EncodeToString(sum[:6])
 }
 
-// waitDSNReachable polls until a pgx connection to dsn pings clean or the budget
-// elapses — the event-gate for "postgres is accepting on the bind-mounted
-// socket", never a sleep.
+// waitDSNReachable polls for a successful pgx ping under a budget; this is the
+// event gate for postgres accepting on its bind-mounted socket.
 func waitDSNReachable(t *testing.T, dsn string, budget time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(budget)
@@ -392,11 +352,9 @@ func recordLines(t *testing.T, recordPath string) [][]string {
 	return out
 }
 
-// startExternalPostgres launches a throwaway TCP-published stock postgres
-// container standing in for the operator's own DB, waits until it accepts, and
-// returns its DSN. The container and its anonymous volume are force-removed on
-// cleanup. A start/ready failure is fatal — on an opted-in podman run a broken
-// stand-in must fail loudly, not skip.
+// startExternalPostgres launches a throwaway TCP-published postgres container,
+// waits until it accepts connections, and returns its DSN. Cleanup removes the
+// container and volume; setup failures are fatal rather than skipped.
 func startExternalPostgres(t *testing.T) string {
 	t.Helper()
 	name := "compass-ext-pg-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)

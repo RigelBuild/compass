@@ -254,11 +254,9 @@ func newSetupServices(stateDir, image string) (*bridgeService, *setupService, *d
 	return svc, setup, &dialogService{picks: picks}, nil
 }
 
-// launch dispatches the resolved mode into the embedded or client launch arm and
-// returns the wired bridge service plus (embedded only) the quit controller.
-// Only the embedded arm resolves the compass-stack binary and builds the quit
-// controller; a client-only install has neither a compass-stack binary nor a
-// stack to stop, so those effects must not gate a client launch (design §T5.6).
+// launch dispatches the resolved mode and returns its bridge service. Only the
+// embedded arm resolves compass-stack and builds a quit controller; client-only
+// installs have no local stack to stop.
 func launch(
 	ctx context.Context, cfg appconfig.Config, socket, stateDir, image string, stackBinFlag *string,
 ) (*bridgeService, *quitController, error) {
@@ -275,7 +273,7 @@ func launch(
 		}
 		params := embedded.Params{Socket: socket, StateDir: stateDir, Image: image}
 
-		// The embedded bring-up runs before a window opens, under its own bounded context.
+		// Embedded bring-up completes under a bounded context before the window opens.
 		bringUpCtx, cancel := context.WithTimeout(ctx, embedded.BringUpTimeout)
 		accountID, quitter, err := runEmbedded(bringUpCtx, pipeline, params, embedded.RunStackDown(stackBin))
 		cancel()
@@ -303,11 +301,8 @@ func launch(
 	}
 }
 
-// shellStartupJS builds the OQ-8 startup script the webview loads before the app
-// bundle. It assigns window.__COMPASS_MODE__ in both modes and, in client mode,
-// window.__COMPASS_SERVER_URL__. Each value is JSON-encoded (encoding/json) so a
-// hostile server URL containing quotes/backslashes/</script> cannot break out of
-// the script or inject — the encoded form is always a valid JS string literal.
+// shellStartupJS JSON-encodes values before assigning webview globals, so URL
+// text cannot break out of a JavaScript string literal.
 func shellStartupJS(mode, serverURL string) (string, error) {
 	modeJSON, err := json.Marshal(mode)
 	if err != nil {
@@ -324,11 +319,8 @@ func shellStartupJS(mode, serverURL string) (string, error) {
 	return js, nil
 }
 
-// resolveAssetsDir picks the dist directory to serve: the --assets flag, else
-// $COMPASS_ASSETS_DIR, else the dist directory for the running executable's
-// layout (distDirForExecutable). See DE-RISK #1: the dist is outside this
-// package's tree, so it is served from a runtime-resolved directory rather than
-// embedded.
+// resolveAssetsDir uses the flag, environment, then executable layout because
+// the dist directory is outside this package.
 func resolveAssetsDir(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
@@ -342,9 +334,8 @@ func resolveAssetsDir(flagValue string) string {
 	return "dist"
 }
 
-// resolveMode resolves the --mode/$COMPASS_APP_MODE override for appconfig.Load.
-// An empty flag falls back to the environment; an empty result leaves app.toml
-// authoritative, and an absent file then opens the first-run chooser.
+// resolveMode uses the flag, then environment; empty leaves app.toml authoritative
+// and may open the first-run chooser.
 func resolveMode(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
@@ -352,13 +343,8 @@ func resolveMode(flagValue string) string {
 	return os.Getenv("COMPASS_APP_MODE")
 }
 
-// resolveSocket picks the stack socket to serve/dial: the --socket flag, else
-// $COMPASS_SOCKET, else $XDG_RUNTIME_DIR/compass/server.sock (the server
-// default, go/server/socket.go DefaultSocketPath). A relative XDG_RUNTIME_DIR is
-// treated as unset, matching the server, so the fallback is deterministic. In
-// embedded mode the supervised stack serves this socket (passed as --socket and
-// dialed for WhoAmI); the client arm dials the remote over TLS instead and never
-// touches it.
+// resolveSocket uses the flag, COMPASS_SOCKET, then the server default. A
+// relative XDG_RUNTIME_DIR is ignored; client mode dials remotely over TLS.
 func resolveSocket(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
@@ -372,13 +358,7 @@ func resolveSocket(flagValue string) string {
 	return filepath.Join(os.Getenv("HOME"), ".compass", "server.sock")
 }
 
-// distDirForExecutable resolves the dist directory for a given executable path.
-// A macOS .app stages the binary at Contents/MacOS/compass-app and the UI dist
-// at Contents/Resources/dist (the macos-bundle tool, compass-distribution T3),
-// so when the executable sits in a Contents/MacOS directory the dist is one
-// level up at Contents/Resources/dist. Every other packaging — the Linux thin
-// client's bin/compass-app + bin/dist, or a dev build beside the module — stages
-// dist beside the executable.
+// distDirForExecutable handles macOS app bundles and sibling dist layouts.
 func distDirForExecutable(exe string) string {
 	dir := filepath.Dir(exe)
 	if filepath.Base(dir) == "MacOS" && filepath.Base(filepath.Dir(dir)) == "Contents" {
@@ -387,13 +367,8 @@ func distDirForExecutable(exe string) string {
 	return filepath.Join(dir, "dist")
 }
 
-// runEmbedded runs the embedded-mode launch and builds the embedded-only quit
-// controller. It runs the pipeline (preflight → stack up → WhoAmI) and, on
-// success, returns the resolved caller account id together with a *quitController
-// wired to the injected stackDown seam (its quit func is wired to app.Quit by
-// run() once the app exists). embedded.ResolveStackBin and this controller are embedded
-// concerns only: a client-only install has no compass-stack binary and no stack
-// to stop, so neither may gate a client launch (design §T5.6).
+// runEmbedded runs preflight, stack up, and WhoAmI, then returns the embedded
+// quit controller. Client installs have no local stack to stop.
 func runEmbedded(
 	ctx context.Context,
 	pipeline embedded.Pipeline,

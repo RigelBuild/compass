@@ -15,18 +15,12 @@ import (
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
-// maxMessageBytes caps the stdin read in `message post`. A channel message is
-// kilobytes of markdown at most; the cap only stops a stray
-// `compass message post ... < largefile` from allocating an entire file into
-// memory (mirrors maxSecretBytes at secret.go:36).
+// maxMessageBytes bounds stdin reads so a redirected large file cannot be
+// allocated in full.
 const maxMessageBytes = 1 << 20 // 1 MiB
 
-// newMessageCmd builds the message noun: the operator surface for posting into a
-// channel/topic over CommsService/PostMessage. Like the secret noun it carries
-// no logic of its own; the post verb dials the Server and drives one RPC. The
-// message body is read from stdin, never argv, so it cannot leak into the
-// process table (the load-bearing convention shared with the bearer token and
-// secret values).
+// newMessageCmd builds the posting surface; message bodies come from stdin, not
+// argv, so they do not leak through the process table.
 func newMessageCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "message",
@@ -36,16 +30,8 @@ func newMessageCmd() *cobra.Command {
 	return cmd
 }
 
-// newMessagePostCmd builds `message post --channel <id> --topic <name> [--mention
-// <handle>]`: post one message into a channel's topic, the body read from stdin.
-// --topic is a get-or-create-by-name: this operator surface is a trusted minter,
-// so it sets CreateTopic on the request and an unknown name mints the topic (the
-// get-or-create gate is store.resolveTopicForAppend, keyed on
-// PostMessageRequest.create_topic). --mention prepends
-// `@<handle> ` to the body; the server parses @-mentions from the raw text, so
-// there is no separate mention field on the wire (PostMessageRequest carries
-// only container/topic/blocks). The body is read from stdin, never a flag or
-// positional, so it cannot leak into the process table.
+// newMessagePostCmd gets or creates a topic, prepends mentions, and reads its
+// body from stdin so it cannot leak through argv.
 func newMessagePostCmd() *cobra.Command {
 	var channel, topic string
 	var mentions []string

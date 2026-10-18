@@ -2,15 +2,9 @@
 
 package main
 
-// The T3 bridge-service gate: compass_rpc / compass_rpc_cancel exercised against
-// a REAL in-process stub compass.v1 daemon served over cleartext-HTTP/2 (h2c) on
-// a Unix domain socket — the same door the shipped daemon serves, mirroring
-// go/internal/bridge/pump_test.go. The service is driven through its Go
-// entrypoint with a FAKE event emitter that captures every emitted frame, so the
-// whole stream/cancel path is verified WITHOUT a live webview. Deterministic +
-// event-gated only: every synchronization point is a channel or observed event,
-// never a sleep, and there are no retries. A short-deadline root context bounds
-// each blocking wait so a wedged service fails fast instead of hanging.
+// The T3 bridge-service tests exercise compass_rpc and cancel against an
+// in-process h2c daemon. A fake emitter captures frames; channels and bounded
+// contexts synchronize checks without sleeps or retries.
 
 import (
 	"bytes"
@@ -36,11 +30,9 @@ type emitted struct {
 	frame responseFrame
 }
 
-// fakeEmitter is the eventEmitter the service emits through in tests. Each Emit
-// is pushed onto a buffered channel in call order (Emit is invoked from the
-// pump's single goroutine, so channel order is frame order). It stands in for
-// the real Wails app.Event with no webview. The buffer is generous so Emit never
-// blocks the pump goroutine — the test drains it as an event stream.
+// fakeEmitter captures emitted frames on a buffered channel in call order.
+// Emit runs on the pump goroutine; the buffer lets the test drain its stream
+// without blocking that goroutine.
 type fakeEmitter struct {
 	ch chan emitted
 }
@@ -287,13 +279,8 @@ func TestCompassRPCMidStreamCancel(t *testing.T) {
 		t.Fatal("server request was not torn down after cancel")
 	}
 
-	// No further frame is emitted after cancel. The only frames ever emitted were
-	// the head + one body already drained above; a canceled subscription is a
-	// torn-down call, not an EndFrame or ErrorFrame. Non-blocking check: the pump
-	// emits nothing after it OBSERVES the ctx cancel, and this test's stub server
-	// writes no further bytes after "first" (it blocks on ctx.Done()), so no
-	// in-flight body races the cancel here. End-to-end late-frame safety is
-	// provided by the JS `canceled` guard in daemon-transport.ts.
+	// After cancel, no further frame is emitted. The blocked stub prevents an
+	// in-flight write from racing this check; the client separately rejects late frames.
 	select {
 	case ev := <-emitter.ch:
 		t.Fatalf("spurious frame after cancel: kind=%q (a canceled call must emit nothing further)", ev.frame.Kind)
@@ -312,9 +299,8 @@ func TestCompassRPCDialErrorBeforeHead(t *testing.T) {
 
 	svc, emitter := newService(socket)
 	const requestID = "req-dialerr"
-	// Synchronous drive: when run returns, the terminal error frame is the only
-	// frame emitted and the in-flight entry is cleared — so "exactly one error
-	// frame, nothing after" is deterministic without spinning on the map.
+	// Synchronous run makes its single terminal error frame and cleared entry
+	// deterministic without polling the in-flight map.
 	callCtx, call := svc.register(context.Background(), requestID)
 	svc.run(callCtx, call, rpcRequest{RequestID: requestID, Path: "/x"})
 
@@ -633,13 +619,9 @@ func TestAccountIDBoundGetter(t *testing.T) {
 	}
 }
 
-// fakeWindow is a windowDispatcher test double: it records each per-window
-// delivery (event name + decoded frame) onto a buffered channel, the per-window
-// analogue of fakeEmitter. It stands in for a real *application.WebviewWindow so
-// the routed frame path is verified without the GTK webview stack (which does
-// not compile under the unix test tag). The service consults call.window through
-// the windowDispatcher seam, so a test injects one by setting inflightCall.window
-// directly — windowFromContext returns nil in the non-gtk4 test build.
+// fakeWindow records per-window deliveries without the GTK webview stack. Tests
+// inject it through inflightCall.window because windowFromContext returns nil in
+// the non-gtk4 build.
 type fakeWindow struct {
 	ch chan emitted
 }
@@ -652,8 +634,7 @@ func (w *fakeWindow) dispatch(name string, resp responseFrame) {
 	w.ch <- emitted{name: name, frame: resp}
 }
 
-// recvWindow receives one delivery on a fake window's channel or fails on
-// timeout (event-gated, no sleeps), mirroring recv for the emitter path.
+// recvWindow reads one fake-window delivery or fails on timeout.
 func recvWindow(t *testing.T, w *fakeWindow) emitted {
 	t.Helper()
 	select {
@@ -665,13 +646,8 @@ func recvWindow(t *testing.T, w *fakeWindow) emitted {
 	}
 }
 
-// assertNoEmit fails if the app-wide emitter received any frame within a short
-// window — proving a windowed call did NOT fall back to the broadcast path. It
-// is the negative half of per-window routing: frames go to the window's channel
-// ONLY. A short deadline bounds the check; the frames it guards against are
-// emitted synchronously on the same pump goroutine that already delivered to the
-// window, so by the time the window's terminal frame is observed, any stray Emit
-// would already be buffered.
+// assertNoEmit proves windowed calls never fall back to app-wide broadcast.
+// Pump frames are synchronous, so strays are buffered before terminal delivery.
 func assertNoEmit(t *testing.T, e *fakeEmitter) {
 	t.Helper()
 	select {
@@ -681,22 +657,17 @@ func assertNoEmit(t *testing.T, e *fakeEmitter) {
 	}
 }
 
-// runWindowed drives one call synchronously with its window handle injected on
-// the inflightCall, returning after every frame has been routed and the entry
-// cleared (the deterministic single-shot pattern of TestCompassRPCUnaryRoundTrip).
-// The window is set on the registered call directly because windowFromContext
-// returns nil in the non-gtk4 test build; the seam field is exactly what the
-// routed sink (emitFrame) consults.
+// runWindowed synchronously routes one call's frames and clears its entry. The
+// test sets the seam field directly because windowFromContext returns nil in the
+// non-gtk4 build.
 func runWindowed(svc *bridgeService, win windowDispatcher, req rpcRequest) {
 	callCtx, call := svc.register(context.Background(), req.RequestID)
 	call.window = win
 	svc.run(callCtx, call, req)
 }
 
-// TestCompassRPCRoutesToOriginatingWindow proves M3's core behavior: a call with
-// a captured window routes ALL its frames to THAT window's dispatcher (per-window
-// delivery), and NOT to the app-wide emitter — so with more than one window open
-// a frame never broadcasts to a non-owning window.
+// TestCompassRPCRoutesToOriginatingWindow checks that every frame reaches only
+// the captured window, never another open window or the app-wide emitter.
 func TestCompassRPCRoutesToOriginatingWindow(t *testing.T) {
 	respBody := []byte("windowed-response")
 	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -753,14 +724,9 @@ func TestCompassRPCConcurrentTwoWindowIsolation(t *testing.T) {
 	const idA = "req-winA"
 	const idB = "req-winB"
 
-	// Drive both calls on the ONE service concurrently, mirroring CompassRPC's
-	// own register-then-go-run, with each call's originating window injected on
-	// the registered inflightCall (windowFromContext returns nil in this
-	// non-gtk4 test build, so the seam field is set directly). The two run
-	// goroutines share svc.inflight — the concurrency the arm exists to stress.
-	// Each run signals done on return (after its deferred finish clears the
-	// inflight entry), so the not-inflight assertion is gated on completion
-	// rather than racing the goroutine — event-gated, no sleeps.
+	// Drive both calls concurrently on one service, matching CompassRPC's
+	// register-then-go-run path. Each call gets a window on inflightCall directly;
+	// completion channels gate the in-flight assertions without races or sleeps.
 	launch := func(win windowDispatcher, req rpcRequest) chan struct{} {
 		callCtx, call := svc.register(context.Background(), req.RequestID)
 		call.window = win
@@ -774,8 +740,7 @@ func TestCompassRPCConcurrentTwoWindowIsolation(t *testing.T) {
 	doneA := launch(winA, rpcRequest{RequestID: idA, Path: "/a"})
 	doneB := launch(winB, rpcRequest{RequestID: idB, Path: "/b"})
 
-	// Each window receives its own stream through the terminal frame; every
-	// frame must carry that window's own per-id event name (no cross-delivery).
+	// Each stream runs through its terminal frame, with its own per-id event name.
 	drainWindow(t, winA, idA)
 	drainWindow(t, winB, idB)
 
@@ -789,8 +754,7 @@ func TestCompassRPCConcurrentTwoWindowIsolation(t *testing.T) {
 	assertNotInflight(t, svc, idB)
 }
 
-// drainWindow reads frames off a window's channel through the terminal end frame,
-// asserting every one carries the expected per-id event name (no cross-delivery).
+// drainWindow reads through the terminal frame and checks each event name.
 func drainWindow(t *testing.T, w *fakeWindow, requestID string) {
 	t.Helper()
 	want := "compass_rpc:" + requestID
@@ -906,11 +870,9 @@ func TestCancelWindowSweepsOnlyClosingWindow(t *testing.T) {
 	const idB = "req-winB"
 	const idC = "req-nowin"
 
-	// Launch the calls on the ONE service, each on its own run goroutine
-	// (CompassRPC's own register-then-go-run shape). The window is injected on
-	// the registered inflightCall directly because windowFromContext returns nil
-	// in this non-gtk4 test build. Each run signals done on return so teardown is
-	// event-gated, not raced.
+	// Launch each call on its own goroutine, matching CompassRPC's path. The test
+	// injects windows directly because windowFromContext returns nil in this build;
+	// completion channels gate teardown.
 	launch := func(win windowDispatcher, req rpcRequest) chan struct{} {
 		callCtx, call := svc.register(context.Background(), req.RequestID)
 		call.window = win
@@ -945,8 +907,7 @@ func TestCancelWindowSweepsOnlyClosingWindow(t *testing.T) {
 	assertInflight(t, svc, idB)
 	assertInflight(t, svc, idC)
 
-	// A nil window matches nothing: the windowless/fallback call is never swept
-	// by a close, and the surviving windowed call stays live.
+	// A nil window matches nothing, so close never sweeps windowless calls.
 	svc.cancelWindow(nil)
 	assertInflight(t, svc, idB)
 	assertInflight(t, svc, idC)

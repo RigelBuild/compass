@@ -1,22 +1,9 @@
 //go:build unix
 
-// Command compass-mint-runner-token is the Runner-token provisioning CLI: it
-// mints a per-Runner bearer token against the store and emits the plaintext
-// exactly once — to stdout by default, or to a 0600 file with --token-out — for
-// out-of-band delivery to the Runner host.
-//
-// This is the operator provisioning step OQ7 specifies — a dedicated
-// Runner-subject mint path, NOT the account door's IssueToken, and deliberately
-// not an automated RPC (design: architecture-lineage). The store keeps only
-// the SHA-256 hash; the plaintext is unrecoverable after this command exits, so
-// capture it now: `compass-mint-runner-token --runner-id r1 > runner.token`
-// (then chmod 0600), or `--token-out runner.token` to write+chmod it directly.
-// With --token-out the mint keeps a token registered to --runner-id, heals one
-// the store lost, and rotates one held by another subject;
-// stdout always mints. All logs go to stderr, so stdout carries the token and
-// nothing else. The mint logic lives in internal/runnerhub; this binary is a
-// thin wrapper that assembles config from flags/env, mirroring cmd/compass-server
-// and cmd/compass-runner.
+// Command compass-mint-runner-token provisions a Runner bearer token and emits
+// plaintext once, to stdout or a 0600 --token-out file. The store keeps only its
+// SHA-256 hash; file mode reuses a valid token, repairs missing records, or
+// rotates credentials bound to another subject. Mint logic lives in runnerhub.
 package main
 
 import (
@@ -136,22 +123,10 @@ type tokenStore interface {
 	runnerhub.TokenHashResolver
 }
 
-// mintToFile makes the --token-out file idempotent against the store, not just
-// against file presence. It writes the raw token (no trailing newline, matching
-// the admin-token file convention in server/network_door.go) at 0600 atomically.
-//
-//   - force, or no existing file: mint a fresh token, write the file FIRST, then
-//     commit its hash. Ordering the file before the store commit means a failed
-//     file write never leaves an orphaned hash whose plaintext is gone; if the
-//     hash commit then fails, the just-written file is removed so no file is left
-//     holding a token the store never accepted.
-//   - existing file, token registered for THIS runner id (or revoked): no-op.
-//   - existing file, token NOT registered (the store was replaced): re-register
-//     that exact token so the Runner's on-disk credential keeps working — heal
-//     without rotating, which a blind skip (stale hash) or a blind re-mint
-//     (rotated credential) would both get wrong.
-//   - existing file, token registered under ANOTHER subject: it can never enroll
-//     as runnerID, so rotate exactly as --force would.
+// mintToFile keeps the file and store hash in sync: it reuses valid credentials,
+// repairs missing store records, and rotates credentials bound to another
+// subject. It writes the file before committing its hash and removes it if that
+// commit fails, avoiding orphaned hashes and rejected files.
 func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force bool) error {
 	// Before any file write: a store-side refusal would make the cleanup below
 	// delete the credential this run just replaced.
@@ -215,11 +190,9 @@ func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force
 	return nil
 }
 
-// writeTokenFile writes token to path at mode 0600, atomically: a temp file in
-// the same directory (born 0600, chmod-pinned against umask) is written, synced,
-// and renamed over path, so a reader never sees a partial credential and a crash
-// mid-write leaves either the old file or the new one — never a truncated token.
-// The token is written raw (no trailing newline), matching the admin-token file.
+// writeTokenFile atomically writes a raw token at mode 0600. A same-directory
+// temp file and rename prevent partial credentials; a crash leaves the old or
+// new content, never a truncated token.
 func writeTokenFile(path, token string) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*")

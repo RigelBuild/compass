@@ -2,15 +2,8 @@
 
 package main
 
-// The T5.3 Connect gate: the bound Connect probe classified against real
-// httptest TLS servers, one row per sealed failure kind plus the success path.
-// Each row stands up a self-signed TLS stub (mirroring the T5.1 tlsStubServer
-// pattern) serving the two probed RPCs through a real
-// compassv1connect.CompassServiceHandler, builds a bridge.Target pinned to that
-// server's cert, and asserts the classification, the token side effects
-// (tokenstore write + SetBearer armed), and — for every row — that the token
-// string never leaks into Message or captured log output.
-
+// Connect tests cover failure kinds and success against TLS servers. Each row
+// checks token side effects and that plaintext is absent from messages and logs.
 import (
 	"context"
 	"encoding/hex"
@@ -38,10 +31,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/tokenstore"
 )
 
-// A hang guard, not a latency assertion: connectMu serializes arm→probe→persist,
-// so a queued caller's budget must cover every call ahead of it. A deadline near
-// one call's cost makes queueing look unreachable, since classifyConnectErr
-// folds DeadlineExceeded into bad-url.
+// connectTestTimeout is a hang guard, not a latency assertion. connectMu queues
+// full arm/probe/persist sequences, and DeadlineExceeded classifies as bad-url.
 const connectTestTimeout = 2 * time.Minute
 
 const probeToken = "s3cr3t-connect-token"
@@ -65,11 +56,8 @@ func (r *authRecorder) get() string {
 	return r.last
 }
 
-// syncBuffer is a concurrency-safe log sink. The row redirects the global log
-// writer here to assert the token never leaks into a log line, and the httptest
-// server logs (e.g. a TLS-handshake error on the bad-cert row) fire on the
-// server's own goroutine — so the sink is written concurrently with the test's
-// read. A bare strings.Builder would race under -race; the mutex serializes both.
+// syncBuffer serializes httptest server log writes and test reads. The server
+// logs on its own goroutine, so an unguarded strings.Builder would race.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf strings.Builder
@@ -139,17 +127,13 @@ func emptyAccountWhoAmI(_ context.Context, _ *compassv1.WhoAmIRequest) (*compass
 	return &compassv1.WhoAmIResponse{AccountId: ""}, nil
 }
 
-// unavailableServerInfo fails the GetServerInfo probe with a transport-style
-// error over the trusted, reachable TLS server: a reachable server that errors
-// on the first probe. It exercises the GetServerInfo-error disarm branch
-// (classified `other`) with a target that can still be re-probed to prove the
-// bearer was cleared.
+// unavailableServerInfo returns a transport error from a reachable trusted TLS
+// server; the bearer can then be checked as cleared.
 func unavailableServerInfo(_ context.Context, _ *compassv1.GetServerInfoRequest) (*compassv1.GetServerInfoResponse, error) {
 	return nil, connect.NewError(connect.CodeUnavailable, "stub: server info unavailable")
 }
 
-// unauthWhoAmI is the shared bad-token WhoAmI: it fails closed with
-// CodeUnauthenticated regardless of the bearer.
+// unauthWhoAmI always fails closed with CodeUnauthenticated.
 func unauthWhoAmI(_ context.Context, _ *compassv1.WhoAmIRequest) (*compassv1.WhoAmIResponse, error) {
 	return nil, connect.NewError(connect.CodeUnauthenticated, "stub: no caller")
 }
@@ -416,11 +400,9 @@ func assertStillArmed(t *testing.T, svc *bridgeService, rec *authRecorder) {
 // so a rejected candidate token is never armed for subsequent traffic.
 func assertDisarmed(t *testing.T, svc *bridgeService, rec *authRecorder) {
 	t.Helper()
-	// Seed a sentinel so a re-probe that never reaches the server cannot pass as
-	// "disarmed": the stub records the forwarded Authorization BEFORE its handler
-	// returns, so a handler that ERRORS (the GetServerInfo-transport-error row)
-	// still proves what the target injected — the RPC error itself is expected
-	// and ignored; only the recorded header is the assertion.
+	// Seed a sentinel so a re-probe that never reaches the server cannot pass.
+	// The handler records Authorization before returning, even when the RPC
+	// errors; only the recorded header is asserted.
 	rec.set("<not-probed>")
 	client, serverURL := svc.conn.Load().target.Client()
 	cc := compassv1connect.NewCompassServiceClient(connect.NewClient(connecthttp.NewTransport(client, serverURL, connecthttp.WithReadMaxBytes(0))))
@@ -433,7 +415,6 @@ func assertDisarmed(t *testing.T, svc *bridgeService, rec *authRecorder) {
 }
 
 // clientAPIVersion must match the server's unexported apiVersion constant.
-// keep in sync with go/server/service.go apiVersion.
 func TestClientAPIVersionMatchesServer(t *testing.T) {
 	if clientAPIVersion != "compass.v1" {
 		t.Errorf("clientAPIVersion = %q, want %q (keep in sync with go/server/service.go apiVersion)", clientAPIVersion, "compass.v1")

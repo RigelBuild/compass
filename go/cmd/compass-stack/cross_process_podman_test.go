@@ -2,48 +2,9 @@
 
 package main
 
-// T4.3 gate — the scripted, headless (no-webview), CROSS-PROCESS teardown proof
-// the native-app design requires (design.md:465-491: "Manual QA + a
-// scripted compass-stack-level CI variant (headless, no webview)"). It closes
-// the gap TestStackIntegration leaves: that test proves up→Ready→down but ONLY
-// in-process (one process owns the child handles). The real app path is
-// cross-process — the app shells out to a `compass-stack up` that spawns the
-// three children in their own process groups and then EXITS (linger), and later
-// shells out to a FRESH `compass-stack down` that holds NO in-memory handles and
-// must tear the stack down by reading the persisted <StateDir>/stack.pgids record
-// (stack.DownDetached, PR #248). This test drives the REAL compass-stack binary
-// as SEPARATE processes end to end, exactly as the app does.
-//
-// It is a pure test-only addition: it changes no production code under
-// internal/stack or cmd/compass-stack/main.go (the teardown mechanism landed
-// and was reviewed in PR #248) and reuses the in-process test's helpers
-// (shortRoot, freePorts, buildBinariesFromModuleRoot, podmanUsable, newFixture
-// via resolveConfig/buildDeps, assertServerGone, assertPostgresGone,
-// agentImage/probeTimeout) that live in integration_podman_test.go, same package.
-//
-// PROCESS SAFETY (this runs on a SHARED box; rule://process-safety): the only
-// thing that ever STOPS a process here is `compass-stack down` (which signals
-// only the exact process groups it reads from the stack's OWN state-dir
-// stack.pgids record) — never a pkill/killall/pattern-kill/name-scan. The
-// post-down liveness assertion (waitGroupsGone) probes ONLY pgids read from
-// that same record, with kill(-pgid, 0), and asserts each group is gone — ESRCH
-// or a recycled-pid start-time mismatch — signalling nothing.
-// A t.Cleanup runs an idempotent `compass-stack down` so a t.Fatal mid-test still
-// drains the children (the subprocess mirror of the in-process downGuard).
-//
-// AGENT IMAGE — docker.io/library/alpine:latest, the same pullable stand-in
-// integration_podman_test.go documents and uses: the stack pulls it and hands it
-// to the runner but never runs it as a container at up, so a pullable public
-// image satisfies the whole up path (the local-only compass-agent:latest is not
-// pullable, so EnsureImage's `podman pull` would fail).
-//
-// DETERMINISM: no sleeps. up returns only after the stack is Ready, so waiting
-// for its exit 0 IS the readiness gate; every other wait polls an event (the
-// server socket answering / going dark, the postgres socket going dark, the
-// pgid file's presence/absence, group ESRCH) under a bounded timeout so a
-// failure fails fast. Paths stay under the AF_UNIX sun_path budget via the
-// shared shortRoot/freePorts fixture, and the per-test root is unique off the
-// pid so a concurrent or crashed run cannot collide.
+// Cross-process teardown tests drive compass-stack up and down to prove a
+// fresh process can stop the recorded stack. Teardown probes only recorded
+// process groups and unique test paths; rootless-podman absence skips the test.
 
 import (
 	"bufio"
@@ -74,46 +35,20 @@ const pgidRecordName = "stack.pgids"
 // rather than waiting out the whole `go test` deadline.
 const upBudget = 3 * time.Minute
 
-// downBudget bounds each `compass-stack down` subprocess. DownDetached's absolute
-// worst case (every component escalating to SIGKILL) is ~105s now that the nats
-// drain budget joins the collector/postgres teardown; the SIGTERM-succeeds path
-// is ~85s. Bounded generously above the escalation worst case so a `down` that
-// legitimately escalates is never killed mid-teardown, while a genuinely wedged
-// down still fails fast.
+// downBudget bounds teardown above its escalation worst case while keeping a
+// wedged down bounded.
 const downBudget = 150 * time.Second
 
-// answerPollInterval is the gap between server-socket readiness probes. Small
-// enough to make the post-up live assertion prompt, an explicit event-gate
-// rather than a sleep.
+// answerPollInterval spaces socket probes without replacing the readiness event.
 const answerPollInterval = 100 * time.Millisecond
 
-// teardownConfirmBudget bounds the post-down poll for every recorded process
-// group to reach ESRCH. down returns once its confirm channels are satisfied,
-// but postgres's channel (socket quiescence) fires at SIGTERM smart-shutdown
-// entry, before the postmaster process actually exits; this budget covers that
-// residual drain-then-exit window. Comfortably larger than a healthy exit takes,
-// but bounded so a genuinely stuck child fails the test fast.
+// Postgres reports socket quiescence at SIGTERM entry, before exit; this bounds
+// the remaining drain and still limits a wedged child.
 const teardownConfirmBudget = 30 * time.Second
 
-// TestCrossProcessTeardown drives the real compass-stack binary as separate up
-// and down processes and proves the cross-process teardown mechanism (reading
-// <StateDir>/stack.pgids from a fresh process) actually stops a lingering stack.
-//
-// Steps:
-//  1. Build the three child binaries + the compass-stack binary itself into one
-//     bin dir; the up/down subprocesses find the children on PATH there.
-//  2. `compass-stack up --linger …` as a subprocess → exit 0 (up fire-and-returns
-//     after Ready; the children linger in their own process groups).
-//  3. Assert the stack is live (server socket answers) AND the pgid record exists.
-//  4. Read the recorded pgids + start-time tokens from the stack's own record
-//     (for the identity-checked liveness assertion).
-//  5. `compass-stack down …` as a SECOND, independent subprocess → exit 0.
-//  6. Assert cross-process teardown happened: every recorded process group is
-//     gone — identity-checked ESRCH (the authoritative proof, gated first), then
-//     the server and postgres
-//     sockets are dark and the pgid record is removed.
-//  7. A second `compass-stack down` after full teardown → exit 0 (idempotent
-//     "no stack" branch), proving a retried down is safe.
+// TestCrossProcessTeardown proves a fresh down process stops a lingering stack
+// through its persisted pgid record. It builds the binaries, runs up/down
+// separately, checks group and socket teardown, then verifies down is idempotent.
 func TestCrossProcessTeardown(t *testing.T) {
 	if !podmanUsable(t) {
 		t.Skip("rootless podman not usable in this environment")
@@ -121,32 +56,22 @@ func TestCrossProcessTeardown(t *testing.T) {
 
 	ctx := t.Context()
 
-	// 1. Build the three stack child binaries AND the compass-stack binary itself
-	// into one dir. The subprocesses resolve the children via exec.LookPath, so
-	// the dir must be first on their PATH; compass-stack is invoked by full path.
+	// Build child binaries together; subprocesses resolve them from PATH.
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
 	env := stackEnv(t, binDir)
 
-	// A short-path, free-port config resolved through the SAME resolveConfig the
-	// CLI uses (no duplicated config logic); the fixture's derived socket paths
-	// are what the gone-assertions probe. deps gives us the real HealthProber for
-	// the live/gone server probes. Unique per-pid short root so a concurrent or
-	// crashed run cannot collide (shortRoot uses os.Getpid()+suffix).
+	// Resolve short paths so liveness probes fit system socket limits.
 	fx, deps := newFixture(t, shortRoot(t, "-xp"))
 	cfg := fx.cfg
 	recordPath := filepath.Join(cfg.StateDir, pgidRecordName)
 
-	// The idempotent-down cleanup guard: a t.Fatal before the explicit downs
-	// still drains the lingering children across the process boundary. Runs a
-	// fresh `compass-stack down`, exactly as the app's teardown path does; its
-	// result is best-effort (the happy path asserts each down's exit explicitly).
+	// Cleanup runs down in a fresh process and is best-effort; the happy path
+	// asserts explicit teardown results.
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), downBudget)
 		defer cancel()
-		// Best-effort teardown guard. It runs runStack directly (not mustRunStack)
-		// so a harness/infra hiccup or a non-zero down here is only LOGGED, never
-		// fatal: a failing guard must not fail an already-finished, passing test.
+		// Log cleanup harness failures instead of failing a completed test.
 		out, runErr, infraErr := runStack(cctx, t, stackBin, env, "down",
 			"--state-dir", cfg.StateDir,
 			"--socket", cfg.SocketPath,
@@ -163,9 +88,7 @@ func TestCrossProcessTeardown(t *testing.T) {
 		}
 	})
 
-	// 2. `compass-stack up --linger` as a subprocess. up returns (exit 0) only
-	// after the stack is Ready, then the children linger — so waiting for exit 0
-	// IS the readiness gate, no sleep.
+	// Up returns only after Ready, so exit 0 is the readiness gate.
 	upCtx, upCancel := context.WithTimeout(ctx, upBudget)
 	defer upCancel()
 	out, err := mustRunStack(upCtx, t, stackBin, env, "up",
@@ -182,27 +105,19 @@ func TestCrossProcessTeardown(t *testing.T) {
 		t.Fatalf("compass-stack up: %v\n%s", err, out)
 	}
 
-	// 3. The stack is live across the process boundary: the server socket answers
-	// GetServerInfo (poll it, event-gated, as a belt-and-suspenders confirmation
-	// on top of up's exit-0 readiness gate), and the pgid teardown record exists.
+	// Up's success proves readiness; confirm cross-process socket access and record creation.
 	waitServerAnswering(t, deps, cfg.SocketPath)
 	if _, err := os.Stat(recordPath); err != nil {
 		t.Fatalf("stack.pgids record %q missing after up (a lingering stack must leave a teardown record): %v", recordPath, err)
 	}
 
-	// 4. Read the recorded process groups from the stack's OWN record — the only
-	// pgids this test is ever permitted to probe (rule://process-safety), plus
-	// each group's recorded start-time identity token. Reading before the down
-	// lets step 6 assert each group is gone afterward — identity-checked, so a
-	// recycled pid can never masquerade as a still-alive child.
+	// Read recorded pgids and start times to detect dead or recycled processes.
 	groups := readRecordedGroups(t, recordPath)
 	if len(groups) == 0 {
 		t.Fatal("stack.pgids recorded no process groups; a Ready stack spawned all three children")
 	}
 
-	// 5. `compass-stack down` as a SECOND, fully independent subprocess: a fresh
-	// process holding no in-memory child handles, tearing the stack down purely
-	// from the persisted record (the stack.DownDetached path).
+	// Down runs separately and must rely on the persisted record, not up handles.
 	downCtx, downCancel := context.WithTimeout(ctx, downBudget)
 	defer downCancel()
 	out, err = mustRunStack(downCtx, t, stackBin, env, "down",
@@ -217,33 +132,19 @@ func TestCrossProcessTeardown(t *testing.T) {
 		t.Fatalf("compass-stack down: %v\n%s", err, out)
 	}
 
-	// 6. Cross-process teardown actually happened. The AUTHORITATIVE proof is
-	// process-group death, so gate on it FIRST: poll every recorded process group
-	// until it is gone — ESRCH, or a leader start-time mismatch (a recycled pid),
-	// the same identity gate production teardown uses (bounded, event-gated). This
-	// is load-bearing, not
-	// belt-and-suspenders — DownDetached confirms postgres via its DBProber
-	// socket-quiescence channel, which fires the moment postgres enters SIGTERM
-	// "smart shutdown" and refuses NEW connections, i.e. while the postmaster
-	// process is still alive draining compass-server's pooled connections and
-	// still accept()ing on its unix socket. So down returns exit 0 (record
-	// removed) before the postmaster has actually exited; a raw socket dial in
-	// that window still connects. Waiting for every recorded group to be gone
-	// (identity-checked) is what makes the socket gone-assertions below
-	// deterministic. Only pgids from the stack's OWN record are ever probed
-	// (rule://process-safety); kill(-pgid, 0) signals nothing.
+	// Process-group death is authoritative: postgres may answer its probe at
+	// SIGTERM before the postmaster exits. Wait for recorded groups to vanish
+	// before socket checks; probes signal nothing and use only this stack's record.
 	waitGroupsGone(t, groups, teardownConfirmBudget)
 
-	// With every recorded group gone, the sockets are deterministically dark and
-	// the full-success teardown has removed its record.
+	// After groups exit, sockets are dark and successful teardown removes record.
 	assertServerGone(t, t.Context(), deps, cfg.SocketPath)
 	assertPostgresGone(t, fx.pgSock)
 	if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
 		t.Fatalf("stack.pgids record %q still present after a full down (full-success teardown removes it): stat err = %v", recordPath, err)
 	}
 
-	// 7. A retried down after a full teardown is safe: no record, no answering
-	// server → the "no stack" branch → exit 0. Proves an idempotent down.
+	// A second down after teardown exercises the idempotent no-stack path.
 	down2Ctx, down2Cancel := context.WithTimeout(ctx, downBudget)
 	defer down2Cancel()
 	out, err = mustRunStack(down2Ctx, t, stackBin, env, "down",
@@ -259,10 +160,8 @@ func TestCrossProcessTeardown(t *testing.T) {
 	}
 }
 
-// buildStackBinary compiles the compass-stack command itself into binDir (beside
-// the three child binaries buildBinariesFromModuleRoot built) and returns its
-// path. Built from the module root the same way, so the subprocess under test is
-// the current tree's compass-stack, not whatever happens to be installed.
+// buildStackBinary builds the current compass-stack beside the child binaries,
+// so the subprocess under test is not an installed command.
 func buildStackBinary(t *testing.T, binDir string) string {
 	t.Helper()
 	wd, err := os.Getwd()
@@ -279,18 +178,8 @@ func buildStackBinary(t *testing.T, binDir string) string {
 	return out
 }
 
-// stackEnv returns the current environment with binDir prepended to PATH so a
-// compass-stack subprocess resolves the compass-postgres/-server/-runner
-// children (looked up by bare name via exec.LookPath) to the freshly built
-// binaries. PATH is rebuilt (not merely re-appended) so there is exactly one
-// PATH entry and binDir is unambiguously first.
-//
-// It also seeds a fixture-owned secret provider: compass-server fails closed
-// without an at-rest master key, and a CI runner has no ambient provider, so
-// the subprocess must carry its own rather than inherit one. An inherited
-// COMPASS_SECRET_PROVIDER is deliberately DISCARDED, not merely absent —
-// otherwise an operator's ambient provider would silently decide which key the
-// subprocess boots under, making the result depend on the dev box.
+// stackEnv prepends built binaries and replaces inherited secret providers with
+// a fixture-owned provider, avoiding dependence on the operator's host.
 func stackEnv(t *testing.T, binDir string) []string {
 	t.Helper()
 	provider := seedMasterKeyProvider(t)
@@ -312,23 +201,10 @@ func stackEnv(t *testing.T, binDir string) []string {
 	return append(out, "PATH="+binDir+string(os.PathListSeparator)+oldPath)
 }
 
-// runStack runs the compass-stack binary with the given args and environment,
-// bounded by ctx. It returns the subprocess's combined stdout+stderr, the
-// process exit error (runErr; nil == exit 0), and a separate infraErr that is
-// non-nil only when the HARNESS itself failed — it could not create or read
-// back the temp output file. Keeping the harness failure distinct from the
-// subprocess exit status is what lets the best-effort cleanup guard log-and-
-// ignore a transient tmp-I/O hiccup instead of failing an already-finished
-// test; the happy-path steps call mustRunStack, which makes infraErr fatal.
-//
-// Output goes to a temp FILE, never a pipe (CombinedOutput / a buffer-backed
-// cmd.Stdout). That is load-bearing for the `up --linger` path: up spawns the
-// three children — which INHERIT its stdout/stderr — and then exits. A pipe's
-// read end only reaches EOF when every writer fd is closed, so the lingering
-// children hold it open and cmd.Wait would block until they die, never
-// returning even though up itself exited. A file fd is passed straight to the
-// child; cmd.Wait returns on the process's own exit, and the inherited fd is
-// harmless.
+// runStack returns combined output, the subprocess exit error, and a separate
+// harness error for temp-file I/O. Output goes to a file rather than a pipe:
+// lingering children inherit stdout, which would keep a pipe open and block
+// cmd.Wait after the up process exits.
 func runStack(ctx context.Context, t *testing.T, stackBin string, env []string, args ...string) (out string, runErr, infraErr error) {
 	t.Helper()
 	// A plain os.CreateTemp (not t.TempDir) so this is safe to call from a
@@ -394,11 +270,8 @@ func waitServerAnswering(t *testing.T, deps stack.Deps, socketPath string) {
 	}
 }
 
-// recordedGroup is one child's teardown identity as persisted in stack.pgids:
-// its process-group id and the group leader's start-time token. The start time
-// is what closes the pid-recycling window — the same (Pgid, StartTime) identity
-// the production teardown checks (internal/stack/pgidfile.go pgidEntry,
-// adapters/groupsignal.go Liveness).
+// recordedGroup pairs a child's pgid with its leader start time, preventing a
+// recycled pid from being mistaken for the original process.
 type recordedGroup struct {
 	// component is the recorded component name, carried purely so a liveness
 	// failure names which child survived instead of a bare pgid.
@@ -407,18 +280,10 @@ type recordedGroup struct {
 	startTime uint64
 }
 
-// waitGroupsGone polls every recorded process group until it is gone or the
-// budget elapses — the authoritative "the children are actually dead" proof
-// after a cross-process down. "Gone" mirrors production's teardown gate
-// (adapters/groupsignal.go Liveness): a group is gone when it is ESRCH, OR its
-// leader's start time no longer equals the recorded token (a recycled pid).
-// Without the identity check a dead child's pgid reused by another process
-// would read as "still alive" and fail the test even though teardown worked.
-//
-// It signals nothing: kill(-pgid, 0) is the existence probe (signal 0), run
-// only on pgids read from the stack's OWN stack.pgids record, never a scan
-// (rule://process-safety). A group genuinely still alive at budget expiry fails
-// the test — the teardown did not stop it.
+// waitGroupsGone polls recorded process groups until teardown completes. A
+// group is gone if absent or if its leader PID was recycled; the start-time
+// check prevents a reused pid from appearing alive. Probes signal nothing and
+// use only pgids from the stack's own record.
 func waitGroupsGone(t *testing.T, groups []recordedGroup, budget time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(budget)
@@ -444,11 +309,8 @@ func waitGroupsGone(t *testing.T, groups []recordedGroup, budget time.Duration) 
 	}
 }
 
-// groupAlive reports whether the recorded process group still needs teardown,
-// mirroring adapters/groupsignal.go Liveness: ESRCH or a recycled leader is
-// gone; a matching leader or an unreadable one (members outliving a reaped
-// leader keep the pgid) is alive. It signals nothing — kill(-pgid, 0) is signal 0.
-// An unexpected kill errno (not ESRCH/EPERM) is surfaced as an error.
+// ESRCH or a recycled leader means gone; a matching or unreadable leader may
+// still have members. Probe with signal 0 and report unexpected errors.
 func groupAlive(pgid int, startTime uint64) (bool, error) {
 	err := syscall.Kill(-pgid, 0)
 	switch {
@@ -465,11 +327,8 @@ func groupAlive(pgid int, startTime uint64) (bool, error) {
 	return got == startTime, nil
 }
 
-// readLeaderStartTime reads field 22 (starttime) of /proc/<pgid>/stat — the
-// group leader, since pid == pgid for a Setpgid child. It is a third read-only
-// copy of the leaf parser the production teardown uses; the canonical
-// explanation of the parenthesized-comm gotcha lives at stack.parseStatStartTime
-// (duplicated again in adapters.parseGroupLeaderStat for the same reason).
+// readLeaderStartTime reads field 22 after the last ')' in /proc stat because
+// comm may contain spaces and parentheses; the offset is 22-3 after comm.
 func readLeaderStartTime(pgid int) (uint64, error) {
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pgid) + "/stat")
 	if err != nil {
@@ -495,19 +354,9 @@ func parseLeaderStartTime(line string) (uint64, error) {
 	return strconv.ParseUint(rest[startTimeIndexAfterComm], 10, 64)
 }
 
-// readRecordedGroups parses the stack.pgids record and returns the recorded
-// process groups in start order, each with its pgid and start-time identity
-// token. The record is
-//
-//	<version> <writerPid>
-//	proc <component> <pgid> <starttime>   (v2 process entry)
-//	ctr <component> <name>                (v2 container entry, no process group)
-//	<component> <pgid> <starttime>        (v1, untagged — still read)
-//	...
-//
-// (internal/stack/pgidfile.go writePgidFile). The const/type are package-
-// internal to stack, so the test parses the fields directly rather than calling
-// the unexported reader — a read-only parse of a stack-owned file, never a write.
+// readRecordedGroups reads process-group identities from v1 or v2 stack.pgids
+// records. Container entries have no pgid; this test reads but never writes the
+// stack-owned file because the production reader is package-private.
 func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 	t.Helper()
 	f, err := os.Open(recordPath)
@@ -566,9 +415,7 @@ func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 	if err := sc.Err(); err != nil {
 		t.Fatalf("scan stack.pgids record %q: %v", recordPath, err)
 	}
-	// Name the real cause rather than letting the caller's "no groups" message
-	// send a maintainer looking for a spawn failure: a record that parsed fine
-	// but held only container entries leaves nothing to probe.
+	// Explain container-only records here rather than implying a spawn failure.
 	if len(groups) == 0 && containers > 0 {
 		t.Fatalf("stack.pgids had %d entries, all container-kind; no process group to probe", containers)
 	}

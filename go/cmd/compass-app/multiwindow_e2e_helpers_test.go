@@ -32,13 +32,8 @@ func mustGetWindow(t *testing.T, name string) application.Window {
 	return win
 }
 
-// launchWindowedCall registers and runs one in-flight bridge call attributed to
-// win through the PRODUCTION capture path: register reads the window off a ctx
-// carrying application.WindowKey (exactly what Wails hands a bound method,
-// messageprocessor_call.go:136) via the real windowFromContext, so the stored
-// inflightCall.window is a real wailsWindowDispatcher{win} — the value winA's
-// close handler must match to sweep this call. The returned channel closes when
-// run returns (terminal frame or cancel), the event gate for the sweep.
+// launchWindowedCall uses production context capture so its windowDispatcher
+// matches the close handler. The channel closes when the call ends.
 func launchWindowedCall(svc *bridgeService, win application.Window, requestID string) <-chan struct{} {
 	ctx := context.WithValue(context.Background(), application.WindowKey, win)
 	callCtx, call := svc.register(ctx, requestID)

@@ -47,12 +47,8 @@ func newServerSecretListCmd() *cobra.Command {
 	}
 }
 
-// runServerSecretList calls ListServerSecrets and renders each declared server
-// secret. An empty list renders a clear message, not an error.
-//
-// Unlike the user path, declared does NOT imply set: the Server self-declares
-// every server-secret NAME at boot while the operator populates the VALUES
-// separately, so the set/unset column is the whole point of the verb.
+// runServerSecretList prints declared server secrets and whether each value is
+// set; declaration happens at boot, while operators populate values separately.
 func runServerSecretList(ctx context.Context, client compassv1connect.SecretsServiceClient, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -73,19 +69,8 @@ func runServerSecretList(ctx context.Context, client compassv1connect.SecretsSer
 	return nil
 }
 
-// renderServerSecretStatus prints one server secret as "<BARE_NAME>: set|unset".
-// It NEVER prints a value — none is carried on the wire.
-//
-// The reserved prefix is STRIPPED so the bare name — the spelling the operator
-// configures — starts the line. That is load-bearing beyond readability: the
-// deployment's seed script matches each secret with a line-anchored
-// "\n<NAME>: " glob, which the stored prefixed form would never hit.
-//
-// ANY reserved prefix is stripped, not just SERVER_: the master key carries
-// COMPASS_ (store.MasterKeyName) and is a real server_secrets row, so it lists
-// here too. Stripping only one would print that row with its prefix intact
-// while every other row appeared bare — the same output column meaning two
-// different spellings.
+// renderServerSecretStatus prints "<BARE_NAME>: set|unset" without values.
+// Strip reserved prefixes to match the names operators configure and seed.
 func renderServerSecretStatus(out io.Writer, s *compassv1.ServerSecretStatus) error {
 	state := "unset"
 	if s.GetIsSet() {

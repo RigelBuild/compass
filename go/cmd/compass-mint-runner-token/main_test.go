@@ -2,11 +2,8 @@
 
 package main
 
-// Unit tests for the two injectable seams of the runner-token provisioning CLI:
-// resolveDSN (flag/env precedence) and mintAndPrint (mint + print-once
-// invariant). Both are exercised without a real Postgres: resolveDSN is pure
-// over its flag arg and $COMPASS_DATABASE_DSN, and mintAndPrint takes a
-// runnerhub.TokenPutter, so a fake captures the (hash, subject) it stores.
+// Tests resolveDSN and mintAndPrint without Postgres; a fake TokenPutter records
+// hashes and subjects.
 
 import (
 	"bytes"
@@ -73,12 +70,8 @@ type putCall struct {
 	subj store.Subject
 }
 
-// fakeTokenPutter records every PutTokenHash so mintAndPrint's storage contract
-// is asserted directly, and returns a configurable error to drive the failure
-// path. It also resolves hashes it has stored, so it doubles as the tokenStore
-// mintToFile needs: a hash that was put resolves to its subject; any other hash
-// is store.ErrNotFound (a token the store has never seen). It implements both
-// runnerhub.TokenPutter and runnerhub.TokenHashResolver.
+// fakeTokenPutter records hashes, subjects, and configurable errors. It also
+// resolves stored hashes for registered-token and unknown-token cases.
 type fakeTokenPutter struct {
 	calls   []putCall
 	err     error                      // returned by PutTokenHash when set
@@ -115,11 +108,8 @@ var (
 )
 
 func TestMintAndPrint(t *testing.T) {
-	// success: the plaintext is written exactly once as a single trailing-newline
-	// line, and its sha256 equals the hash the store was handed under the Runner
-	// keyspace with the given id. This binds the printed credential to the stored
-	// hash (the "printed once, hash-only in store" invariant) and to the
-	// SubjectRunner keyspace (the OQ7 cross-door isolation).
+	// Success prints one newline-terminated token and stores its hash under the
+	// Runner subject, binding the printed credential to the stored hash.
 	t.Run("success prints token whose hash was stored under runner subject", func(t *testing.T) {
 		fake := &fakeTokenPutter{}
 		var buf bytes.Buffer
@@ -197,11 +187,8 @@ func TestMintAndPrint(t *testing.T) {
 	})
 }
 
-// TestWriteTokenFile pins the --token-out sink's file contract: the token lands
-// on disk raw (no trailing newline — a bearer credential with a stray \n is
-// corrupted), owner-only at 0600 (it's a live secret), and a second write
-// atomically replaces the first (the temp+rename overwrite path). Each subtest
-// uses its own t.TempDir(), so the cases are hermetic and order-independent.
+// TestWriteTokenFile checks raw bytes, owner-only mode, and atomic replacement.
+// Each case uses its own temp directory for isolation.
 func TestWriteTokenFile(t *testing.T) {
 	// The load-bearing case: the bytes on disk equal the token exactly, with no
 	// trailing newline and no extra bytes. If the impl used Fprintln instead of

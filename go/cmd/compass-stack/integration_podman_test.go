@@ -2,47 +2,9 @@
 
 package main
 
-// End-to-end Linux integration proof for the T2 embedded stack supervisor
-// (RIG-1662 / RIG-1683, design.md:437-442). Every other T2 test stubs the
-// external effects; THIS one drives the real composition root — resolveConfig +
-// buildDeps wiring the six real adapters — against REAL initdb/postgres/podman/
-// compass-server/compass-runner, proving the whole embedded stack stands up.
-//
-// The gate (design.md:437-442): `up` reaches Health=Ready (server
-// answering AND the runner spawned with an image present), `down` drains
-// cleanly, a second `up` ATTACHES instead of double-spawning, and two concurrent
-// `up`s produce exactly one stack.
-//
-// Build-tagged (`podman`) so it is OUT of the hermetic unit lane — it only runs
-// under `-tags podman`. podmanUsable()-guarded so a container-less sandbox skips
-// (never fails); wherever rootless podman exists the assertions are real.
-//
-// PROCESS SAFETY (this runs on a SHARED box; rule://process-safety): the stack
-// under test creates NO containers — per-agent containers are on-demand via the
-// ProvisionAgentWorkspace RPC, never called here; `up` only spawns the three
-// child PROCESSES (compass-postgres, compass-server, compass-runner), and the
-// postgres wrapper's own postgres child. Teardown is therefore process-based:
-// stack.Down sends SIGTERM to each child's process group (adapters/process.go
-// Setpgid), and every stack created registers a best-effort Down guard via
-// t.Cleanup so a t.Fatal still drains its children. NEVER pkill/killall — only
-// the stack's own Down (or the exact PIDs it owns) ever stops anything.
-//
-// AGENT IMAGE — alpine, not a real agent image (grounded): the stack pulls
-// Config.AgentImage into the local store (adapters/image.go EnsureImage ->
-// `podman pull`) and passes it to the runner as --image. It is NOT run as a
-// container at up: cmd/compass-runner/main.go run() only validates a podman
-// engine fact (the userns-remap version check, main.go:91) then
-// runner.Run (internal/runner/run.go:85-122) DIALS the server's TLS door and
-// enrolls; a per-agent container is built only later on a ProvisionAgentWorkspace
-// RPC. So a pullable stand-in (docker.io/library/alpine:latest) satisfies the
-// whole up path; the local-only compass-agent:latest is deliberately avoided (it
-// is not pullable, so EnsureImage's real `podman pull` would fail).
-//
-// STRONGEST RELIABLE ASSERTION — spawned + Ready now proves Runner enrollment:
-// stack.spawnChain waits for the specific embedded Runner id in GetServerInfo,
-// after preflight and before Up returns. So this covers postgres readiness,
-// server readiness, token issuance, image presence, Runner spawn, and enrollment.
-// ProvisionAgentWorkspace remains outside this test's assertion scope.
+// Integration tests exercise embedded-stack readiness, teardown, re-attach,
+// and concurrent-up serialization using real postgres and rootless podman.
+// They start child processes and tear them down through the stack's Down path.
 
 import (
 	"context"
@@ -76,10 +38,9 @@ func seedMasterKeyProvider(t *testing.T) string {
 	return "dotenv://" + secretsPath
 }
 
-// agentImage is a small, pullable public image standing in for the agent image:
-// the stack pulls it and hands it to the runner, but never runs it as a
-// container at up (see the file header). Same image the runtime lifecycle test
-// uses.
+// agentImage is a pullable public stand-in for the agent image: the stack pulls
+// it and hands it to the runner but never runs it at up. A local-only
+// compass-agent:latest would fail that pull.
 const agentImage = "docker.io/library/alpine:latest"
 
 // probeTimeout bounds a post-Down readiness probe so an assertion that the
@@ -142,11 +103,8 @@ func netnsConnLiveness(dir string) string {
 	return fmt.Sprintf("conn pid %d: kill(0) = %v", pid, syscall.Kill(pid, 0))
 }
 
-// buildBinaries compiles the three stack child binaries from the current tree
-// into binDir and returns it. The ProcessSupervisor resolves each Component to a
-// bare binary name via exec.LookPath (adapters/process.go:33-60), so the stack
-// only stands up if compass-postgres/-server/-runner are found on PATH; the
-// caller prepends binDir to PATH. Built from the module root (../.. of this directory).
+// buildBinariesFromModuleRoot builds the three child binaries into binDir.
+// The supervisor resolves them by bare name, so callers prepend binDir to PATH.
 func buildBinariesFromModuleRoot(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
@@ -165,11 +123,8 @@ func buildBinariesFromModuleRoot(t *testing.T) string {
 	return binDir
 }
 
-// freePorts returns n distinct free TCP ports on loopback by binding :0 on each,
-// reading the kernel-assigned port, then closing — race-free enough for a test
-// and the only way to a fixed port the config accepts (Config.Validate rejects
-// :0; there is no bound-address discovery API). All listeners are held open
-// until every port is read so the kernel cannot hand the same port twice.
+// freePorts reserves distinct loopback ports through :0. Config.Validate
+// rejects :0, so listeners remain open until each port is recorded.
 func freePorts(ctx context.Context, t *testing.T, n int) []int {
 	t.Helper()
 	lns := make([]net.Listener, 0, n)
@@ -200,12 +155,7 @@ type stackFixture struct {
 	socket string // the server unix socket path
 }
 
-// newFixture builds a short-path, free-port stack config through the SAME
-// resolveConfig the CLI uses (no duplicated config logic) and wires the real
-// adapters via buildDeps. shortRoot is a per-subtest dir kept short for the
-// AF_UNIX sun_path budget Config.Validate enforces on RuntimeDir (~38 bytes on
-// Linux); a t.TempDir path would overflow it. StateDir may be a normal long
-// t.TempDir — only the socket/runtime paths are budget-constrained.
+// newFixture resolves short AF_UNIX-safe paths and wires real adapters.
 func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 	t.Helper()
 	secretProvider := seedMasterKeyProvider(t)
@@ -222,9 +172,7 @@ func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 	ports := freePorts(t.Context(), t, 2)
 	listenPort, pgPort := ports[0], ports[1]
 
-	// The DSN host is the socket DIRECTORY postgres -k listens on (libpq unix
-	// convention); the postgres wrapper (cmd/compass-postgres) creates it and
-	// binds SocketDir/.s.PGSQL.<port>.
+	// Postgres listens on the DSN socket directory, created by its wrapper.
 	dsn := "host=" + pgSockDir + " port=" + strconv.Itoa(pgPort) + " dbname=compass sslmode=disable"
 
 	cfg, err := resolveConfig(configFlags{
@@ -258,10 +206,8 @@ func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 	}, deps
 }
 
-// shortRoot creates a short, unique, 0700 root under /tmp for one subtest and
-// registers its RemoveAll. Short because everything sun_path-budgeted lives
-// under it; unique off os.Getpid()+suffix so nothing collides with a concurrent
-// or crashed run.
+// shortRoot creates a unique 0700 /tmp root. Short paths fit sun_path, and
+// uniqueness prevents collisions with concurrent or crashed runs.
 func shortRoot(t *testing.T, suffix string) string {
 	t.Helper()
 	root := filepath.Join("/tmp", "cs"+strconv.Itoa(os.Getpid())+suffix)

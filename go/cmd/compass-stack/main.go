@@ -217,11 +217,8 @@ func newFlagSet(name string, lingerable bool) (*flag.FlagSet, *configFlags) {
 	return fs, f
 }
 
-// markExplicitFlags records which string flags were explicitly passed (as
-// opposed to left at their default), for the flags whose "set to empty" must be
-// told apart from "unset": --otel-external and --nats-external. For each, an
-// explicit empty value is a misuse resolveConfig rejects, while an unset flag is
-// the default (bundle the component). Called after fs.Parse on every subcommand.
+// markExplicitFlags lets resolveConfig distinguish an explicitly empty external
+// endpoint from an unset opt-out.
 func markExplicitFlags(fs *flag.FlagSet, f *configFlags) {
 	fs.Visit(func(fl *flag.Flag) {
 		if fl.Name == "otel-external" {
@@ -267,21 +264,14 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		socketPath = p
 	}
 
-	// The DSN points postgres at a unix socket UNDER the state dir, so the
-	// private store is app-private. The host is the socket DIRECTORY postgres
-	// -k listens on (the compass-postgres wrapper creates it). Flag wins, else
-	// $COMPASS_DATABASE_DSN, else this state-dir default.
+	// Use a private unix socket under the state dir. Flag wins over the
+	// environment and state-dir default; postgres listens on this socket directory.
 	dsn := f.database
 	if dsn == "" {
 		dsn = os.Getenv("COMPASS_DATABASE_DSN")
 	}
-	// The external-DB opt-out points the stack at an operator-run postgres, so it
-	// MUST carry an explicit DSN. With no --database and no $COMPASS_DATABASE_DSN,
-	// the state-dir default below would silently aim at the private socket this
-	// path never starts, surfacing as a slow "postgres did not accept connections"
-	// timeout on the obvious misuse rather than a clear config error. Reject it
-	// here, where flag/env emptiness is still visible — once defaulted, Validate
-	// cannot tell a supplied DSN from a defaulted one.
+	// Check before defaulting: an empty DSN is invalid for external postgres, but
+	// flag/env emptiness is no longer distinguishable after applying a default.
 	if f.databaseExternal && dsn == "" {
 		return stack.Config{}, errors.New("--database-external requires an explicit --database DSN (or $COMPASS_DATABASE_DSN): point the stack at your own postgres")
 	}
@@ -294,19 +284,13 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		runtimeDir = defaultRuntimeDir(f.stateDir)
 	}
 
-	// The --otel-external opt-out points compass surfaces at an operator/managed
-	// endpoint, so it MUST carry an explicit endpoint. An explicit empty value
-	// (--otel-external "") is a misuse: it would set ExternalOTLPEndpoint empty,
-	// which the core reads as "bundle the collector" — the opposite of the
-	// operator's intent — so reject it here where the explicit-empty is still
-	// visible (fs.Visit recorded it), mirroring the --database-external reject.
+	// Empty explicitly set means the opt-out intent cannot be honored; detect it
+	// before defaults erase the distinction from an unset flag.
 	if f.otelExternalSet && f.otelExternal == "" {
 		return stack.Config{}, errors.New("--otel-external requires an explicit OTLP endpoint: point compass surfaces at your own collector (omit the flag to bundle one)")
 	}
 
-	// The --nats-external opt-out is rejected on an explicit empty value for the
-	// same reason: an empty ExternalNatsURL reads as "bundle NATS", the opposite
-	// of the operator's intent.
+	// Empty explicitly set means bundle NATS would contradict the requested opt-out.
 	if f.natsExternalSet && f.natsExternal == "" {
 		return stack.Config{}, errors.New("--nats-external requires an explicit nats:// URL: point compass surfaces at your own broker (omit the flag to bundle one)")
 	}
@@ -314,10 +298,8 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		return stack.Config{}, errors.New("--gateway-external requires an explicit URL")
 	}
 
-	// The guest knobs take the module's flag-then-env precedence with NO default
-	// on any of the three: an implicit backend selection here would silently
-	// route a stack onto microVM. Whether the guest dir's files exist is a
-	// runtime question stack startup owns, not this pure resolver's.
+	// No default is safe: implicit backend selection could silently choose microVM.
+	// File existence is checked at runtime, not by this pure resolver.
 	runtimeBackend := f.runtimeBackend
 	if runtimeBackend == "" {
 		runtimeBackend = os.Getenv("COMPASS_RUNTIME_BACKEND")
@@ -363,28 +345,15 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 	return cfg, nil
 }
 
-// defaultDSN builds the keyword/value DSN for the private postgres reachable over
-// a unix socket under the state dir. The host is the socket directory postgres
-// listens on (compass-postgres -k <dir> on the process path; a bind-mount on the
-// container path), not a file, per libpq's unix-socket convention.
-//
-// The socket dir is <state-dir>/pgsock — a SIBLING of the PGDATA dir
-// (<state-dir>/postgres), NOT nested under it. On the container path PGDATA is a
-// podman bind-mount whose source must pre-exist, and postgres's initdb refuses a
-// non-empty PGDATA; a socket dir nested inside PGDATA (the old
-// <state-dir>/postgres/sock) would have to be created first and would then make
-// PGDATA non-empty, breaking initdb. A sibling dir sidesteps that entirely and
-// is transparent to the process path (the wrapper binds whatever dir the DSN
-// names).
+// defaultDSN keeps the socket dir beside PGDATA; nesting it makes the bind mount
+// non-empty and causes initdb to fail.
 func defaultDSN(stateDir string) string {
 	sockDir := filepath.Join(stateDir, "pgsock")
 	return fmt.Sprintf("host=%s port=5432 dbname=compass sslmode=disable", sockDir)
 }
 
-// defaultRuntimeDir resolves the runner socket base dir, kept short for the
-// AF_UNIX sun_path budget Config.Validate enforces on RuntimeDir. It prefers
-// $XDG_RUNTIME_DIR/compass (short and tmpfs-backed on Linux) and falls back to a
-// short dir under the state dir.
+// defaultRuntimeDir keeps the runner socket within sun_path limits. It prefers
+// the short tmpfs-backed XDG dir and falls back under the state dir.
 func defaultRuntimeDir(stateDir string) string {
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); filepath.IsAbs(xdg) {
 		return filepath.Join(xdg, "compass")
@@ -392,11 +361,9 @@ func defaultRuntimeDir(stateDir string) string {
 	return filepath.Join(stateDir, "run")
 }
 
-// buildDeps wires the real seam adapters into stack.Deps. Each field is one
-// genuine external effect; the CLI is the composition root that supplies them.
-// It returns an error because the container-backed postgres adapter resolves
-// the OS user (the container superuser, S4) at construction and a failure there
-// must surface loudly rather than default to a wrong role.
+// buildDeps wires real effect adapters. It returns errors because the
+// container-backed postgres adapter resolves the OS superuser and must not
+// silently choose a different role on failure.
 func buildDeps(cfg stack.Config) (stack.Deps, error) {
 	deps := stack.Deps{
 		Supervisor:      adapters.NewProcessSupervisor(),
@@ -409,10 +376,7 @@ func buildDeps(cfg stack.Config) (stack.Deps, error) {
 		Now:             time.Now,
 		ExpectedVersion: version,
 	}
-	// The container-backed postgres seams (start + teardown) are wired whenever a
-	// container postgres could be in play: the start path (up with a PostgresImage)
-	// AND the cross-process down path (which needs Containers to tear down a v2
-	// entry without knowing whether up used the container). Inert unless dispatched.
+	// Bundle postgres lifecycle seams so cross-process down can remove its container.
 	if !cfg.ExternalDatabase {
 		pc, err := adapters.NewPostgresContainer()
 		if err != nil {
@@ -421,15 +385,8 @@ func buildDeps(cfg stack.Config) (stack.Deps, error) {
 		deps.PostgresContainer = pc
 		deps.Containers = pc
 	}
-	// The bundled collector seams (start + readiness probe) are wired whenever a
-	// bundled collector could be in play: not on the --otel-external opt-out. Its
-	// teardown reuses the ContainerController contract like postgres — the
-	// concrete Stop/Remove/Exists are name-agnostic podman calls, so ONE
-	// Containers seam tears down both container components by their recorded
-	// names. Set Containers from the collector adapter when the postgres block
-	// above did not (the external-DB + bundled-collector combo), so a
-	// cross-process down that reads a collector container entry always has a
-	// teardown seam.
+	// Bundle collector seams unless opted out; down needs the shared container
+	// controller even when the database is external.
 	if cfg.ExternalOTLPEndpoint == "" {
 		cc, err := adapters.NewCollectorContainer()
 		if err != nil {
@@ -441,13 +398,7 @@ func buildDeps(cfg stack.Config) (stack.Deps, error) {
 			deps.Containers = cc
 		}
 	}
-	// The bundled nats seams (start + readiness probe) are wired whenever a
-	// bundled NATS could be in play: not on the --nats-external opt-out. Its
-	// teardown reuses the same name-agnostic ContainerController contract, so the
-	// one Containers seam already set above tears down every container component
-	// by its recorded name; set it from the nats adapter only when neither block
-	// above did (external DB + external OTLP + bundled nats), so a cross-process
-	// down that reads a nats container entry always has a teardown seam.
+	// Bundle NATS seams unless opted out, reusing or supplying the shared controller.
 	if cfg.ExternalNatsURL == "" {
 		nc, err := adapters.NewNatsContainer()
 		if err != nil {
@@ -472,10 +423,8 @@ func buildDeps(cfg stack.Config) (stack.Deps, error) {
 	return deps, nil
 }
 
-// runUp resolves config, wires deps, and brings the stack up. stack.Up returns
-// once the stack is Ready (or attached); the children keep running, so up prints
-// status and returns rather than blocking (lingering vs quit is Config.Linger's
-// concern). A version mismatch on attach is surfaced as a restart-stack prompt.
+// runUp returns when the stack is Ready or attached; children keep running.
+// A version mismatch on attach is surfaced as a restart-stack prompt.
 func runUp(ctx context.Context, args []string) error {
 	fs, f := newFlagSet("up", true)
 	if err := fs.Parse(args); err != nil {
@@ -507,11 +456,9 @@ func runUp(ctx context.Context, args []string) error {
 	return nil
 }
 
-// runDown tears the stack down across the process boundary via
-// stack.DownDetached: it reads the pgid record a prior up persisted and signals
-// those process groups, so a fresh down process stops a stack it never spawned.
-// This replaces the old attach-path Up+Down, which was a silent no-op across
-// processes (the attached Stack owned no child handles to signal).
+// runDown tears down a prior process's stack through stack.DownDetached, which
+// reads its persisted pgid record. This lets a fresh down process stop children
+// it did not spawn.
 func runDown(ctx context.Context, args []string) error {
 	fs, f := newFlagSet("down", false)
 	if err := fs.Parse(args); err != nil {
@@ -541,10 +488,8 @@ func runDown(ctx context.Context, args []string) error {
 	return nil
 }
 
-// runStatus attaches to the live stack (Up's attach-if-live path) and prints its
-// health. The public API exposes readiness only via a *Stack's Health, and the
-// only way to a *Stack is Up — which attaches without spawning when the server
-// already answers — so status goes through Up, then Health.
+// runStatus uses Up's attach-if-live path because only a Stack exposes Health.
+// Up attaches without spawning when the server already answers.
 func runStatus(ctx context.Context, args []string) error {
 	fs, f := newFlagSet("status", false)
 	if err := fs.Parse(args); err != nil {

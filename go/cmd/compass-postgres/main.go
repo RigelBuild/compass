@@ -138,12 +138,9 @@ func newPGConfig(stateDir, dsn string) (pgConfig, error) {
 	return cfg, nil
 }
 
-// parseKeywordValueDSN parses the supervisor's space-separated pgx keyword/value
-// DSN (host=/x port=5432 dbname=compass sslmode=disable) into a map. This is a
-// deliberately small parser, not a full pgx connection-string parse: the
-// supervisor always forms a simple space-separated k/v DSN, so a full parser
-// would be dead weight. Multiple spaces between pairs are tolerated; a token
-// without an '=' is a malformed DSN and errors.
+// parseKeywordValueDSN parses the supervisor's simple space-separated pgx
+// keyword/value DSN. It tolerates repeated spaces and rejects malformed pairs;
+// a full pgx parser would be unnecessary for this controlled input.
 func parseKeywordValueDSN(dsn string) (map[string]string, error) {
 	out := make(map[string]string)
 	for tok := range strings.FieldsSeq(dsn) {
@@ -293,23 +290,15 @@ func initCluster(ctx context.Context, cfg pgConfig) error {
 	return nil
 }
 
-// createDBBudget/createDBInterval bound the createdb retry below: postgres binds
-// its socket a moment after launch, and createdb run too early fails with a
-// connect error rather than blocking, so we retry until it connects or the
-// budget elapses. The budget covers a cold cluster's first-accept latency with
-// headroom on a loaded shared box.
+// These bounds cover cold-start latency while createdb retries until the socket
+// accepts connections.
 const (
 	createDBBudget   = 60 * time.Second
 	createDBInterval = 200 * time.Millisecond
 )
 
-// ensureDatabase creates cfg.DBName once the socket is accepting connections,
-// treating an "already exists" as success so restarts are idempotent. Postgres
-// has no boot-time "create this database" flag, so we createdb over the socket
-// after start. createdb does NOT block for the server — run before postgres
-// accepts it fails fast with a connect error — so we retry on that transient
-// failure until postgres accepts or the budget elapses; a real (non-connect)
-// createdb error is returned immediately.
+// ensureDatabase retries transient connection failures until postgres accepts
+// connections; an existing DB succeeds, while other errors fail immediately.
 func ensureDatabase(ctx context.Context, cfg pgConfig) error {
 	createdbBin, err := exec.LookPath("createdb")
 	if err != nil {
@@ -322,10 +311,7 @@ func ensureDatabase(ctx context.Context, cfg pgConfig) error {
 	for {
 		cmd := exec.CommandContext(ctx, createdbBin, //nolint:gosec // G204: the embedded-postgres seam — createdbBin is LookPath-resolved and args are wrapper-built from pgConfig, neither user-controlled
 			"-h", cfg.SocketDir, "-p", cfg.Port, cfg.DBName)
-		// Force the client message locale to C so the classification below is
-		// deterministic across desktop locales — a translated "could not connect"
-		// would otherwise read as fatal and the DB never get created. cLocaleEnv sets
-		// LC_ALL=C authoritatively, so an inherited LC_ALL/LC_MESSAGES cannot win.
+		// Force C locale so translated diagnostics cannot break retry classification.
 		cmd.Env = cLocaleEnv(os.Environ())
 		out, err := cmd.CombinedOutput()
 		if err == nil {
@@ -387,13 +373,8 @@ func classifyCreatedbOutput(out string) createdbOutcome {
 	}
 }
 
-// cLocaleEnv returns env with every message-affecting locale variable removed
-// and LC_ALL=C appended, so createdb emits C-locale diagnostics regardless of
-// the inherited environment. Appending LC_MESSAGES=C is not enough: POSIX
-// precedence is LC_ALL > LC_MESSAGES > LANG, so an inherited LC_ALL would win,
-// and a duplicate LC_MESSAGES key resolves to the first (inherited) value. We
-// therefore drop LC_ALL/LC_MESSAGES/LANG and set the top-of-precedence LC_ALL=C
-// as the single authoritative entry.
+// cLocaleEnv removes inherited locale keys before setting LC_ALL=C, avoiding
+// conflicting values and locale-dependent createdb diagnostics.
 func cLocaleEnv(env []string) []string {
 	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {

@@ -2,26 +2,10 @@
 
 package main
 
-// T3 (RIG-3107) bundled NATS integration proof, mirroring the cross-process
-// harness used by the bundled OTel Collector leg: it drives the REAL
-// compass-stack binary as separate up/down processes against REAL rootless
-// podman containers and proves the supervised NATS path end to end:
-//
-//	up -> NATS container exists + health :8222 answers 200 -> JetStream posture
-//	     matches the rendered store directory and sync interval -> fresh-process
-//	down -> NATS container gone -> pgid record removed.
-//
-// Build-tagged `podman` (out of the hermetic unit lane) and podmanUsable()-guarded
-// so a container-less sandbox skips rather than fails.
-//
-// PROCESS SAFETY (rule://process-safety): the NATS container is torn down only
-// by `compass-stack down` (reads the stack's OWN v2 pgid record, drives podman
-// stop/rm by the recorded name) or by an explicit podman-rm of a container THIS
-// test created by a unique derived name — never a pattern/name scan.
-//
-// DETERMINISM: no blind sleeps for readiness — up returns only after Ready, so
-// its exit 0 is the gate; every post-condition polls an event under a bounded
-// budget.
+// Bundled NATS integration drives separate compass-stack up/down processes
+// with rootless podman. It checks container health, JetStream configuration,
+// recorded teardown, and bounded readiness polling; cleanup uses only the stack
+// record or a unique test-owned container name.
 
 import (
 	"context"
