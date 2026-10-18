@@ -1,20 +1,7 @@
 #!/usr/bin/env bash
-# build.sh — build the versioned Compass native-app release tarball
-# (compass-app-<version>-linux-amd64.tar.gz): the gtk4 shell (compass-app) + the
-# four embedded sidecars (compass-stack, compass-server, compass-runner,
-# compass-clear-token) + the pinned secretspec CLI + the UI dist + the desktop
-# file + LICENSE, every compass binary stamped with the ONE version. No postgres
-# tooling and no compass-postgres
-# sidecar — the embedded stack's postgres is a stock postgres:18 container via
-# rootless podman (§A4).
-#
-# Why bash: this is nix + go build orchestration glue — it realizes the pinned
-# GTK cc/pkg-config closure with `nix build`, links the one gtk4 binary against
-# it, and stages a directory tree. It carries no runtime deps beyond nix/go/tar,
-# and runs byte-identically in CI and on the dev box.
-#
-# Run from app-bundle/ (moon's default project cwd). Paths are anchored to this
-# script's own directory so it is cwd-independent.
+# build.sh — builds the versioned Compass native-app release tarball.
+# The bundle includes the GTK shell, sidecars, pinned tools, and UI; embedded
+# postgres uses the stock postgres:18 container. Paths are script-relative.
 
 set -euo pipefail
 
@@ -25,16 +12,9 @@ cd "$SCRIPT_DIR"
 log() { printf '>> %s\n' "$*" >&2; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 
-# --- 1. Realize the pinned nix outputs, keeping GC-root symlinks under
-#        app-bundle/ so nix-collect-garbage cannot dangle the tarball's rpaths.
-#        A bare `nix build --no-link` creates NO GC root. Reuse the
-#        already-pinned bin + pkgConfig + cc outputs directly off gtk-e2e-env.nix
-#        (no re-pinned copy) — the one gtk4 binary is rpathed against them.
-#
-#        `bin` carries the pinned pkg-config the cgo link SHELLS OUT to. Setting
-#        only PKG_CONFIG_PATH is not enough: cgo execs `pkg-config` off PATH, so
-#        a runner without one fails "exec: pkg-config: executable file not found
-#        in $PATH" while a dev box silently passes on its dev-shell copy.
+# Keep GC-root symlinks under app-bundle/ so GC cannot dangle the tarball rpaths.
+# Reuse gtk-e2e-env.nix outputs. cgo execs pkg-config off PATH, not just
+# PKG_CONFIG_PATH, so the pinned binary must be on PATH or a bare CI runner fails.
 log "Realizing pinned nix outputs (bin, pkgConfig, cc)"
 nix build -f "$REPO_ROOT/tools/toolchain/gtk-e2e-env.nix" bin \
   -o "$SCRIPT_DIR/result-bin"
@@ -52,12 +32,9 @@ export PATH="$BIN_ENV/bin:$PATH"
 PKG_CONFIG_PATH="$PC_ENV/lib/pkgconfig:$PC_ENV/share/pkgconfig"
 CC_BIN="$CC_ENV/bin/cc"
 
-# --- 2. Version: one string, every binary (§196-205). Base from version.txt
-#        (release-please's source of truth), +g<shortsha> dev/bundle suffix.
-#        Read version.txt on its own line: in a composite assignment `set -e`
-#        only inspects the LAST substitution, so folding the `cat` into the same
-#        line as the `git` substitution would silently swallow a missing file
-#        and leave an empty base.
+# Version every binary from release-please's version.txt plus the dev git SHA.
+# Keep cat separate: `set -e` checks only the last substitution in a composite
+# assignment and can hide a missing version file.
 if [[ -n "${COMPASS_BUNDLE_VERSION:-}" ]]; then
   # Release path (release.yml release-assets): the semver tag IS the identity
   # (Global Constraint 1), stamped clean like the daemons — no +g<sha> suffix,
@@ -127,15 +104,10 @@ for b in compass-app compass-stack compass-server compass-runner compass-clear-t
     err "sanity: missing/non-executable binary: bin/$b"
     exit 1
   fi
-  # Each command's --version output must CONTAIN the stamp. The stamp value is
-  # what the gate asserts (§257); the surrounding format is per-command and
-  # already heterogeneous in the as-built tree (compass-server prints
-  # "compass-server <v>", the others the bare value — A0 §77-84), so a
-  # substring check is the faithful "prints the stamped value" test, not an
-  # exact-string match that a correct bundle would fail.
-  # Capture stdout+stderr and guard the exit explicitly: a binary that crashes
-  # on --version would otherwise abort at this assignment under `set -e` before
-  # the diagnostic below runs, losing the operator's clue to which binary broke.
+  # Version output formats differ, so assert the stamp is present rather than
+  # matching the whole string.
+  # Capture stderr and check status explicitly so --version failures get the
+  # binary-specific diagnostic below despite `set -e`.
   if ! got="$("$bin" --version 2>&1)"; then
     err "sanity: bin/$b --version exited non-zero: $got"
     exit 1
@@ -159,13 +131,8 @@ if ! got="$("$STAGE/bin/secretspec" --version 2>&1)"; then
 fi
 log "  bin/secretspec --version = $got"
 
-# --- 7. Tar the bundle dir. Clear ALL prior release tarballs first, not just
-# this version's: build.sh stamps the name with the git sha, so a dev box that
-# builds across commits (or a reused moon cache dir) accumulates stale
-# compass-app-*.tar.gz beside the fresh one. The manual SMOKE.md runbook globs
-# the one tarball in this dir and expects exactly this build's artifact, so
-# "one tarball after a build" is an invariant this step owns. CI's workspace is
-# clean so this is a no-op there; it is the dev-box path that needs it.
+# Clear old tarballs because git-SHA names leave stale artifacts across builds.
+# SMOKE.md expects exactly one tarball, so remove previous versions first.
 log "Creating tarball: $TARBALL"
 rm -f "$SCRIPT_DIR"/compass-app-*-linux-amd64.tar.gz
 tar -czf "$SCRIPT_DIR/$TARBALL" -C "$SCRIPT_DIR" "$BUNDLE"
