@@ -254,7 +254,8 @@ func TestReparentAgentConcurrentCycleSerialized(t *testing.T) {
 	}()
 
 	// Wait for tx2 on this owner's advisory lock; scope the poll to the exact key.
-	// On timeout, commit anyway.
+	// The poll is bounded: on timeout it commits tx1 anyway, so a regression with
+	// no lock fails the assertions below instead of hanging.
 	deadline := time.After(5 * time.Second)
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
