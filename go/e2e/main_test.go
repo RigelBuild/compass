@@ -112,12 +112,9 @@ func startSuitePostgres(ctx context.Context) (func(), error) {
 	return func() { stop(); cleanup() }, nil
 }
 
-// buildStackBinaries compiles the three stack child binaries from the module
-// root into a fresh temp dir and returns it. This package lives at go/e2e, so
-// the module root (the dir holding go.mod) is ONE `..` up — verified by the
-// go.mod check below, which fails legibly if the layout ever moves. The t-free
-// signature lets TestMain call it once per run (there is no *testing.T there);
-// the caller owns the returned dir's removal.
+// buildStackBinaries compiles the three stack child binaries to a temp dir.
+// Resolve the module root from go/e2e and verify go.mod before building; the
+// caller owns removal of the returned directory.
 func buildStackBinaries(ctx context.Context) (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {

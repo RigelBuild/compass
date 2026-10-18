@@ -57,14 +57,9 @@ func TestSeedSettledBeforeFixtureReturns(t *testing.T) {
 		t.Fatalf("root supervisor not resolvable after NewFixture returned: %v (the seed-settle gate did not hold)", err)
 	}
 
-	// The placement resolves on a single read taken right after NewFixture
-	// returned — the seed's Provision recorded it BEFORE the gate released. This
-	// is the exact post-condition the gate guarantees and the race violated: a
-	// bare NewFixture with no gate frequently leaves this unplaced, because the
-	// placement lands ~1.5s after enrollment (the window the flake lived in). The
-	// read carries the standard per-RPC-magnitude deadline so a wedged store fails
-	// loud rather than hanging, but the assertion is presence-NOW, not eventual:
-	// there is no poll loop.
+	// NewFixture must return only after the supervisor's durable placement exists.
+	// This is an immediate read, not an eventual poll; a missing row means a leg's
+	// first Provision could race the seed.
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	runnerID, containerName, err := st.PlacementForAgent(rctx, sup.ID)

@@ -61,17 +61,11 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 
 	ctx := context.Background() // test root, threaded into every primitive
 
-	// The persistent substrate: one root/stateDir/ports shared by both Ups, so
-	// run2's Up re-attaches the postgres cluster run1 initialized (the DB data
-	// dir lives under stateDir). Its single end-of-test RemoveAll is owned here,
-	// NOT per-Up, so run1's Down cannot delete the DB before run2.
+	// Both Ups reuse one site and postgres data directory; one test cleanup owns its
+	// root, so run1's Down cannot erase state before run2.
+	// The fixed handle is minted once and resolved after restart, preserving the
+	// account id and deterministic container name.
 	site := newPersistentSite(ctx, t)
-
-	// A FIXED handle across both runs. CreateAgent is create-only (a duplicate
-	// handle is an already_exists conflict, not find-or-create), so run1 MINTS
-	// the account under this handle and run2 RESOLVES that same persisted row by
-	// the handle over the re-attached DB (see run2 below) — same account id ⇒
-	// same deterministic container name across the restart.
 	const handle = "leg6-idempotence"
 	const displayName = "Leg Six Idempotence"
 
@@ -87,11 +81,8 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 		t.Fatal("CreateAgent (run1) returned an empty account id")
 	}
 
-	// The container name is deterministic: NamePrefix (compass-agent-, run.go:48)
-	// + the account id (spec.go:85). Known only after CreateAgent — so register
-	// the exact-name reap right here, BEFORE run1 provisions, so a mid-test
-	// t.Fatal still sweeps the leaked container. EXACT-NAME only (rule://
-	// process-safety); best-effort — teardown, not an assertion.
+	// Register exact-name cleanup before provisioning so a mid-test failure reaps
+	// this container. The name derives from the account id.
 	containerName := runner.AgentContainerNamePrefix + accountID
 	t.Cleanup(func() {
 		_ = podmanRemoveForce(ctx, containerName) // best-effort end-of-test reap of the leaked container; a failure here is not actionable during cleanup
@@ -104,24 +95,14 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 	if container1 != containerName {
 		t.Fatalf("Provision (run1) returned container %q, want the deterministic name %q (NamePrefix + accountID); the name derivation drifted from spec.go:85", container1, containerName)
 	}
-	// The container is actually PRESENT in podman's runtime set by that exact
-	// name — the observable proof it came up, probed with a dependency-free
-	// `podman container exists` (the same check legthreefour_test.go:170 and the
-	// runtime suite use, the same direct podman-shelling podmanUsable relies on).
+	// Verify the first lifetime created a container with that exact name.
 	if exec.CommandContext(t.Context(), "podman", "container", "exists", containerName).Run() != nil {
 		t.Fatalf("container %q is not present after run1 Provision — the first lifetime never created it, so the leak/collision premise cannot be exercised", containerName)
 	}
 
-	// Prove teardown idempotence directly, while the stack is still up so the
-	// Remove RPC reaches the live runner: the Remove RPC is a no-op success on a
-	// container regardless of prior state (host.go Remove: "an unknown container
-	// — never provisioned, or already removed — is a no-op success"). Called
-	// twice back-to-back: the first tears run1's just-provisioned container down,
-	// the second exercises the idempotent no-op arm on the already-removed
-	// container. Neither may error. This is the A6 idempotence invariant,
-	// asserted on the behavior that actually happens rather than on whether the
-	// container leaks past Down (which is environment-dependent — see the doc
-	// comment).
+	// Call RemoveWorkspace twice while the runner is live: the first removes the
+	// container and the second must be a no-op success. This directly proves
+	// idempotence without relying on environment-dependent leakage after Down.
 	if err := f1.RemoveWorkspace(ctx, containerName, "leg6-run1-remove"); err != nil {
 		t.Fatalf("RemoveWorkspace (run1, first): %v — teardown of the run1 container failed", err)
 	}
@@ -129,27 +110,19 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 		t.Fatalf("RemoveWorkspace (run1, second): %v — a repeat Remove of the same container must be an idempotent no-op success (host.go Remove)", err)
 	}
 
-	// Tear run1's stack Down (the fixture's own t.Cleanup Downs it too, but that
-	// fires at test end — too late to free the ports for run2's Up). Down is safe
-	// to call twice; the registered cleanup no-ops idempotently.
+	// Down run1 now to free its ports for run2; the registered cleanup is safe to
+	// repeat at test end.
 	if err := f1.Stack().Down(ctx); err != nil {
 		t.Fatalf("Stack().Down (run1): %v", err)
 	}
 
 	// ── RUN 2: restart over the SAME site, preflight-sweep, re-provision ──
 
-	// SAME site ⇒ the postgres cluster re-attaches (serve runs initdb only when
-	// PG_VERSION is absent, compass-postgres/main.go:165-168), so the persisted
-	// account survives.
+	// Reusing the site reattaches the postgres cluster and preserves the account.
 	f2 := NewFixture(ctx, t, WithSite(site))
 
-	// RESOLVE the persisted account by handle rather than re-creating it:
-	// CreateAgent is create-only (a duplicate handle is an already_exists
-	// conflict, NOT find-or-create — verified firsthand: run2 CreateAgent returns
-	// `already_exists: handle "leg6-idempotence" already taken`), so a second
-	// CreateAgent would fail on the persisted row. Reading the row back by handle
-	// over the re-attached DB is the stronger persistence proof anyway: the
-	// account the FIRST run minted is still there after the restart.
+	// Resolve the persisted account instead of calling create-only CreateAgent;
+	// reading it after restart is the direct persistence proof.
 	st, err := store.Open(ctx, f2.DSN())
 	if err != nil {
 		t.Fatalf("store.Open (run2): %v", err)
@@ -160,37 +133,16 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 		t.Fatalf("AgentByHandle(%q) (run2): %v — the postgres cluster did not re-attach across the restart, so the account run1 minted did not survive and the deterministic-name collision premise is gone", handle, err)
 	}
 	accountID2 := string(persisted.ID)
-	// The DB PERSISTED across the restart: same handle → SAME account id. This is
-	// load-bearing — a non-persisted DB would hold no such row (AgentByHandle
-	// above would be ErrNotFound), and even a fresh account would carry a
-	// different random id, so the container name would differ and there would be
-	// no collision to fix (the whole scenario's premise would vanish silently).
+	// The same handle must resolve to the same account id; a fresh database would
+	// have no row, and a replacement account would produce another container name.
 	if accountID2 != accountID {
 		t.Fatalf("persisted account id %q != the run1 account id %q — the re-attached DB resolved a different account for the same handle, so the deterministic-name collision premise is gone", accountID2, accountID)
 	}
 
-	// Defensive preflight: force-remove any container holding the deterministic
-	// run1 name, by EXACT name, before re-provisioning.
-	//
-	// The A6 idempotence proof this leg delivers is the double-RemoveWorkspace
-	// above (a repeat Remove is a no-op success). This preflight is
-	// belt-and-suspenders, NOT the load-bearing proof: the explicit
-	// RemoveWorkspace calls already freed the deterministic name, so on the
-	// common path this `podman rm -f` sweeps nothing and run2's Provision would
-	// succeed even if it were a no-op. It earns its place only for the residual
-	// case the RPC teardown cannot reach — a reparented rootless conmon that
-	// outlived `Stack().Down` and still holds the name in podman's runtime set.
-	// (agentHost.Close reaps every served container via Remove -> runtime.Teardown,
-	// but Close only runs on the runner's graceful ctx-cancel shutdown, so a hard
-	// stack teardown that kills the runner before Close runs can leak the nested
-	// container.) createAndStart issues `podman create --name
-	// <containerName>` with no happy-path pre-create sweep (go/internal/runtime/
-	// agent.go:245-267; the only Removes there are error-recovery of that same
-	// call's partial container), so such a leaked container would collide on the
-	// re-create — and `podman rm -f` exits 0 on an absent container (teardown.go),
-	// making the preflight a no-op when the name is free and a real sweep when it
-	// is not. The in-memory client_request_id dedup is also gone (run2 is a fresh
-	// runner process), so run2 genuinely re-issues the create.
+	// Sweep only the exact deterministic name before run2 Provision. The RPC calls
+	// above prove idempotence; this preflight handles a rootless conmon that survived
+	// hard stack teardown. A clean name makes rm a no-op, while a leaked container
+	// would otherwise collide with podman create in the fresh runner process.
 	if err := podmanRemoveForce(ctx, containerName); err != nil {
 		t.Fatalf("podmanRemoveForce preflight (run2): %v — the A6 exact-name sweep before re-provision failed", err)
 	}
@@ -202,8 +154,7 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 	if container2 != containerName {
 		t.Fatalf("Provision (run2) returned container %q, want the same deterministic name %q as run1", container2, containerName)
 	}
-	// The re-provisioned container is PRESENT by that exact name — the GREEN: with
-	// the preflight, the second Provision succeeds across the stack restart.
+	// Verify run2 re-created the container under the same exact name.
 	if exec.CommandContext(t.Context(), "podman", "container", "exists", containerName).Run() != nil {
 		t.Fatalf("container %q is not present after run2 Provision — the idempotent re-provision did not bring the container back up", containerName)
 	}

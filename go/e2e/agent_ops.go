@@ -293,20 +293,9 @@ func (f *Fixture) RemoveWorkspace(ctx context.Context, containerName, clientRequ
 	return nil
 }
 
-// waitRunnerEnrolled waits for the Runner's Sessions stream to attach after Enroll.
-// Cold Up gates on Enroll; this fixture wait checks the later attach event.
-//
-// The observable enrollment signal available to the cross-process fixture is a
-// lightweight enrollment-gated probe. StopAgentSession relays through the hub's
-// routerFor exactly as Provision does, so it returns the CodeUnavailable
-// not-ready error (no runner enrolled, or no sessions stream yet) until a Runner
-// is ready — and once one is, a Stop of a synthetic never-started session id is
-// an idempotent Runner-side no-op (host.Stop returns success for an unknown
-// session; the session-end transcript flush is skipped since the id has no
-// entries), so the probe has NO container or session side effect. ONLY that
-// specific unavailable-no-runner condition is treated as not-yet-ready; any
-// other error is a real failure and is returned immediately. The poll respects
-// ctx cancellation and returns a legible error if its budget expires.
+// waitRunnerEnrolled waits for the Sessions stream to attach after Enroll.
+// A Stop on a synthetic unknown session is side-effect-free; it returns
+// Unavailable until a runner is ready. Only that state is polled, within ctx.
 func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 	deadline := f.now().Add(enrollPollBudget)
 	ticker := time.NewTicker(enrollPollInterval)
@@ -332,18 +321,12 @@ func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 // rename there makes waitSeedSettled time out legibly rather than skip the gate.
 const rootSupervisorHandle = "supervisor"
 
-// bootstrapAdminHandle mirrors the server's default bootstrap-admin handle
-// (server/serve.go bootstrapAdminHandle) — the same cross-package literal
-// coupling as rootSupervisorHandle above. The seeded root supervisor is owned by
-// this admin, so the owner-qualified AgentByHandle lookup resolves the admin's
-// account id through this handle first.
+// bootstrapAdminHandle mirrors the server's default handle so owner-qualified
+// agent lookups resolve the admin's namespace.
 const bootstrapAdminHandle = "admin"
 
-// adminAgentByHandle resolves an admin-owned agent by its bare handle. Every leg
-// creates its agents through the fixture's admin-authed CreateAgent, so they all
-// live in the bootstrap admin's agent namespace; after the RIG-2751 handle
-// cutover AgentByHandle is owner-qualified, so the lookup first resolves the
-// admin's account id (bare user handle, global index) then the agent under it.
+// adminAgentByHandle resolves an agent created through the fixture's admin
+// client; AgentByHandle requires the resolved owner account id.
 func adminAgentByHandle(ctx context.Context, st *store.Store, handle string) (store.Account, error) {
 	admin, err := st.UserByHandle(ctx, bootstrapAdminHandle)
 	if err != nil {
@@ -352,39 +335,10 @@ func adminAgentByHandle(ctx context.Context, st *store.Store, handle string) (st
 	return st.AgentByHandle(ctx, admin.ID, handle)
 }
 
-// waitSeedSettled blocks until the first-launch root-supervisor seed has finished
-// provisioning its container, or the budget elapses. It is the seed counterpart
-// to waitRunnerEnrolled: the seed (server/serve_seed.go) hangs off the Runner
-// Sessions-stream attach — the SAME event waitRunnerEnrolled returns on — and
-// drives its own Provision+Start of the supervisor on the hook goroutine, so a
-// leg that Provisions the instant NewFixture returns races the seed's in-flight
-// Provision (two cold rootless-podman bring-ups contending on the engine storage
-// lock, overrunning the leg's 30s rpcTimeout under CI load — RIG-2403).
-//
-// The observable settle signal is the seed's DURABLE PLACEMENT row: the
-// ProvisionAgentWorkspace handler writes agent_placements (RecordAgentPlacement,
-// server/service.go) immediately after the Runner relay returns the container, so
-// a resolvable placement for the supervisor account means the seed's container
-// work is DONE. It is read cross-process from the store (the fixture has no seed
-// handle) via a short-lived connection. Two states are "still seeding", polled
-// through, never a failure until the budget elapses: the supervisor account not
-// yet created (AgentByHandle ErrNotFound — the seed's create half has not run)
-// and the account present but unplaced (PlacementForAgent ErrNotFound — Provision
-// in flight). Any other store error is a real failure surfaced immediately.
-//
-// It is agent-turn-INDEPENDENT by design: the placement lands at Provision, well
-// before the supervisor's first model turn, so the gate does NOT depend on the
-// board projection (which trails the agent's first lifecycle frame and filters
-// terminal states — a seed that came up model-less would never reach a live board
-// entry, hanging a board-based gate). On the WithSite re-attach path the placement
-// row PERSISTS from the prior boot, so the gate passes on the first probe and
-// correctly does NOT wait on run2's re-fired seed — which is designed to lose its
-// re-drive to the fast teardown (serve_seed.go), so waiting on it would hang.
-//
-// Event-gated bounded poll, mirroring waitRunnerEnrolled: a ticker-driven
-// deadline off f.now() with a select on ctx.Done() vs the ticker, returning the
-// instant the placement resolves. A budget timeout is a legible fail-closed error
-// (rule://no-retries: bounded and loud, never a retry-as-sync).
+// waitSeedSettled waits for the supervisor's durable placement before leg
+// Provision calls contend for rootless-podman. Missing-account or placement
+// states are pending; other errors fail. Existing placement permits WithSite
+// reattachment without waiting on run2's seed.
 func (f *Fixture) waitSeedSettled(ctx context.Context, st *store.Store) error {
 	deadline := f.now().Add(seedSettlePollBudget)
 	ticker := time.NewTicker(seedSettlePollInterval)
@@ -406,22 +360,10 @@ func (f *Fixture) waitSeedSettled(ctx context.Context, st *store.Store) error {
 	}
 }
 
-// seedSettledProbe runs one seed-settle check against the store: it resolves the
-// supervisor account by its fixed handle, then reads its placement. It returns
-// settled=true once the placement resolves (the seed's Provision recorded it),
-// settled=false for the two not-yet states (supervisor account absent, or present
-// but unplaced — both ErrNotFound), and a non-nil error for any other store
-// failure, which waitSeedSettled surfaces immediately rather than polling through.
-// Split out as its own function so its ErrNotFound-vs-real-error branching is
-// unit-testable (classifySeedSettle) without a live stack, mirroring classifyEnrollProbe.
-//
-// Both store reads share a per-probe deadline (rpcTimeout, clamped to the budget
-// remaining), so a wedged read — an exhausted pgxpool, a lock wait, a slow query
-// under the CI-load contention this gate targets — fails at the per-probe bound
-// as a context.DeadlineExceeded (never store.ErrNotFound, so classifySeedSettle
-// surfaces it as a real error) rather than escaping the budget and hanging
-// NewFixture to the go-test global timeout. This mirrors runnerEnrolledProbe,
-// keeping the whole gate bounded and fail-loud within seedSettlePollBudget.
+// seedSettledProbe reads the supervisor account and placement once. Missing
+// account or placement means seeding is in progress; other store errors fail.
+// Both reads share a deadline clamped to the remaining budget, so a wedged
+// query cannot outlive the bounded wait.
 func (f *Fixture) seedSettledProbe(ctx context.Context, st *store.Store, deadline time.Time) (settled bool, err error) {
 	perProbe := rpcTimeout
 	if !deadline.IsZero() {
@@ -450,17 +392,9 @@ func (f *Fixture) seedSettledProbe(ctx context.Context, st *store.Store, deadlin
 	return classifySeedSettle(nil, placementErr)
 }
 
-// classifySeedSettle is the pure branching at the heart of the seed-settle probe,
-// split out so its not-yet-vs-real-error logic is unit-testable without a live
-// store (mirroring classifyEnrollProbe). It takes the two store outcomes in
-// order: handleErr from resolving the supervisor by handle, and — only when that
-// succeeded — placementErr from reading its placement. A store.ErrNotFound in
-// EITHER is a "still seeding" not-yet state (the seed's create half has not run,
-// or its Provision is in flight), returning settled=false with no error so the
-// caller polls on. Any OTHER error is a real failure, wrapped and surfaced so the
-// caller aborts rather than polling a broken store to the budget. Both nil means
-// the placement resolved: the seed's Provision is done, settled=true. placementErr
-// is consulted only when handleErr is nil (the probe short-circuits otherwise).
+// classifySeedSettle treats ErrNotFound from either lookup as still seeding.
+// It fails on other lookup errors and succeeds only when both lookups succeed.
+// placementErr is consulted only when handleErr is nil.
 func classifySeedSettle(handleErr, placementErr error) (settled bool, cerr error) {
 	if handleErr != nil {
 		if errors.Is(handleErr, store.ErrNotFound) {
@@ -477,27 +411,10 @@ func classifySeedSettle(handleErr, placementErr error) (settled bool, cerr error
 	return true, nil
 }
 
-// waitDeliveryCursorPast blocks until post1 is no longer OWED to the agent on
-// its home channel — the moment the agent's delivery cursor has advanced past
-// it — or the budget elapses. leg-5's resume is only correct if this ordering
-// holds BEFORE the resumed lifetime's server-side start-sweep runs: the cursor
-// advances on the agent's delivery_ack (runnerhub deliverAck), NOT on the
-// WORKING→READY settle AwaitTurnSettled observes, so a settle can return
-// with post1 still owed. The resume start-sweep reads UndeliveredMessages for
-// the agent and redelivers anything still owed into the fresh container2; were
-// post1 still owed at that point the sweep would redeliver it, consume the
-// resumed lifetime's canned turn, and desync the 2-turn script (a
-// hang-to-timeout flake OR a mis-attributed green). Gating on the cursor — the
-// real cross-process ack signal — instead of trusting the settle-implies-acked
-// ordering closes that race.
-//
-// It is an event-gated bounded poll on UndeliveredMessages, mirroring
-// waitRunnerEnrolled: a ticker-driven bound off f.now() with a deadline check
-// that returns a legible timeout error, and a select on ctx.Done() vs the
-// ticker so it respects cancellation — no sleeps, no retry-as-sync. It returns
-// nil the instant post1ID is absent from the home-channel slice of the map
-// UndeliveredMessages returns; a store error, ctx cancellation, or a budget
-// timeout is a legible error.
+// waitDeliveryCursorPast waits until post1 is no longer owed before resume.
+// READY does not imply delivery_ack, and the resume start-sweep would redeliver
+// an owed post and consume the next canned turn. This bounded poll gates on the
+// actual cross-process acknowledgement rather than session settle.
 func (f *Fixture) waitDeliveryCursorPast(ctx context.Context, st *store.Store, agent store.AccountID, home store.ChannelID, post1ID store.MessageID) error {
 	deadline := f.now().Add(cursorPollBudget)
 	ticker := time.NewTicker(cursorPollInterval)
@@ -528,41 +445,18 @@ func (f *Fixture) waitDeliveryCursorPast(ctx context.Context, st *store.Store, a
 	}
 }
 
-// cursorPollInterval and cursorPollBudget bound waitDeliveryCursorPast: the
-// wait between leg-5's pre-teardown settle and the container1 teardown for the
-// agent's delivery cursor to advance past post1. The cursor advances on the
-// agent's delivery_ack (runnerhub deliverAck), which trails the WORKING→READY
-// settle by a bus round-trip, not by an agent turn — so like enrollment this is
-// a fast one-time transition and the budget can be far smaller than
-// settleTimeout while still failing a genuinely stuck ack legibly rather than
-// hanging to the go-test timeout; the interval matches enrollPollInterval's
-// magnitude. A deterministic deadline, never a retry loop.
+// cursorPollInterval and cursorPollBudget bound the ack wait: delivery_ack
+// trails READY by one bus round-trip, not an agent turn. The finite deadline is
+// well below settleTimeout so a stuck ack fails before the suite timeout.
 const (
 	cursorPollInterval = 100 * time.Millisecond
 	cursorPollBudget   = 15 * time.Second
 )
 
-// awaitTranscriptPersisted blocks until the session's durable transcript is
-// present in the store AND contains wantReply, or the budget elapses. It closes
-// the same class of race waitDeliveryCursorPast does: the WORKING→READY settle
-// AwaitTurnSettled observes rides the PublishEvents session-state channel, while
-// the turn's transcript persists on the INDEPENDENT CommitConversationFrame
-// unary (runnerhub/relay_comms.go) — the agent's tee sends its transcript
-// frame, the server commits it to agent_session_transcript_entries, and only
-// then is SessionTranscript non-empty. That commit trails READY by one runner→
-// server round-trip, so a SessionTranscript read fired the instant settle
-// returns can legitimately find nothing yet (store: not found) or a transcript
-// missing the just-settled reply. A leg that reads immediately is racing the
-// commit.
-//
-// Like waitDeliveryCursorPast this is an event-gated bounded poll, NOT a
-// retry-as-sync: it gates on a fast one-time cross-process convergence (the
-// commit round-trip), a ticker-driven deadline off f.now() with a select on
-// ctx.Done() vs the ticker, returning the instant the transcript holds the
-// reply. It returns the persisted entries on success; a store error other than
-// ErrNotFound, ctx cancellation, or a budget timeout is a legible error. A bare
-// ErrNotFound (or a present-but-incomplete transcript) is the not-yet-committed
-// state it waits through, never a failure until the budget elapses.
+// awaitTranscriptPersisted waits for the durable transcript commit that trails
+// READY on a separate RPC path. It succeeds only when the transcript contains
+// wantReply; ErrNotFound or incomplete content is pending, while other errors,
+// cancellation, and budget expiry fail.
 func (f *Fixture) awaitTranscriptPersisted(ctx context.Context, st *store.Store, sessionID, wantReply string) ([]store.TranscriptEntryRow, error) {
 	deadline := f.now().Add(transcriptPollBudget)
 	ticker := time.NewTicker(transcriptPollInterval)
@@ -592,13 +486,9 @@ func (f *Fixture) awaitTranscriptPersisted(ctx context.Context, st *store.Store,
 	}
 }
 
-// transcriptPollInterval and transcriptPollBudget bound awaitTranscriptPersisted.
-// The transcript commit trails the WORKING→READY settle by one runner→server
-// CommitConversationFrame round-trip — a fast one-time transition like the
-// delivery-cursor ack, so the budget can be far smaller than settleTimeout while
-// still failing a genuinely stuck commit legibly rather than hanging to the
-// go-test timeout; the interval matches cursorPollInterval's magnitude. A
-// deterministic deadline, never a retry loop.
+// transcriptPollInterval and transcriptPollBudget bound the commit wait, which
+// trails READY by one RPC round-trip. Keep the finite budget below settleTimeout
+// so a stuck commit fails before the suite timeout.
 const (
 	transcriptPollInterval = 100 * time.Millisecond
 	transcriptPollBudget   = 15 * time.Second
@@ -609,12 +499,9 @@ const (
 // Server-minted session id; a Stop of it is an idempotent Runner-side no-op.
 const enrollProbeSessionID = "e2e-enroll-probe-nonexistent-session"
 
-// runnerEnrolledProbe runs one lightweight enrollment-gated probe. It reports
-// ready=true once the Runner is enrolled (the Stop relay no longer returns the
-// no-runner error), ready=false while enrollment is still pending (the specific
-// CodeUnavailable not-ready conditions classifyEnrollProbe retries), and a
-// non-nil error for any other failure — which waitRunnerEnrolled surfaces immediately rather than
-// polling through.
+// runnerEnrolledProbe treats only the runner-not-ready CodeUnavailable response
+// as pending. Other errors fail immediately; the synthetic session id cannot
+// collide with a server-minted id, and Stop is a no-op when enrolled.
 func (f *Fixture) runnerEnrolledProbe(ctx context.Context, deadline time.Time) (ready bool, err error) {
 	perProbe := rpcTimeout
 	if !deadline.IsZero() {

@@ -11,9 +11,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// The one container agent this leg stands up, plus the channel and topic its ask
-// lands on. Every name carries the tools- prefix because this leg shares one
-// stack with the other comms legs; an unprefixed name would collide with theirs.
+// This leg's agent, channel, and topic are prefixed to avoid names colliding
+// with other comms legs on the shared stack.
 const (
 	toolsAgentHandle = "tools-agent"
 	toolsAgentName   = "Tools Agent"
@@ -21,16 +20,12 @@ const (
 	toolsAskTopic    = "tools-ask-topic"
 )
 
-// Routing by marker — never the positional script — is mandatory on the shared
-// stack: two legs drawing unmarked turns would race the one positional counter.
-// The roster step renders every root agent on the stack into this agent's
-// request bodies, so no other leg's marker may be a substring of a handle or
-// activity: it would capture these requests and eat a slot of THAT leg's script.
+// Marker routing is required on the shared stack. Routing is a substring match on
+// the request body, and roster rows put peer handles and activity into requests,
+// so no other route marker may be a substring of them.
 const toolsMarker = "tools-native-drive"
 
-// The activity compass_set_status writes and the ask payload comms_post_ask
-// posts. Neither carries the marker: the agent is a bare member of its own ask
-// channel, so its post never fans back to re-route a turn.
+// These posts omit the marker so the agent's own delivery cannot retrigger turns.
 const (
 	toolsActivity    = "tools-leg-driving-native-tools"
 	toolsAskQID      = "tools-ask-q1"
@@ -39,10 +34,7 @@ const (
 	toolsAskOptionB  = "the client RPC surface"
 )
 
-// The framing compass_roster wraps its rows in, and this agent's own row prefix
-// (rosterRow's `- handle (display) [presence]` shape, cut before the presence
-// label). The row is deterministic: a root agent is its own sibling in the
-// neighborhood scope (store.AgentNeighborhood), so the roster is never empty.
+// The roster frames its rows, including this agent's deterministic self row.
 const (
 	toolsRosterFraming = "Agent roster (peer-supplied handles and activity"
 	toolsRosterOwnRow  = "- " + toolsAgentHandle + " (" + toolsAgentName + ") ["

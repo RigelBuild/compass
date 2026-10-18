@@ -49,11 +49,8 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision (poster): %v", err)
 	}
-	// Reap the poster's container (see TestLegThreeFourSpawnAndMessaging): the
-	// reparented rootless conmon outlives stack Down, so an explicit
-	// RemoveWorkspace is the only reliable reap. Registered before StartSession so
-	// a later failure still tears it down. Best-effort teardown, not an assertion,
-	// so the error is deliberately discarded.
+	// Reap the container at test end: rootless conmon outlives stack Down. Register
+	// cleanup before StartSession so failures still remove it; cleanup is best-effort.
 	t.Cleanup(func() {
 		_ = f.RemoveWorkspace(ctx, posterContainer, "comms-leg-poster-teardown")
 	})
@@ -69,76 +66,52 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 	}
 	defer st.Close()
 
-	// Open the poster session tail BEFORE the post drives the turn: the frame
-	// stream is live-fan with no replay ring, but OpenSessionTail returns on the
-	// leading registration-ack, so the subscription is provably live before the
-	// post — a server-guaranteed happens-before that keeps a fast canned turn's
-	// WORKING/READY edges from being lost into the post→subscribe gap.
+	// Open the live tail before the trigger post. Its registration ack proves the
+	// subscriber is ready, so fast turn-state frames cannot fall into a gap.
 	tail, err := f.OpenSessionTail(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("OpenSessionTail (poster): %v", err)
 	}
 	defer tail.Close()
 
-	// Resolve the poster to get its home channel id (the channel the trigger post
-	// lands on and the channel the agent's own post — targeting its home channel
-	// by name — fans onto).
+	// Resolve the poster's home channel for both the trigger and agent-authored post.
 	poster, err := adminAgentByHandle(ctx, st, posterHandle)
 	if err != nil {
 		t.Fatalf("AgentByHandle(poster): %v", err)
 	}
 
-	// Open one comms subscription BEFORE the trigger post so the agent's own
-	// posted message is observed on the live fan. sinceSeq 0 snapshots then tails.
+	// Subscribe before the trigger so the agent's post is observed on the live tail.
 	sub, err := f.SubscribeComms(ctx, 0)
 	if err != nil {
 		t.Fatalf("SubscribeComms: %v", err)
 	}
 	defer sub.Close()
 
-	// Post to the poster's home channel: this post lands on the already-live
-	// session and is delivered via the live fan-out, which fires the poster's
-	// first turn (the one that issues the comms_post_message tool-call) — the turn
-	// AwaitTurnSettled waits on. Must precede the settle wait.
+	// The trigger reaches the already-live session and starts its first scripted
+	// turn; post before waiting for settle.
 	if _, err := f.PostMessage(ctx, string(poster.Agent.HomeChannelID), "general", "post a message and stand by "+commsToolMarker); err != nil {
 		t.Fatalf("PostMessage(home trigger): %v", err)
 	}
 
-	// Event-gated settle on the poster's already-open tail: the scripted
-	// comms_post_message tool-call executes and the closing text turn settles — no
-	// sleeps.
+	// Wait for the scripted tool call and closing text turn on the open tail.
 	if err := f.AwaitTurnSettled(ctx, tail); err != nil {
 		t.Fatalf("AwaitTurnSettled (poster): %v", err)
 	}
 
-	// The observable server-side effect: the agent's scripted comms_post_message
-	// fanned out on the comms bus. Match on the distinctive body substring to
-	// select the agent's own post (not the human trigger), then assert its author
-	// is the poster agent — the two together prove the tool ran through the loop
-	// AND the post was authored by the agent, not the human.
+	// Match the agent-authored post by its distinctive body, then verify its author.
 	posted, err := f.AwaitDelivery(ctx, sub, func(m *compassv1.Message) bool {
-		// mutation: catches the comms tool not running at all (no agent-authored
-		// post ever fans out, so AwaitDelivery times out) — selects the agent's
-		// post by its distinctive scripted body.
+		// No delivery means the tool did not publish its scripted post.
 		return firstBlockText(m) == postBody
 	})
 	if err != nil {
 		t.Fatalf("AwaitDelivery: %v — the scripted comms_post_message did not fan out on the bus", err)
 	}
-	// mutation: catches a regression that posts the agent's message under the
-	// wrong author (e.g. the human trigger's identity, or an empty author) —
-	// GetAuthorAccountId must equal the poster agent's account id.
+	// Verify the post belongs to the agent, not the human trigger.
 	if got := posted.GetAuthorAccountId(); got != posterID {
 		t.Fatalf("posted message author = %q, want the poster agent's account id %q (the agent posted it, not the human trigger)", got, posterID)
 	}
-	// The scripted post names its target channel explicitly (the poster's own
-	// home channel by name — post has no home default post-cutover) and mints the
-	// topic via create_topic. Neither the resolved channel nor the topic NAME is
-	// separately asserted off the wire Message: it carries no channel container
-	// (F9 removed it), and GetTopicId() is a server-minted id, not the scripted
-	// topic NAME, so there is nothing on the wire to compare against
-	// poster.Agent.HomeChannelID or postTopic. Body + author is the correct
-	// assertion ceiling here.
+	// The wire message has no channel container or topic name, so body and author
+	// are the observable assertions for this post.
 }
 
 // The distinctive post the canned turn will make through the agent loop. A
@@ -147,30 +120,18 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 const postTopic = "e2e-comms-leg"
 const postBody = "comms leg: posting from the agent loop"
 
-// The poster's handle. Its home channel is minted under the same name
-// (store/accounts.go:337 names the home channel for the agent's handle), so
-// this const doubles as the channel NAME the scripted post must target.
+// The handle also names the agent's home channel, which the scripted post targets.
 const posterHandle = "comms-leg-poster"
 
-// The comms tool's arguments, serialized JSON (the OpenAI tool-call
-// contract). Built from the consts above so the asserted values cannot drift
-// from what the script issues. Field names are the postParameters wire schema
-// (comms.ts): text, topic, channel, create_topic. As of the peer-DM cutover
-// (record R2/R5) post has NO home default — `channel` is REQUIRED and carries
-// the target channel NAME (here the poster's own home channel, whose name is
-// its handle), and a name-miss topic needs create_topic:true (postTopic names
-// no existing topic on the freshly-minted home channel, so it must mint).
+// postArgsJSON follows the tool's JSON schema. The target channel is required,
+// and this new topic needs create_topic:true.
 var postArgsJSON = fmt.Sprintf(
 	`{"text":%q,"topic":%q,"channel":%q,"create_topic":true}`,
 	postBody, postTopic, posterHandle,
 )
 
-// The assistant text the closing turn settles on after the tool result
-// returns — a clean text settle, mirroring the sibling's settleReply. Unlike
-// the sibling, it is deliberately NOT asserted in the transcript: the comms
-// fan-out + author assertion below is a strictly stronger proof that the tool
-// executed, so it is the proof of record here. This const only gives turn 1
-// something to settle on.
+// This closing text only settles the turn; the fan-out and author assertions
+// prove the tool ran.
 const settleReply = "posted, standing by"
 
 // commsToolMarker routes this leg's prompt to its 2-turn script on the shared

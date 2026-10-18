@@ -41,29 +41,10 @@ type sharedState struct {
 
 var shared sharedState
 
-// registerSharedFixtureOption declares an option the shared stack must be built
-// with. Call it from a leg's register<Leg>FixtureOptions function, listed in
-// TestMain, NOT from the leg body:
-//
-//	func registerLegBFixtureOptions() { registerSharedFixtureOption(WithCannedMarkerScript("leg-b", ...)) }
-//
-// TestMain runs every registration before the first test, so the full option
-// set is known before stand-up no matter which leg reaches sharedFixture first,
-// and no matter how `go test -run` filters or reorders the legs.
-//
-// This indirection exists because canned model routes FREEZE at construction —
-// startCannedModelServer sizes its per-marker counters from the marker slice it
-// is handed (cannedmodel.go:281) and the handler then reads that slice without
-// a lock. So an option arriving after stand-up cannot be honoured, and the only
-// two alternatives are worse: taking options at the first sharedFixture call
-// makes the routes depend on test ORDER (a `-run` filter silently changes which
-// leg is first, and the losing leg's marker is dropped), while mutating the
-// running stub would be an unsynchronised write beside a live reader.
-//
-// Marker routes are keyed by a body substring and are additive, so legs do not
-// contend. The POSITIONAL script is the shared resource: two legs drawing
-// unmarked turns concurrently race one counter, which is why every leg past the
-// first routes its turns by marker.
+// registerSharedFixtureOption collects routes before the one shared stack is
+// built. TestMain registers every leg's options first, so filtering or reordering
+// tests cannot drop a route. Marker routes are additive, but the positional
+// script has one shared counter and must not be drawn concurrently by legs.
 func registerSharedFixtureOption(opts ...fixtureOption) {
 	if shared.stoodUp {
 		// TestMain registers before any test runs; reaching here means a leg
@@ -95,20 +76,10 @@ func sharedFixture(t *testing.T) *Fixture {
 	return shared.f
 }
 
-// standUpShared builds the shared fixture against a DETACHED testing.TB instead
-// of a leg's own t. NewFixture is testing.TB-bound throughout — TempDir, four
-// Cleanup registrations, and many Fatalf sites — so hanging it off whichever leg
-// asked first would let that leg's cleanup Down the stack while the other legs
-// are still using it, and would blame that leg for a shared setup failure.
-//
-// Nothing can drain a detached T's cleanups (they are unexported, and it never
-// completes), so teardown is explicit and split: shutdownShared handles a
-// fully-constructed fixture, and this function reaps a stand-up that aborted
-// after Up.
-//
-// The site is supplied rather than defaulted because shortRoot keys its root on
-// the PID alone: the default root used by a plain NewFixture call is the same
-// path. A distinct suffix keeps them disjoint, as the H6 site does.
+// standUpShared uses a detached TB so one leg's cleanup cannot stop the stack
+// while other legs use it. Detached cleanups cannot run, so shutdownShared owns
+// teardown; this function also reaps a partial stand-up after Up.
+// Its distinct site suffix avoids colliding with the default shortRoot path.
 func standUpShared(ctx context.Context, opts ...fixtureOption) (*Fixture, error) {
 	// run-root: the shared stack outlives every leg, so no leg's cancel can own it.
 	ctx = context.WithoutCancel(ctx)
@@ -118,11 +89,8 @@ func standUpShared(ctx context.Context, opts ...fixtureOption) (*Fixture, error)
 		return nil, err
 	}
 
-	// NewFixture returns its *Fixture only at the very end, but Up spawns the
-	// children well before that and registers its Down on the detached t we
-	// cannot drain. So capture the stack at Up and reap it here if a later gate
-	// aborts — otherwise a failed enrollment or seed-settle orphans a postgres,
-	// a server, and a rootless container for the rest of the run.
+	// Capture the stack immediately after Up so a later construction failure can
+	// reap child processes despite the detached TB's unreachable cleanup.
 	var live *stack.Stack
 	observe := WithStackObserver(func(st *stack.Stack) { live = st })
 

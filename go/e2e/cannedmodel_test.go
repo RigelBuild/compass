@@ -31,12 +31,8 @@ import (
 // SDK), omitted the finish reason, or never sent [DONE] reddens here.
 func TestCannedModelServerEmitsParseableSSE(t *testing.T) {
 	const reply = "hello from the canned model"
-	// Bind the host's routable interface (not 127.0.0.1): the test is both the
-	// server and the client, so it dials the same address it binds — a
-	// self-reachable interface with no NAT between the two. This mirrors the
-	// container leg's requirement (pasta forwards only to the routable host
-	// address, never loopback) so the stub is exercised the way production
-	// reaches it.
+	// The test is both server and client, so bind a host-reachable address instead
+	// of loopback; this mirrors the container's pasta host-gateway path.
 	host, err := hostRoutableAddr(t.Context())
 	if err != nil {
 		t.Fatalf("hostRoutableAddr: %v", err)
@@ -179,11 +175,8 @@ type sseTurn struct {
 		name string
 		args string
 	}
-	// rawFrames holds each SSE `data:` payload verbatim (minus the [DONE]
-	// sentinel), so a test can assert on the exact serialized wire shape — e.g.
-	// that a text turn's chunk carries no "tool_calls" key at all (the omitempty
-	// discipline), which the decoded struct alone cannot distinguish from an
-	// empty/null array.
+	// rawFrames preserves payloads so tests can distinguish an absent tool_calls
+	// key from empty/null, which decoding alone cannot reveal.
 	rawFrames []string
 }
 
@@ -376,12 +369,8 @@ func TestCannedModelServerServesMultiTurnScript(t *testing.T) {
 	if second.finish != "stop" {
 		t.Fatalf("POST#2 finish_reason = %q, want stop", second.finish)
 	}
-	// Pin the omitempty wire discipline the cannedmodel.go ToolCalls tag claims:
-	// a text turn's frames must carry no "tool_calls" key at all — not an empty
-	// or null array. The decoded len==0 above cannot tell an absent key from a
-	// present-but-empty one, so assert on the raw serialized frame directly. If
-	// someone dropped the omitempty tag, a text chunk would emit "tool_calls":null
-	// and this reddens.
+	// Assert the text-turn wire omits tool_calls entirely; decoding to len==0 cannot
+	// distinguish a missing key from an empty or null array.
 	for _, frame := range second.rawFrames {
 		if strings.Contains(frame, "tool_calls") {
 			t.Fatalf("POST#2 (text turn) frame %q contains a tool_calls key; a text turn must omit it entirely (omitempty)", frame)

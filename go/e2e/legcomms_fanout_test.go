@@ -47,11 +47,8 @@ const (
 )
 
 func registerFanoutFixtureOptions() {
-	// The poster's ordered script: five comms_post_message tool calls, each
-	// paired with a following text turn so the tool-call turn's second round-trip
-	// terminates. create_topic mirrors the R2/R5 contract (legcomms_test.go, "As
-	// of the peer-DM cutover"): channel is required, a name-miss topic mints only
-	// with create_topic:true.
+	// The poster's five post calls each need a following text turn to settle.
+	// Name-miss topics are created only when create_topic is true.
 	fanArgs := fmt.Sprintf(
 		`{"text":%q,"topic":%q,"channel":%q,"create_topic":true}`,
 		t3FanBody, t3Topic1, t3Chan1,
@@ -206,11 +203,9 @@ func TestCommsFanOutAndIsolation(t *testing.T) {
 		t.Fatalf("sub-3 fan-out post author = %q, want the poster's account id %q", got, posterID)
 	}
 
-	// ── Assertion 3: name-miss without create_topic never minted/fanned ──────
-	// The match admits either body, so AwaitDelivery returns whichever fanned
-	// FIRST. In-order per-subscriber delivery means a wrongly-minted miss (posted
-	// before the canary) would arrive AHEAD of it. So "the canary came first" is
-	// a positive ordering fact — no sleep, no timeout proves this absence.
+	// Match the first miss or canary. Per-subscriber order means a wrongly minted
+	// miss arrives before the canary, so canary-first proves the miss was not fanned
+	// out without a sleep or timeout-based absence check.
 	firstMint, err := f.AwaitDelivery(ctx, sub1Stream, func(m *compassv1.Message) bool {
 		return firstBlockText(m) == t3MissBody || firstBlockText(m) == t3MintCanaryBody
 	})

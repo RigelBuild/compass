@@ -2,21 +2,10 @@
 
 package e2e
 
-// Podman-tagged teeth for the T1 fixture plumbing (RIG-3528): the observer-scoped
-// client mint (AsObserver) and the CreateUser/CreateChannel setup wrappers T3/T4
-// consume. These are the primitives' own proof — the multi-actor legs that USE
-// them (T2-T5) land separately, and the marker-script half of T1 is proven in the
-// hermetic no-podman lane (cannedmodel_test.go).
-//
-// The load-bearing case here is the NEGATIVE: AsObserver mints a non-admin bearer
-// via IssueToken, which is the seam that makes "what an account CANNOT see"
-// assertable at all — every other fixture RPC rides the bootstrap-admin bearer
-// (clients.go:63), and an admin sees everything.
-//
-// podmanUsable-guarded with the byte-identical harness skip literal
-// (harness_test.go:29) so the e2e CI guard's skip-string grep matches; no second
-// skip condition. Every RPC derives its own deterministic deadline internally
-// from the passed-in ctx; the outer ctx is the test root.
+// Podman-tagged tests prove observer credentials and setup wrappers used by
+// multi-actor legs. The key negative case requires a non-admin bearer: admin
+// credentials can see every tenant. The hermetic lane separately tests marker
+// scripts; this file uses the shared podman skip guard and bounded RPCs.
 
 import (
 	"context"
@@ -121,20 +110,14 @@ func TestObserverAndSetupPrimitives(t *testing.T) {
 	if !visible[privateID] {
 		t.Fatalf("observer ListChannels omitted the observer's OWN private channel %q (it is a member); visible ids = %v", privateID, visible)
 	}
-	// THE negative: a private (ungrouped) channel the observer is NOT a member of
-	// must not be reachable. If CreateChannel ignored `private` and grouped every
-	// channel as SHARED, this id would be globally visible and this reddens.
+	// A private channel owned by another account must not appear; this catches
+	// private channels incorrectly grouped as shared.
 	if visible[otherPrivateID] {
 		t.Fatalf("observer ListChannels exposed %q — a PRIVATE channel owned by another account the observer is not a member of; the private/shared distinction is not holding", otherPrivateID)
 	}
 
-	// THE teeth on the credential itself: the observer bearer must be a genuine
-	// NON-ADMIN identity, not the admin token handed back under a new name. An
-	// adminOnly RPC (IssueToken, internal/auth/admin_gate.go:65) over the
-	// observer's own CompassService client must be PermissionDenied. Without this
-	// the positive read above would also pass if AsObserver silently reused the
-	// admin bearer — exactly the bug that would make every future
-	// negative-visibility assertion vacuous.
+	// Verify AsObserver minted a non-admin bearer; an admin-only IssueToken call
+	// must be PermissionDenied, or negative visibility checks are vacuous.
 	denyCtx, cancelDeny := context.WithTimeout(ctx, rpcTimeout)
 	defer cancelDeny()
 	_, err = observerCompass.IssueToken(denyCtx, &compassv1.IssueTokenRequest{
