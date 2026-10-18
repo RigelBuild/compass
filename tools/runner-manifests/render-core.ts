@@ -50,6 +50,7 @@ export interface RunnerDeployValues {
 	serverCA?:
 		| { configMapName: string; secretName?: undefined; key: string }
 		| { secretName: string; configMapName?: undefined; key: string };
+	serverName?: string;
 }
 
 type ValidatedRunnerDeployValues = Omit<
@@ -263,6 +264,12 @@ function validateValues(values: ValidatedRunnerDeployValues): void {
 	validateAdmissionNames(values.admission);
 	assertEgressAllow(values.egressAllow);
 	assertServerCA(values.serverCA);
+	if (
+		values.serverName !== undefined &&
+		!isValidEgressHost(values.serverName)
+	) {
+		throw new Error("serverName must be a DNS name or IP literal");
+	}
 	assertNonEmpty("seccompProfilePath", values.seccompProfilePath);
 	if (
 		values.seccompProfilePath.startsWith("/") ||
@@ -453,9 +460,15 @@ export function parseRunnerDeployValues(
 		),
 		egressAllow: egressAllowValue(root.egressAllow),
 		serverCA: serverCAValue(root.serverCA),
+		serverName: serverNameValue(root),
 	};
 	validateValues(values);
 	return values;
+}
+
+function serverNameValue(root: Record<string, unknown>): string | undefined {
+	if (root.serverName === undefined) return undefined;
+	return stringValue(root, "serverName", "serverName");
 }
 
 function egressAllowValue(value: unknown): readonly string[] | undefined {
@@ -500,6 +513,7 @@ export function renderRunnerManifests(
 	const cpuRequest = values.sessionCapacity * values.guestCpus;
 	const runtimePath = `${RUNTIME_MOUNT_PATH}/microvm`;
 	const ca = values.serverCA;
+	const serverName = values.serverName;
 	const egress = values.egressAllow ?? [];
 	// The Runner splits one --egress-allow value on ","; none means default-deny.
 	const egressArgs =
@@ -649,6 +663,9 @@ export function renderRunnerManifests(
 													value: `${SERVER_CA_MOUNT_PATH}/${ca.key}`,
 												},
 											]),
+									...(serverName === undefined
+										? []
+										: [{ name: "COMPASS_SERVER_NAME", value: serverName }]),
 								],
 							},
 						],

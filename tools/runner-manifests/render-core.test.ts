@@ -938,3 +938,45 @@ describe("serverCA", () => {
 		}
 	});
 });
+
+describe("serverName", () => {
+	test("omits COMPASS_SERVER_NAME when unset", () => {
+		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
+		expect(runnerEnv(daemonSet)).not.toHaveProperty("COMPASS_SERVER_NAME");
+	});
+
+	test("renders COMPASS_SERVER_NAME when set", () => {
+		const daemonSet = runnerDaemonSet(
+			renderRunnerManifests({ ...values, serverName: "compass.example.test" }),
+		);
+		expect(runnerEnv(daemonSet).COMPASS_SERVER_NAME?.value).toBe(
+			"compass.example.test",
+		);
+	});
+
+	test("places serverName after COMPASS_RUNNER_CA", () => {
+		const daemonSet = runnerDaemonSet(
+			renderRunnerManifests({
+				...values,
+				serverCA: { configMapName: "compass-server-ca", key: "ca.crt" },
+				serverName: "compass.example.test",
+			}),
+		);
+		const entries = runnerEnv(daemonSet);
+		const renderedNames = Object.keys(entries);
+		expect(renderedNames.indexOf("COMPASS_SERVER_NAME")).toBe(
+			renderedNames.indexOf("COMPASS_RUNNER_CA") + 1,
+		);
+	});
+	test("rejects values outside the egress-host grammar", () => {
+		for (const serverName of [
+			"",
+			"compass.example.test:443",
+			"https://compass.example.test",
+		]) {
+			expect(() => renderRunnerManifests({ ...values, serverName })).toThrow(
+				"serverName",
+			);
+		}
+	});
+});

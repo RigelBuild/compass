@@ -1532,6 +1532,21 @@ Runner SHALL use the system roots.
 - **Then** its `Enroll` call fails at the TLS handshake with an
   unknown-authority error, and it never enrolls.
 
+### Requirement: `compass-runner --server-name` sets the certificate name
+
+`compass-runner --server-name <name>` (default `$COMPASS_SERVER_NAME`) SHALL
+check the Server's certificate against `<name>` instead of the `--server` host.
+It SHALL trust the same roots as the Server connection: the certificates in
+`--ca` when set, or the system roots otherwise. When `--server-name` is unset,
+the Runner SHALL check the certificate against the `--server` host.
+
+#### Scenario: A Runner connects using a public certificate name
+
+- **Given** a Server at an in-cluster address with a certificate naming only
+  `compass.example.test`, and the Runner trusts the certificate's CA
+- **When** the Runner sets `--server-name compass.example.test` and enrolls
+- **Then** the TLS handshake succeeds and the Runner enrolls
+
 ## Not yet specified
 
 These remaining surfaces are designed (see the design record) but not yet
