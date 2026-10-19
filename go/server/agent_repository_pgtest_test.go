@@ -48,9 +48,10 @@ func newAgentRepositoryLifecycleTest(t *testing.T) *agentRepositoryLifecycleTest
 	}
 	broker := &gitCredentialBroker{
 		host: "github.com", store: f.store, minter: minter, log: discardLogE2E(),
-		clock: func() time.Time { return clock }, limiter: rate.NewLimiter(gitCredentialMintRate, gitCredentialMintBurst),
+		installations: &fakeGitCredentialInstallations{owner: "owner"},
+		clock:         func() time.Time { return clock }, limiter: rate.NewLimiter(gitCredentialMintRate, gitCredentialMintBurst),
 		entries: make(map[string]gitCredentialEntry), negative: make(map[string]gitCredentialNegativeEntry),
-		last: make(map[store.AccountID]string), served: make(map[store.AccountID]map[string]struct{}),
+		last: make(map[store.AccountID]map[string]string), served: make(map[store.AccountID]map[string]struct{}),
 	}
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 	token, err := auth.IssueAccountToken(ctx, f.store, f.ownerAdmin)

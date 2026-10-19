@@ -53,15 +53,51 @@ func NewInstallationResolver(cfg GitHubAppConfig) (*InstallationResolver, error)
 // case-insensitively. Hits are cached for ten minutes; misses refresh every 30s.
 func (r *InstallationResolver) InstallationFor(ctx context.Context, owner string) (int64, error) {
 	key := strings.ToLower(owner)
-	if installations, snapshotAt, ok := r.snapshot(); ok && snapshotFresh(installations, snapshotAt, key, r.source.clock()) {
-		return installationFor(installations, owner)
+	installations, err := r.freshInstallations(ctx, func(installations map[string]int64, snapshotAt, now time.Time) bool {
+		return snapshotFresh(installations, snapshotAt, key, now)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("forge: resolve installation for owner %q: %w", owner, err)
+	}
+	return installationFor(installations, owner)
+}
+
+// DefaultOwner returns the lowercase account login of the default installation,
+// with InstallationFor's cache semantics. ErrNoInstallation when the snapshot lacks it.
+func (r *InstallationResolver) DefaultOwner(ctx context.Context) (string, error) {
+	id := r.DefaultInstallation()
+	if id == 0 {
+		return "", fmt.Errorf("forge: default installation is not configured: %w", ErrNoInstallation)
+	}
+	installations, err := r.freshInstallations(ctx, func(installations map[string]int64, snapshotAt, now time.Time) bool {
+		_, found := installationLogin(installations, id)
+		return snapshotFreshFor(found, snapshotAt, now)
+	})
+	if err != nil {
+		return "", fmt.Errorf("forge: resolve default installation owner: %w", err)
+	}
+	if login, found := installationLogin(installations, id); found {
+		return login, nil
+	}
+	return "", fmt.Errorf("forge: default installation %d: %w", id, ErrNoInstallation)
+}
+
+// DefaultInstallation returns the configured default installation id, or 0.
+func (r *InstallationResolver) DefaultInstallation() int64 {
+	return r.source.cfg.InstallationID
+}
+
+// freshInstallations returns a snapshot that fresh accepts, refreshing it under one singleflight.
+func (r *InstallationResolver) freshInstallations(ctx context.Context, fresh func(map[string]int64, time.Time, time.Time) bool) (map[string]int64, error) {
+	if installations, snapshotAt, ok := r.snapshot(); ok && fresh(installations, snapshotAt, r.source.clock()) {
+		return installations, nil
 	}
 
 	resultCh := r.group.DoChan("installations", func() (any, error) {
 		now := r.source.clock()
 		r.mu.Lock()
 		installations, snapshotAt := r.installations, r.snapshotAt
-		if installations != nil && snapshotFresh(installations, snapshotAt, key, now) {
+		if installations != nil && fresh(installations, snapshotAt, now) {
 			r.mu.Unlock()
 			return installations, nil
 		}
@@ -91,17 +127,17 @@ func (r *InstallationResolver) InstallationFor(ctx context.Context, owner string
 	var result singleflight.Result
 	select {
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return nil, ctx.Err()
 	case result = <-resultCh:
 	}
 	if result.Err != nil {
-		return 0, fmt.Errorf("forge: resolve installation for owner %q: %w", owner, result.Err)
+		return nil, result.Err
 	}
 	installations, ok := result.Val.(map[string]int64)
 	if !ok {
-		return 0, fmt.Errorf("forge: unexpected installation refresh result %T", result.Val)
+		return nil, fmt.Errorf("forge: unexpected installation refresh result %T", result.Val)
 	}
-	return installationFor(installations, owner)
+	return installations, nil
 }
 
 // errInstallationRefreshThrottled reports a lookup inside the retry floor after a failed refresh.
@@ -110,15 +146,24 @@ var errInstallationRefreshThrottled = errors.New("forge: installation refresh fa
 // snapshotFresh reports whether the snapshot can answer key: a hit within the
 // TTL, or a miss within the miss-refresh floor.
 func snapshotFresh(installations map[string]int64, snapshotAt time.Time, key string, now time.Time) bool {
-	if _, found := installations[key]; found {
+	_, found := installations[key]
+	return snapshotFreshFor(found, snapshotAt, now)
+}
+
+func snapshotFreshFor(found bool, snapshotAt, now time.Time) bool {
+	if found {
 		return now.Before(snapshotAt.Add(installationCacheTTL))
 	}
 	return now.Before(snapshotAt.Add(installationMissRefreshFloor))
 }
 
-// DefaultInstallation returns the configured default installation id, or 0.
-func (r *InstallationResolver) DefaultInstallation() int64 {
-	return r.source.cfg.InstallationID
+func installationLogin(installations map[string]int64, id int64) (string, bool) {
+	for login, installationID := range installations {
+		if installationID == id {
+			return login, true
+		}
+	}
+	return "", false
 }
 
 func noInstallation(owner string) error {

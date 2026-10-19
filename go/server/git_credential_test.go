@@ -231,20 +231,39 @@ func (r *fakeAgentSecretResolver) ResolveFor(context.Context, store.AccountID, s
 	return append([]secrets.ResolvedSecret(nil), r.resolved...), r.err
 }
 
+type fakeGitCredentialInstallations struct {
+	owner string
+	err   error
+}
+
+func (f *fakeGitCredentialInstallations) DefaultOwner(context.Context) (string, error) {
+	return f.owner, f.err
+}
+
 func newGitCredentialTestBroker(credentialStore gitCredentialStore, minter gitCredentialMinter, now *time.Time, signal func(context.Context) error) *gitCredentialBroker {
 	return &gitCredentialBroker{
-		host:     "github.com",
-		store:    credentialStore,
-		minter:   minter,
-		log:      slog.New(slog.DiscardHandler),
-		signal:   signal,
-		clock:    func() time.Time { return *now },
-		limiter:  rate.NewLimiter(gitCredentialMintRate, gitCredentialMintBurst),
-		entries:  make(map[string]gitCredentialEntry),
-		negative: make(map[string]gitCredentialNegativeEntry),
-		last:     make(map[store.AccountID]string),
-		served:   make(map[store.AccountID]map[string]struct{}),
+		host:          "github.com",
+		store:         credentialStore,
+		minter:        minter,
+		installations: &fakeGitCredentialInstallations{owner: "owner"},
+		log:           slog.New(slog.DiscardHandler),
+		signal:        signal,
+		clock:         func() time.Time { return *now },
+		limiter:       rate.NewLimiter(gitCredentialMintRate, gitCredentialMintBurst),
+		entries:       make(map[string]gitCredentialEntry),
+		negative:      make(map[string]gitCredentialNegativeEntry),
+		last:          make(map[store.AccountID]map[string]string),
+		served:        make(map[store.AccountID]map[string]struct{}),
 	}
+}
+
+// credential returns the default credential's token: the one ResolveFor emits last.
+func (b *gitCredentialBroker) credential(ctx context.Context, agent store.AccountID) (string, bool) {
+	creds := b.credentials(ctx, agent)
+	if len(creds) == 0 {
+		return "", false
+	}
+	return creds[len(creds)-1].token, true
 }
 
 func resolveBrokeredSecret(t *testing.T, resolver *brokeredSecretResolver) []secrets.ResolvedSecret {
@@ -289,24 +308,247 @@ func TestGitCredentialBrokerMintsScopedOwnerWithMintFor(t *testing.T) {
 	}
 }
 
-func TestGitCredentialBrokerCrossOwnerAgentRowFallsBackToOwnerGrants(t *testing.T) {
+func TestGitCredentialBrokerMintsOncePerOwner(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	grants.setRepos("agent-id", []string{"owner-b/two", "owner-a/one"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_a", "ghs_b"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+
+	got := resolveBrokeredSecret(t, resolver)
+	if want := map[string]string{"owner-a": "ghs_a", "owner-b": "ghs_b"}; !reflect.DeepEqual(brokeredTokensByOwner(t, got), want) {
+		t.Fatalf("tokens by owner = %v, want %v", brokeredTokensByOwner(t, got), want)
+	}
+	modes, owners := minter.mintModes()
+	if !reflect.DeepEqual(modes, []string{"owner", "owner"}) || !reflect.DeepEqual(owners, []string{"owner-a", "owner-b"}) {
+		t.Fatalf("mint modes/owners = %v/%v, want one owner mint each for owner-a and owner-b", modes, owners)
+	}
+	if got, want := minter.mintRepos(), [][]string{{"one"}, {"two"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mint repository sets = %v, want %v", got, want)
+	}
+}
+
+func TestGitCredentialBrokerOwnerWithoutInstallationStillServesOthers(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	grants.setRepos("agent-id", []string{"owner-a/one", "owner-b/two"})
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_a", "unused"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{nil, forge.ErrNoInstallation},
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+
+	got := resolveBrokeredSecret(t, resolver)
+	if want := map[string]string{"owner-a": "ghs_a"}; !reflect.DeepEqual(brokeredTokensByOwner(t, got), want) {
+		t.Fatalf("tokens by owner = %v, want only owner-a", brokeredTokensByOwner(t, got))
+	}
+}
+
+func TestGitCredentialBrokerRejectedOwnerGroupFallsBackToOwnerUserGrants(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
-	grants.setRepos("owner-id", []string{"owner/base"})
-	grants.setRepos("agent-id", []string{"second-owner/base", "other/workstream"})
-	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_owner"}, expiresAt: now.Add(time.Hour)}
-	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
-
-	tok, ok := broker.credential(context.Background(), "agent-id")
-	if !ok || tok != "ghs_owner" {
-		t.Fatalf("credential = (%q, %v), want owner-grants token", tok, ok)
+	grants.setRepos("owner-id", []string{"owner-a/base", "owner-b/two"})
+	grants.setRepos("agent-id", []string{"owner-a/base", "owner-a/row", "owner-b/two"})
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"unused", "ghs_a_owner", "ghs_b"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{&forge.StatusError{Status: http.StatusUnprocessableEntity, Message: "scope rejected"}},
 	}
-	if got, want := minter.mintRepos(), [][]string{{"base"}}; !reflect.DeepEqual(got, want) {
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+
+	got := resolveBrokeredSecret(t, resolver)
+	if want := map[string]string{"owner-a": "ghs_a_owner", "owner-b": "ghs_b"}; !reflect.DeepEqual(brokeredTokensByOwner(t, got), want) {
+		t.Fatalf("tokens by owner = %v, want %v", brokeredTokensByOwner(t, got), want)
+	}
+	if got, want := minter.mintRepos(), [][]string{{"base", "row"}, {"base"}, {"two"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("mint repository sets = %v, want %v", got, want)
 	}
 	if grants.ownerCallCount() != 1 {
 		t.Fatalf("owner lookups = %d, want one", grants.ownerCallCount())
 	}
+}
+
+func TestGitCredentialBrokerTransientFailureFallsBackToSameOwnerLastKey(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	grants.setRepos("agent-id", []string{"owner-a/one", "owner-b/two"})
+	busy := &forge.StatusError{Status: http.StatusTooManyRequests, Message: "try later"}
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_a", "ghs_b"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{nil, nil, busy, busy},
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+	resolveBrokeredSecret(t, resolver)
+
+	grants.setRepos("agent-id", []string{"owner-a/one", "owner-a/three", "owner-b/two", "owner-b/four"})
+	got := resolveBrokeredSecret(t, resolver)
+	if want := map[string]string{"owner-a": "ghs_a", "owner-b": "ghs_b"}; !reflect.DeepEqual(brokeredTokensByOwner(t, got), want) {
+		t.Fatalf("tokens by owner after transient failures = %v, want each owner's own last token", brokeredTokensByOwner(t, got))
+	}
+	if minter.callCount() != 4 {
+		t.Fatalf("mint calls = %d, want two mints and two failed widened mints", minter.callCount())
+	}
+}
+
+func TestGitCredentialBrokerRevokingOwnerLastRepositoryKeepsOtherOwner(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	grants.setRepos("agent-id", []string{"owner-a/one", "owner-b/two"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_a", "ghs_b", "unexpected"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+	resolveBrokeredSecret(t, resolver)
+
+	grants.setRepos("agent-id", []string{"owner-a/one"})
+	broker.grantsChanged(t.Context(), "agent-id")
+	if got := broker.lastCredential("agent-id", "owner-b"); got != "" {
+		t.Fatalf("owner-b last key = %q, want none", got)
+	}
+	if got := broker.lastCredential("agent-id", "owner-a"); got != "owner-a/one" {
+		t.Fatalf("owner-a last key = %q, want owner-a/one", got)
+	}
+	now = now.Add(gitCredentialRevokeGrace)
+	broker.refreshDue(t.Context())
+	minter.mu.Lock()
+	revoked := append([]string(nil), minter.revoked...)
+	minter.mu.Unlock()
+	if !reflect.DeepEqual(revoked, []string{"ghs_b"}) {
+		t.Fatalf("revoked tokens = %v, want only owner-b's token", revoked)
+	}
+	got := resolveBrokeredSecret(t, resolver)
+	if want := map[string]string{"owner-a": "ghs_a"}; !reflect.DeepEqual(brokeredTokensByOwner(t, got), want) {
+		t.Fatalf("tokens by owner after revoke = %v, want owner-a's cached token", brokeredTokensByOwner(t, got))
+	}
+	if minter.callCount() != 2 {
+		t.Fatalf("mint calls = %d, want no re-mint for owner-a", minter.callCount())
+	}
+}
+
+func TestGitCredentialBrokerEmitsDefaultCredentialLast(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	grants.setRepos("agent-id", []string{"owner-a/one", "owner-b/two", "owner-c/three"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_a", "ghs_b", "ghs_c"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	broker.installations = &fakeGitCredentialInstallations{owner: "Owner-B"}
+	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+
+	if got, want := brokeredOwners(resolveBrokeredSecret(t, resolver)), []string{"owner-a", "owner-c", "owner-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("emitted owners = %v, want %v with the default installation's owner last", got, want)
+	}
+	broker.installations = &fakeGitCredentialInstallations{owner: "owner-z"}
+	if got, want := brokeredOwners(resolveBrokeredSecret(t, resolver)), []string{"owner-b", "owner-c", "owner-a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("emitted owners = %v, want %v with the first owner last", got, want)
+	}
+}
+
+func TestGitCredentialBrokerWildcardCarriesDefaultOwnerLogin(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{}
+	grants.setRepos("agent-id", []string{"*"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_wildcard"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	broker.installations = &fakeGitCredentialInstallations{owner: "Owner-A"}
+	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+
+	got := resolveBrokeredSecret(t, resolver)
+	if len(got) != 1 || got[0].Owner != "owner-a" || got[0].Value != "ghs_wildcard" {
+		t.Fatalf("resolved secrets = %+v, want one wildcard credential owned by owner-a", got)
+	}
+}
+
+func TestGitCredentialBrokerWildcardWithOwnerGroups(t *testing.T) {
+	tests := []struct {
+		name       string
+		agentRows  []string
+		wantOwners []string
+		wantModes  []string
+	}{
+		{name: "row under another owner", agentRows: []string{"*", "owner-b/two"}, wantOwners: []string{"owner-b", "owner-a"}, wantModes: []string{"owner", "default"}},
+		{name: "row under the default owner", agentRows: []string{"*", "owner-a/one"}, wantOwners: []string{"owner-a"}, wantModes: []string{"default"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+			grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+			grants.setRepos("owner-id", []string{"*"})
+			grants.setRepos("agent-id", tt.agentRows)
+			minter := &fakeGitCredentialMinter{tokens: []string{"ghs_first", "ghs_second"}, expiresAt: now.Add(time.Hour)}
+			broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+			broker.installations = &fakeGitCredentialInstallations{owner: "owner-a"}
+			resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+
+			got := resolveBrokeredSecret(t, resolver)
+			if owners := brokeredOwners(got); !reflect.DeepEqual(owners, tt.wantOwners) {
+				t.Fatalf("emitted owners = %v, want %v", owners, tt.wantOwners)
+			}
+			if modes, _ := minter.mintModes(); !reflect.DeepEqual(modes, tt.wantModes) {
+				t.Fatalf("mint modes = %v, want %v", modes, tt.wantModes)
+			}
+		})
+	}
+}
+
+func TestGitCredentialBrokerKeepsCachedDefaultOwnerWhenLookupFails(t *testing.T) {
+	tests := []struct {
+		name         string
+		defaultOwner string
+		agentRows    []string
+		wantOwners   []string
+	}{
+		{name: "wildcard only", defaultOwner: "owner-a", agentRows: []string{"*"}, wantOwners: []string{"owner-a"}},
+		{name: "wildcard plus another owner", defaultOwner: "owner-a", agentRows: []string{"*", "owner-b/two"}, wantOwners: []string{"owner-b", "owner-a"}},
+		{name: "owners without wildcard", defaultOwner: "owner-b", agentRows: []string{"owner-a/one", "owner-b/two", "owner-c/three"}, wantOwners: []string{"owner-a", "owner-c", "owner-b"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+			grants := &fakeGitCredentialGrants{}
+			grants.setRepos("agent-id", tt.agentRows)
+			minter := &fakeGitCredentialMinter{tokens: []string{"ghs_first", "ghs_second", "ghs_third"}, expiresAt: now.Add(time.Hour)}
+			broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+			installations := &fakeGitCredentialInstallations{owner: tt.defaultOwner}
+			broker.installations = installations
+			resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+
+			if owners := brokeredOwners(resolveBrokeredSecret(t, resolver)); !reflect.DeepEqual(owners, tt.wantOwners) {
+				t.Fatalf("first emitted owners = %v, want %v", owners, tt.wantOwners)
+			}
+			// An expired snapshot plus one failed list call makes every lookup fail for a while.
+			installations.owner, installations.err = "", forge.ErrBudgetExhausted
+			if owners := brokeredOwners(resolveBrokeredSecret(t, resolver)); !reflect.DeepEqual(owners, tt.wantOwners) {
+				t.Fatalf("emitted owners after a failed lookup = %v, want %v with the cached default last", owners, tt.wantOwners)
+			}
+		})
+	}
+}
+
+func brokeredOwners(got []secrets.ResolvedSecret) []string {
+	owners := make([]string, 0, len(got))
+	for _, secret := range got {
+		if secret.Kind == secrets.SecretGH {
+			owners = append(owners, secret.Owner)
+		}
+	}
+	return owners
+}
+
+func brokeredTokensByOwner(t *testing.T, got []secrets.ResolvedSecret) map[string]string {
+	t.Helper()
+	tokens := make(map[string]string, len(got))
+	for _, secret := range got {
+		if secret.Kind != secrets.SecretGH {
+			continue
+		}
+		if secret.Name != gitCredentialSecretName || secret.Delivery != secrets.DeliveryFile || secret.Host != "github.com" {
+			t.Errorf("brokered secret = %+v, want a file-delivered %s for github.com", secret, gitCredentialSecretName)
+		}
+		tokens[secret.Owner] = secret.Value
+	}
+	return tokens
 }
 
 func TestGitCredentialBrokerOversizedAgentScopeFallsBackToOwnerGrants(t *testing.T) {
@@ -425,7 +667,7 @@ func TestGitCredentialBrokerOwnerWildcardDominatesAgentRows(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
 	grants.setRepos("owner-id", []string{"*"})
-	grants.setRepos("agent-id", []string{"*", "other/workstream"})
+	grants.setRepos("agent-id", []string{"*", "owner/workstream"})
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_wildcard"}, expiresAt: now.Add(time.Hour)}
 	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
 
@@ -443,15 +685,18 @@ func TestGitCredentialBrokerOwnerLookupErrorStopsFallback(t *testing.T) {
 		owners:   map[store.AccountID]store.AccountID{"agent-id": "owner-id"},
 		ownerErr: errors.New("owner lookup failed"),
 	}
-	grants.setRepos("agent-id", []string{"owner/base", "other/workstream"})
-	minter := &fakeGitCredentialMinter{tokens: []string{"must-not-mint"}, expiresAt: now.Add(time.Hour)}
+	grants.setRepos("agent-id", []string{"owner/base", "owner/workstream"})
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"must-not-serve"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{&forge.StatusError{Status: http.StatusUnprocessableEntity, Message: "scope rejected"}},
+	}
 	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
 
 	if tok, ok := broker.credential(context.Background(), "agent-id"); ok || tok != "" {
 		t.Fatalf("credential = (%q, %v), want none after owner lookup error", tok, ok)
 	}
-	if minter.callCount() != 0 {
-		t.Fatalf("mint calls = %d, want none", minter.callCount())
+	if minter.callCount() != 1 {
+		t.Fatalf("mint calls = %d, want only the rejected agent-set mint", minter.callCount())
 	}
 }
 
@@ -527,7 +772,7 @@ func TestGitCredentialBrokerGrantsChangedRevokesRemovedScope(t *testing.T) {
 	if _, exists := broker.entries[oldKey]; exists {
 		t.Fatal("old over-granting entry remains")
 	}
-	if got := broker.lastCredential("agent-id"); got != "owner/base" {
+	if got := broker.lastCredential("agent-id", "owner"); got != "owner/base" {
 		t.Fatalf("last key = %q, want narrowed key", got)
 	}
 	if !old.expiresAt.After(now) {
@@ -683,7 +928,7 @@ func TestGitCredentialBrokerGrantsChangedFailedNarrowMintRevokesAndFailsClosed(t
 	if _, exists := broker.entries["owner/base,owner/removed"]; exists {
 		t.Fatal("old over-granting entry remains after failed mint")
 	}
-	if got := broker.lastCredential("agent-id"); got != "" {
+	if got := broker.lastCredential("agent-id", "owner"); got != "" {
 		t.Fatalf("last key after failed mint = %q, want none", got)
 	}
 	if token, ok := broker.credential(context.Background(), "agent-id"); ok || token != "" {
@@ -716,7 +961,7 @@ func TestGitCredentialBrokerGrantsChangedInvalidatesSharedOldScope(t *testing.T)
 	}
 	grants.setRepos("agent-a", []string{"owner/base"})
 	broker.grantsChanged(context.Background(), "agent-a")
-	if got := broker.lastCredential("agent-b"); got != "" {
+	if got := broker.lastCredential("agent-b", "owner"); got != "" {
 		t.Fatalf("agent B last key = %q, want removed", got)
 	}
 	if token, ok := broker.credential(context.Background(), "agent-b"); !ok || token != "ghs_b_narrow" {
@@ -880,8 +1125,8 @@ func TestGitCredentialBrokerMintsNarrowedGrant(t *testing.T) {
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 
 	got := resolveBrokeredSecret(t, resolver)
-	if len(got) != 1 || got[0].Name != gitCredentialSecretName || got[0].Value != "ghs_scoped" || got[0].Kind != secrets.SecretGH || got[0].Host != "github.com" || got[0].Delivery != secrets.DeliveryFile {
-		t.Fatalf("resolved secrets = %+v, want one file-delivered GitHub credential", got)
+	if len(got) != 1 || got[0].Name != gitCredentialSecretName || got[0].Value != "ghs_scoped" || got[0].Kind != secrets.SecretGH || got[0].Host != "github.com" || got[0].Delivery != secrets.DeliveryFile || got[0].Owner != "owner" {
+		t.Fatalf("resolved secrets = %+v, want one file-delivered GitHub credential owned by owner", got)
 	}
 	if want := []string{"alpha", "zeta"}; !reflect.DeepEqual(minter.mintRepos()[0], want) {
 		t.Fatalf("mint repositories = %v, want %v", minter.mintRepos()[0], want)
@@ -972,20 +1217,20 @@ func TestGitCredentialScopeWithin(t *testing.T) {
 	}
 }
 
-func TestGitCredentialScopeSeparatesOwners(t *testing.T) {
-	keyA, reposA, okA := gitCredentialScope([]string{"alice/app"})
-	keyB, reposB, okB := gitCredentialScope([]string{"bob/app"})
-	if !okA || !okB || keyA != "alice/app" || keyB != "bob/app" {
-		t.Fatalf("scope keys = %q and %q, want distinct owner-qualified keys", keyA, keyB)
+func TestGitCredentialScopesGroupsByOwner(t *testing.T) {
+	groups, ok := gitCredentialScopes([]string{"Owner-B/Two", "owner-a/z", "*", "owner-a/a"})
+	want := []gitCredentialGroup{
+		{owner: "owner-a", key: "owner-a/a,owner-a/z", names: []string{"a", "z"}},
+		{owner: "owner-b", key: "owner-b/two", names: []string{"two"}},
+		{owner: "*", key: "*"},
 	}
-	if !reflect.DeepEqual(reposA, []string{"app"}) || !reflect.DeepEqual(reposB, []string{"app"}) {
-		t.Fatalf("mint repositories = %v and %v, want the leaf names submitted to the App API", reposA, reposB)
+	if !ok || !reflect.DeepEqual(groups, want) {
+		t.Fatalf("gitCredentialScopes = (%+v, %v), want %+v", groups, ok, want)
 	}
-	if key, repos, ok := gitCredentialScope([]string{"owner/z", "owner/a"}); !ok || key != "owner/a,owner/z" || !reflect.DeepEqual(repos, []string{"a", "z"}) {
-		t.Fatalf("canonical scope = (%q, %v, %v), want sorted leaf names and owner-qualified cache key", key, repos, ok)
-	}
-	if _, _, ok := gitCredentialScope([]string{"owner/repo", "other/repo"}); ok {
-		t.Fatal("mixed owners accepted")
+	for _, grants := range [][]string{{"owner-a/one", "owner-a/one/extra"}, {"/one"}, {"owner-a/"}} {
+		if _, ok := gitCredentialScopes(grants); ok {
+			t.Fatalf("gitCredentialScopes(%v) accepted a malformed grant", grants)
+		}
 	}
 }
 
@@ -1056,7 +1301,7 @@ func TestGitCredentialBrokerDoesNotMintWithoutSafeGrants(t *testing.T) {
 		repos []string
 	}{
 		{name: "no grants"},
-		{name: "mixed owners", repos: []string{"one/repo", "two/other"}},
+		{name: "malformed grant among owners", repos: []string{"one/repo", "two/other/extra"}},
 		{name: "malformed grant", repos: []string{"owner/repo/extra"}},
 	}
 	for _, tt := range tests {
@@ -1390,8 +1635,8 @@ func TestGitCredentialBrokerRefreshStopsWhenContextCancelled(t *testing.T) {
 	broker.entries["owner/beta"] = gitCredentialEntry{
 		token: "ghs_beta_old", expiresAt: now.Add(time.Hour), refreshAt: now, lastUsed: now,
 	}
-	broker.last["agent-alpha"] = "owner/alpha"
-	broker.last["agent-beta"] = "owner/beta"
+	broker.last["agent-alpha"] = map[string]string{"owner": "owner/alpha"}
+	broker.last["agent-beta"] = map[string]string{"owner": "owner/beta"}
 	broker.served["agent-alpha"] = map[string]struct{}{"owner/alpha": {}}
 	broker.served["agent-beta"] = map[string]struct{}{"owner/beta": {}}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1959,7 +2204,7 @@ func TestGitCredentialBrokerRetriesPendingRevokes(t *testing.T) {
 	expiring.revokeErr = nil
 	expiring.mu.Unlock()
 	if len(expiringBroker.pendingRevokes) != 1 {
-		t.Fatalf("pending revoke count = %d, revoked = %v, last = %q, served = %+v, entries = %+v", len(expiringBroker.pendingRevokes), expiring.revoked, expiringBroker.lastCredential("agent-id"), expiringBroker.served, expiringBroker.entries)
+		t.Fatalf("pending revoke count = %d, revoked = %v, last = %q, served = %+v, entries = %+v", len(expiringBroker.pendingRevokes), expiring.revoked, expiringBroker.lastCredential("agent-id", "owner"), expiringBroker.served, expiringBroker.entries)
 	}
 	now = now.Add(gitCredentialRevokeGrace + time.Minute)
 	expiringBroker.refreshDue(context.Background())

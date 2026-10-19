@@ -439,7 +439,7 @@ func TestAgentRepositoryServiceRevokeTriggersCredentialBroker(t *testing.T) {
 	if _, err := revokeAgentRepository(f.client, ctx, f.ownerToken, "worker", "owner/workstream"); err != nil {
 		t.Fatalf("RevokeAgentRepository: %v", err)
 	}
-	if got := f.broker.lastCredential(f.agent); got != "owner/base" {
+	if got := f.broker.lastCredential(f.agent, "owner"); got != "owner/base" {
 		t.Fatalf("broker last key = %q, want owner/base after revoke", got)
 	}
 	f.broker.mu.Lock()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -66,6 +67,11 @@ type gitCredentialStore interface {
 	ListForgeScopeRepos(ctx context.Context, accountID store.AccountID, provider store.ForgeProvider, host string) ([]string, error)
 }
 
+// gitCredentialInstallations names the default installation's account, the wire owner of a "*" group.
+type gitCredentialInstallations interface {
+	DefaultOwner(ctx context.Context) (string, error)
+}
+
 // gitCredentialScopeRejected reports a mint failure that repeats for the same set.
 func gitCredentialScopeRejected(err error) bool {
 	if errors.Is(err, errGitCredentialScopeMismatch) || errors.Is(err, errGitCredentialScopeCached) || errors.Is(err, forge.ErrNoInstallation) {
@@ -105,25 +111,50 @@ type gitCredentialFlightResult struct {
 }
 
 type gitCredentialBroker struct {
-	host    string
-	store   gitCredentialStore
-	minter  gitCredentialMinter
-	log     *slog.Logger
-	signal  func(context.Context) error
-	clock   func() time.Time
-	limiter *rate.Limiter
+	host          string
+	store         gitCredentialStore
+	minter        gitCredentialMinter
+	installations gitCredentialInstallations
+	log           *slog.Logger
+	signal        func(context.Context) error
+	clock         func() time.Time
+	limiter       *rate.Limiter
 
 	mu             sync.Mutex
 	entries        map[string]gitCredentialEntry
 	negative       map[string]gitCredentialNegativeEntry
-	last           map[store.AccountID]string
+	last           map[store.AccountID]map[string]string
 	served         map[store.AccountID]map[string]struct{}
 	pendingRevokes []supersededToken
 	generation     uint64
 	backoffUntil   time.Time
 	retryPending   bool
 	group          singleflight.Group
+
+	// lastDefaultOwner is the last login DefaultOwner returned, served while lookups fail.
+	lastDefaultOwner string
 }
+
+// gitCredentialGroup is one owner's share of an agent's grants, minted as one token.
+type gitCredentialGroup struct {
+	owner string   // lowercase owner; "*" for the wildcard group
+	key   string   // "owner/a,owner/b" or "*"
+	names []string // leaf names for the mint; nil for "*"
+}
+
+// gitCredentialOwnedGroup pairs a group with its wire owner: the "*" group carries the default login.
+type gitCredentialOwnedGroup struct {
+	group gitCredentialGroup
+	owner string
+}
+
+type gitCredentialGroupSet struct {
+	groups       []gitCredentialOwnedGroup
+	defaultOwner string
+}
+
+type ownerCredential struct{ owner, key, token string }
+
 type brokeredSecretResolver struct {
 	inner  agentSecretResolver
 	broker *gitCredentialBroker
@@ -140,52 +171,157 @@ func (r *brokeredSecretResolver) ResolveFor(ctx context.Context, agent store.Acc
 	if err != nil || r.broker == nil || reason != gitCredentialReason {
 		return resolved, err
 	}
-	tok, ok := r.broker.credential(ctx, agent)
-	if !ok {
-		return resolved, nil
+	for _, credential := range r.broker.credentials(ctx, agent) {
+		resolved = append(resolved, secrets.ResolvedSecret{
+			Name:     gitCredentialSecretName,
+			Value:    credential.token,
+			Version:  secrets.Version(credential.token),
+			Delivery: secrets.DeliveryFile,
+			Kind:     secrets.SecretGH,
+			Host:     r.broker.host,
+			Owner:    credential.owner,
+		})
 	}
-	return append(resolved, secrets.ResolvedSecret{
-		Name:     gitCredentialSecretName,
-		Value:    tok,
-		Version:  secrets.Version(tok),
-		Delivery: secrets.DeliveryFile,
-		Kind:     secrets.SecretGH,
-		Host:     r.broker.host,
-	}), nil
+	return resolved, nil
 }
 
-func (b *gitCredentialBroker) credential(ctx context.Context, agent store.AccountID) (string, bool) {
-	b.mu.Lock()
-	gen := b.generation
-	b.mu.Unlock()
+// credentials serves one credential per owner group, the default credential last; a group
+// that fails even after the owner user's grants under that owner drops out.
+func (b *gitCredentialBroker) credentials(ctx context.Context, agent store.AccountID) []ownerCredential {
+	gen := b.currentGeneration()
 	repos, err := b.store.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, b.host)
 	if err != nil {
 		b.log.ErrorContext(ctx, "list GitHub credential grants", "error", err)
-		return "", false
+		return nil
 	}
-	tok, servedKey, rejected := b.credentialForRepos(ctx, agent, repos, gen)
-	if !rejected {
-		return b.recordCredentialIfCurrent(agent, servedKey, tok, gen)
+	if len(repos) == 0 {
+		b.clearLastCredential(agent)
+		return nil
 	}
+	var ownerSet gitCredentialGroupSet
+	ownerLoaded, ownerOK := false, false
+	ownerGroups := func() (gitCredentialGroupSet, bool) {
+		if !ownerLoaded {
+			ownerLoaded = true
+			ownerSet, ownerOK = b.ownerUserGroups(ctx, agent)
+		}
+		return ownerSet, ownerOK
+	}
+	groups, valid := gitCredentialScopes(repos)
+	if !valid {
+		b.log.WarnContext(ctx, "omit GitHub credential for invalid grant scope", "agent", agent)
+		set, ok := ownerGroups()
+		if !ok {
+			return nil
+		}
+		return b.serveGroups(ctx, agent, set, gen, nil)
+	}
+	return b.serveGroups(ctx, agent, b.ownGroups(ctx, groups), gen, ownerGroups)
+}
+
+func (b *gitCredentialBroker) serveGroups(ctx context.Context, agent store.AccountID, set gitCredentialGroupSet, generation uint64, ownerGroups func() (gitCredentialGroupSet, bool)) []ownerCredential {
+	creds := make([]ownerCredential, 0, len(set.groups))
+	defaultIndex := -1
+	for _, group := range set.groups {
+		tok, key, rejected := b.credentialForGroup(ctx, agent, group, generation)
+		if rejected && ownerGroups != nil {
+			if fallback, ok := ownerGroups(); ok {
+				// Widen only: the owner user's grants under the same owner, when they differ.
+				for _, ownerGroup := range fallback.groups {
+					if ownerGroup.owner == group.owner && ownerGroup.group.key != group.group.key {
+						tok, key, _ = b.credentialForGroup(ctx, agent, ownerGroup, generation)
+						break
+					}
+				}
+			}
+		}
+		tok, ok := b.recordCredentialIfCurrent(agent, group.owner, key, tok, generation)
+		if !ok {
+			continue
+		}
+		if group.owner == set.defaultOwner {
+			defaultIndex = len(creds)
+		}
+		creds = append(creds, ownerCredential{owner: group.owner, key: key, token: tok})
+	}
+	if len(creds) > 1 {
+		// GHHostsScript is last-wins, so the default credential goes last; else the first owner.
+		if defaultIndex < 0 {
+			defaultIndex = 0
+		}
+		defaultCredential := creds[defaultIndex]
+		creds = append(slices.Delete(creds, defaultIndex, defaultIndex+1), defaultCredential)
+	}
+	return creds
+}
+
+// ownerUserGroups groups the agent's owner user's grants; false when there are none to try.
+func (b *gitCredentialBroker) ownerUserGroups(ctx context.Context, agent store.AccountID) (gitCredentialGroupSet, bool) {
 	owner, err := b.store.AgentOwner(ctx, agent)
 	if err != nil {
 		b.log.ErrorContext(ctx, "resolve GitHub credential owner", "agent", agent, "error", err)
-		return "", false
+		return gitCredentialGroupSet{}, false
 	}
 	ownerRepos, err := b.store.ListForgeScopeRepos(ctx, owner, store.ForgeProviderGitHub, b.host)
 	if err != nil {
 		b.log.ErrorContext(ctx, "list owner GitHub credential grants", "owner", owner, "error", err)
-		return "", false
+		return gitCredentialGroupSet{}, false
 	}
-	ownerKey, _, ownerOK := gitCredentialScope(ownerRepos)
-	if !ownerOK || len(ownerRepos) == 0 || ownerKey == gitCredentialScopeKey(repos) {
-		return "", false
+	if len(ownerRepos) == 0 {
+		return gitCredentialGroupSet{}, false
 	}
-	tok, servedKey, _ = b.credentialForRepos(ctx, agent, ownerRepos, gen)
-	return b.recordCredentialIfCurrent(agent, servedKey, tok, gen)
+	groups, ok := gitCredentialScopes(ownerRepos)
+	if !ok {
+		return gitCredentialGroupSet{}, false
+	}
+	return b.ownGroups(ctx, groups), true
 }
 
-func (b *gitCredentialBroker) recordCredentialIfCurrent(agent store.AccountID, key, token string, generation uint64) (string, bool) {
+// ownGroups names each group's wire owner. The "*" group takes the default installation's login
+// and replaces the exact group on that owner, which it already covers.
+func (b *gitCredentialBroker) ownGroups(ctx context.Context, groups []gitCredentialGroup) gitCredentialGroupSet {
+	wildcard := len(groups) > 0 && groups[len(groups)-1].key == "*"
+	set := gitCredentialGroupSet{groups: make([]gitCredentialOwnedGroup, 0, len(groups))}
+	if wildcard || len(groups) > 1 {
+		set.defaultOwner = b.defaultOwner(ctx)
+	}
+	for _, group := range groups {
+		owner := group.owner
+		switch {
+		case group.key == "*":
+			if set.defaultOwner == "" {
+				b.log.WarnContext(ctx, "omit wildcard GitHub credential without a default installation owner")
+				continue
+			}
+			owner = set.defaultOwner
+		case wildcard && owner == set.defaultOwner:
+			continue
+		}
+		set.groups = append(set.groups, gitCredentialOwnedGroup{group: group, owner: owner})
+	}
+	return set
+}
+
+// defaultOwner falls back to the last resolved login: a lapsed installation snapshot must not
+// drop the "*" credential or move the default to another owner.
+func (b *gitCredentialBroker) defaultOwner(ctx context.Context) string {
+	if b.installations == nil {
+		return ""
+	}
+	login, err := b.installations.DefaultOwner(ctx)
+	b.mu.Lock()
+	if err == nil {
+		b.lastDefaultOwner = strings.ToLower(login)
+	}
+	owner := b.lastDefaultOwner
+	b.mu.Unlock()
+	if err != nil {
+		b.log.ErrorContext(ctx, "resolve default GitHub installation owner", "cached", owner != "", "error", err)
+	}
+	return owner
+}
+
+func (b *gitCredentialBroker) recordCredentialIfCurrent(agent store.AccountID, owner, key, token string, generation uint64) (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.generation != generation || token == "" || key == "" {
@@ -194,7 +330,10 @@ func (b *gitCredentialBroker) recordCredentialIfCurrent(agent store.AccountID, k
 	if entry, ok := b.entries[key]; !ok || entry.token != token {
 		return "", false
 	}
-	b.last[agent] = key
+	if b.last[agent] == nil {
+		b.last[agent] = make(map[string]string)
+	}
+	b.last[agent][owner] = key
 	if b.served[agent] == nil {
 		b.served[agent] = make(map[string]struct{})
 	}
@@ -203,18 +342,10 @@ func (b *gitCredentialBroker) recordCredentialIfCurrent(agent store.AccountID, k
 }
 
 // Keep lookup separate from recording so callers can reject credentials from stale grant snapshots.
-func (b *gitCredentialBroker) credentialForRepos(ctx context.Context, agent store.AccountID, repos []string, generation uint64) (tok, servedKey string, rejected bool) {
-	if len(repos) == 0 {
-		b.clearLastCredential(agent)
-		return "", "", false
-	}
-	key, names, valid := gitCredentialScope(repos)
-	if !valid {
-		b.log.WarnContext(ctx, "omit GitHub credential for invalid grant scope", "agent", agent)
-		return "", "", true
-	}
+func (b *gitCredentialBroker) credentialForGroup(ctx context.Context, agent store.AccountID, group gitCredentialOwnedGroup, generation uint64) (tok, servedKey string, rejected bool) {
+	key, names := group.group.key, group.group.names
 	if len(names) > gitCredentialMaxRepos {
-		b.log.WarnContext(ctx, "omit GitHub credential for oversized grant scope", "agent", agent, "repositories", len(names))
+		b.log.WarnContext(ctx, "omit GitHub credential for oversized grant scope", "agent", agent, "owner", group.owner, "repositories", len(names))
 		return "", "", true
 	}
 	if b.currentGeneration() != generation {
@@ -257,7 +388,7 @@ func (b *gitCredentialBroker) credentialForRepos(ctx context.Context, agent stor
 		if tok = b.staleCredential(key); tok != "" {
 			return tok, key, false
 		}
-		tok, servedKey = b.credentialForLastKey(agent, key)
+		tok, servedKey = b.credentialForLastKey(agent, group.owner, key)
 		return tok, servedKey, false
 	}
 	result, validResult := value.(gitCredentialFlightResult)
@@ -336,39 +467,46 @@ func (b *gitCredentialBroker) staleCredential(key string) string {
 	return entry.token
 }
 
-func gitCredentialScope(grants []string) (string, []string, bool) {
-	if slices.Contains(grants, "*") {
-		return "*", nil, true
-	}
-	qualified := make([]string, 0, len(grants))
-	owner := ""
+// gitCredentialScopes groups grants by lowercase owner, sorted by owner, then a "*" group when
+// the grants hold "*". False only for a malformed grant: not "*" and not exactly owner/name.
+func gitCredentialScopes(grants []string) ([]gitCredentialGroup, bool) {
+	byOwner := make(map[string][]string)
+	wildcard := false
 	for _, grant := range grants {
-		parts := strings.Split(grant, "/")
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return "", nil, false
+		if grant == "*" {
+			wildcard = true
+			continue
 		}
-		grantOwner := strings.ToLower(parts[0])
-		if owner == "" {
-			owner = grantOwner
-		} else if owner != grantOwner {
-			return "", nil, false
+		owner, name, ok := strings.Cut(grant, "/")
+		if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+			return nil, false
 		}
-		qualified = append(qualified, strings.ToLower(parts[0])+"/"+strings.ToLower(parts[1]))
+		owner = strings.ToLower(owner)
+		byOwner[owner] = append(byOwner[owner], owner+"/"+strings.ToLower(name))
 	}
-	sort.Strings(qualified)
-	names := make([]string, len(qualified))
-	for i, grant := range qualified {
-		names[i] = strings.SplitN(grant, "/", 2)[1]
+	groups := make([]gitCredentialGroup, 0, len(byOwner)+1)
+	for _, owner := range slices.Sorted(maps.Keys(byOwner)) {
+		qualified := slices.Compact(slices.Sorted(slices.Values(byOwner[owner])))
+		names := make([]string, len(qualified))
+		for i, grant := range qualified {
+			names[i] = grant[len(owner)+1:]
+		}
+		groups = append(groups, gitCredentialGroup{owner: owner, key: strings.Join(qualified, ","), names: names})
 	}
-	return strings.Join(qualified, ","), names, true
+	if wildcard {
+		groups = append(groups, gitCredentialGroup{owner: "*", key: "*"})
+	}
+	return groups, true
 }
 
-func gitCredentialScopeKey(repos []string) string {
-	key, _, ok := gitCredentialScope(repos)
-	if !ok {
-		return ""
+// gitCredentialKeyOwner returns the owner of a finite scope key, or "*".
+func gitCredentialKeyOwner(key string) string {
+	if key == "*" {
+		return "*"
 	}
-	return key
+	firstRepo, _, _ := strings.Cut(key, ",")
+	owner, _, _ := strings.Cut(firstRepo, "/")
+	return owner
 }
 
 func (b *gitCredentialBroker) grantsChanged(ctx context.Context, agent store.AccountID) {
@@ -380,17 +518,25 @@ func (b *gitCredentialBroker) grantsChanged(ctx context.Context, agent store.Acc
 	b.mu.Unlock()
 
 	repos, err := b.store.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, b.host)
-	requestedKey := ""
+	requested := make(map[string]string)
 	if err != nil {
 		b.log.ErrorContext(ctx, "list GitHub credential grants after change", "agent", agent, "error", err)
-	} else if len(repos) > 0 {
-		requestedKey, _, _ = gitCredentialScope(repos)
+	} else if groups, ok := gitCredentialScopes(repos); ok {
+		for _, group := range groups {
+			requested[group.owner] = group.key
+		}
+		if _, wildcard := requested["*"]; wildcard {
+			// The "*" group stands for the default installation's owner, so it covers that owner's keys.
+			if defaultOwner := b.defaultOwner(ctx); defaultOwner != "" {
+				requested[defaultOwner] = "*"
+			}
+		}
 	}
 
 	var revokeTokens []supersededToken
 	b.mu.Lock()
 	for key := range b.served[agent] {
-		if requestedKey != "" && gitCredentialScopeWithin(key, requestedKey) {
+		if outer, ok := requested[gitCredentialKeyOwner(key)]; ok && gitCredentialScopeWithin(key, outer) {
 			continue
 		}
 		if entry, exists := b.entries[key]; exists {
@@ -406,7 +552,7 @@ func (b *gitCredentialBroker) grantsChanged(ctx context.Context, agent store.Acc
 	b.mu.Unlock()
 
 	if err == nil {
-		b.credential(ctx, agent)
+		b.credentials(ctx, agent)
 	}
 	if b.signal != nil {
 		if err := b.signal(ctx); err != nil {
@@ -424,16 +570,16 @@ func (b *gitCredentialBroker) currentGeneration() uint64 {
 	defer b.mu.Unlock()
 	return b.generation
 }
-func (b *gitCredentialBroker) lastCredential(agent store.AccountID) string {
+func (b *gitCredentialBroker) lastCredential(agent store.AccountID, owner string) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.last[agent]
+	return b.last[agent][owner]
 }
 
-// credentialForLastKey returns the stale token of the agent's last served key, and that key,
+// credentialForLastKey returns the stale token of the agent's last key for owner, and that key,
 // only when that key grants no repository outside the requested key.
-func (b *gitCredentialBroker) credentialForLastKey(agent store.AccountID, requested string) (string, string) {
-	key := b.lastCredential(agent)
+func (b *gitCredentialBroker) credentialForLastKey(agent store.AccountID, owner, requested string) (token, key string) {
+	key = b.lastCredential(agent, owner)
 	if key == "" || !gitCredentialScopeWithin(key, requested) {
 		return "", ""
 	}
@@ -731,8 +877,13 @@ func (b *gitCredentialBroker) refreshSnapshot(ctx context.Context, keys []string
 }
 
 func (b *gitCredentialBroker) dropLastFor(key string) {
-	for agent, lastKey := range b.last {
-		if lastKey == key {
+	for agent, byOwner := range b.last {
+		for owner, lastKey := range byOwner {
+			if lastKey == key {
+				delete(byOwner, owner)
+			}
+		}
+		if len(byOwner) == 0 {
 			delete(b.last, agent)
 		}
 	}
@@ -847,14 +998,19 @@ func buildGitCredentialBroker(
 	if err != nil {
 		return nil, fmt.Errorf("GitHub credential App minter: %w", err)
 	}
-	return &gitCredentialBroker{
+	broker := &gitCredentialBroker{
 		host: rc.Host, store: st, minter: minter, log: log,
 		signal: hub.SignalSecretsVersion, clock: time.Now,
 		limiter: rate.NewLimiter(gitCredentialMintRate, gitCredentialMintBurst),
 		entries: make(map[string]gitCredentialEntry), negative: make(map[string]gitCredentialNegativeEntry),
-		last:   make(map[store.AccountID]string),
+		last:   make(map[store.AccountID]map[string]string),
 		served: make(map[store.AccountID]map[string]struct{}),
-	}, nil
+	}
+	// A typed nil pointer would make a non-nil interface; leave the field nil instead.
+	if installations != nil {
+		broker.installations = installations
+	}
+	return broker, nil
 }
 
 // buildRepoInstallationResolver resolves owners through one shared App installation snapshot.
