@@ -201,6 +201,10 @@ func TestForgeSubscribeOverTheWire(t *testing.T) {
 	w := newForgeE2EWire(t)
 	endpoint, secret := newForgeSubscribeNotifyEndpoint(t, w)
 	ctx, control := openForgeSubscribeControl(t, w)
+	container := provisionWhenSeamLiveE2E(t, w.ctx, w.hub, w.supervisor.ID)
+	if _, err := w.hub.Start(w.ctx, "start-supervisor", &compassv1.StartAgentSessionRequest{ContainerName: container}); err != nil {
+		t.Fatalf("hub.Start(supervisor): %v", err)
+	}
 	github := newFakeGitHubForge(secret, forgeE2ERepo)
 
 	subscribe := func(callID string, number uint64) *compassv1internal.SubscribeForgeResponse {
@@ -247,6 +251,31 @@ func TestForgeSubscribeOverTheWire(t *testing.T) {
 		t.Fatal("notification revision is empty")
 	}
 	ackForgeNotificationAndAssertCursor(ctx, t, w, notification)
+	// Owner B follows the same subscription and comment path through the wire.
+	ownerBRepo := "owner-b/repo"
+	response, err := w.supervisorClient.Forge(ctx, &compassv1internal.ForgeCallRequest{
+		CallId: "subscribe-owner-b",
+		Call: &compassv1internal.ForgeCallRequest_Subscribe{Subscribe: &compassv1internal.SubscribeForgeRequest{
+			Repo: ownerBRepo, Kind: mxIssue, Number: 13,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Forge subscribe owner B: %v", err)
+	}
+	ownerBSubscription := response.GetSubscribed()
+	if ownerBSubscription == nil || ownerBSubscription.GetSubscriptionId() == "" {
+		t.Fatalf("Forge subscribe owner B result = %v, want subscription id", response.GetResult())
+	}
+	ownerBGitHub := newFakeGitHubForge(secret, ownerBRepo)
+	ownerBGitHub.nextDelivery = github.nextDelivery
+	postForgeSubscribeGitHub(t, w.ctx, endpoint, ownerBGitHub.commentOnIssue(
+		t, 13, "https://github.com/owner-b/repo/issues/13#comment-1", "owner B comment", "octocat",
+	))
+	github.nextDelivery = ownerBGitHub.nextDelivery
+	ownerBNotification := receiveForgeSubscribeNotification(t, control)
+	if ownerBNotification.GetSubscriptionId() != ownerBSubscription.GetSubscriptionId() || ownerBNotification.GetRepo() != ownerBRepo || ownerBNotification.GetNumber() != 13 || ownerBNotification.GetChange() != mxComment {
+		t.Fatalf("owner B notification = %+v, want subscribed owner-b/repo#13 comment", ownerBNotification)
+	}
 
 	unsubscribed, err := w.supervisorClient.Forge(ctx, &compassv1internal.ForgeCallRequest{
 		CallId: "unsubscribe-issue-11",

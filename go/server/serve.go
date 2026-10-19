@@ -1386,20 +1386,15 @@ func classifyServe(err error, ctx string) error {
 type boardIngestLane struct {
 	arm        *ingest.BoardWebhookArm
 	reconciler *ingest.BoardReconciler
-	sink       ForgeEventSink // the arm; the ingress fan-out registers it
-	// client is the shared GitHub App client this lane's arm + reconciler ride
-	// (the SAME object buildForgeNotifyLane is handed). Recorded here as
-	// test-observable state so the RIG-2991 one-budget-gate unit test can assert
-	// both lanes ride ONE client — a builder that minted its own would record a
-	// different pointer and flip that assertion red. Production reads it never.
-	client *forge.GitHub
+	sink       ForgeEventSink
+	// Tests observe this router to prove both lanes share one reader.
+	router *forge.OwnerRoutedGitHub
 }
 
 // forgeReadWiring bundles the forge read-side credentials Serve builds once and
-// threads into the doors + the write path: the board + notify lanes over the
-// shared primary App client (the board arm's webhook ingress sink + secret), the
-// shared primary App client the author write leg reuses, and the ONE Linear
-// OAuth token source both the notify lane and the Linear write coordinate ride.
+// threads into the doors + write path: board and notify lanes route by repository
+// owner, while the router's default installation shares the primary client with
+// the author write leg. Linear lanes share one OAuth token source with writes.
 // Board fields are nil when the GitHub App is absent; linearTokens is nil when
 // Linear is not configured.
 type forgeReadWiring struct {
@@ -1411,12 +1406,8 @@ type forgeReadWiring struct {
 	linearTokens  *linearagent.TokenSource
 }
 
-// buildForgeReadWiring assembles the forge read-side credentials in one call:
-// the board webhook wiring (both App lanes + the shared primary client) and the
-// shared Linear OAuth token source. Either half is independently off (App absent
-// -> nil board fields; Linear unconfigured -> nil linearTokens); a resolve or
-// boot-time-mint fault from either is returned so Serve fails fast on its
-// cleanup path.
+// buildForgeReadWiring assembles the forge read-side credentials in one call.
+// The GitHub App lanes and Linear OAuth source are independently optional.
 func buildForgeReadWiring(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -1426,7 +1417,7 @@ func buildForgeReadWiring(
 	resolver secrets.Resolver,
 	log *slog.Logger,
 ) (forgeReadWiring, error) {
-	boardLane, notifyLane, webhookSink, webhookSecret, _, primaryRouter, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, hub, resolver, log)
+	boardLane, notifyLane, webhookSink, webhookSecret, primaryRouter, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, hub, resolver, log)
 	if err != nil {
 		return forgeReadWiring{}, err
 	}
@@ -1444,23 +1435,9 @@ func buildForgeReadWiring(
 	}, nil
 }
 
-// buildBoardWebhookWiring builds BOTH forge lanes (board ingestion + agent
-// notification) over ONE shared GitHub App client and derives the network
-// door's webhook ingress wiring: the lanes themselves (whose arms + reconcilers
-// Serve starts under the door errgroup), the fan-out sink each accepted delivery
-// is enqueued onto, and the lazy resolver for the delivery-signing secret. When
-// the App is absent both lanes are hard-off, so it Warns when enabled
-// subscription rows exist and returns all-nil, which the network door reads as
-// "mount no ingress". A validation fault (a configured App with a missing
-// secret) is returned so Serve fails fast on its cleanup path. The fanoutSink
-// carries BOTH forge arms: the board arm (RIG-2883) and the notify arm (T7), so
-// each accepted delivery fans out to both the board ingest and the
-// agent-notification hot path off the one /webhooks/github ingress. Serve starts
-// each lane's arm + reconciler on the same errgroup.
-//
-// This is the single site that gates on the App, validates the two App secrets,
-// and builds the shared primary client and owner router. Existing board and
-// notify lanes retain the primary client until their owner-routing cutover.
+// buildBoardWebhookWiring builds both GitHub App lanes over one shared client
+// and owner router. It returns the webhook sink, secret resolver, and router used
+// by the write path. The default installation keeps the primary client's rate gate.
 func buildBoardWebhookWiring(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -1469,27 +1446,27 @@ func buildBoardWebhookWiring(
 	hub *runnerhub.Hub,
 	resolver secrets.Resolver,
 	log *slog.Logger,
-) (*boardIngestLane, *forgeNotifyLane, ForgeEventSink, func(ctx context.Context) ([]byte, error), *forge.GitHub, *forge.OwnerRoutedGitHub, error) {
+) (*boardIngestLane, *forgeNotifyLane, ForgeEventSink, func(ctx context.Context) ([]byte, error), *forge.OwnerRoutedGitHub, error) {
 	rc := cfg.Forge.resolved()
 	// App absent -> both forge lanes hard-off. Warn once here (the single
 	// diagnostic site) when enabled subscription rows exist, and mount nothing.
 	if !cfg.Forge.boardIngestionEnabled() {
 		warnDisabledBoardIngestion(ctx, st, store.ForgeProviderGitHub, rc.Host, log)
-		return nil, nil, nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil
 	}
 	// Validate both App secrets ONCE at this shared site (distinct fail-fast
 	// texts via validateForgeSecret) so a configured App with a missing secret
 	// fails startup and BOTH lanes inherit a validated App — the notify lane no
 	// longer relies on the board lane validating first.
 	if err := validateForgeSecret(ctx, resolver, "board webhook app key", rc.App.AppPrivateKeySecret); err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	if err := validateForgeSecret(ctx, resolver, "board webhook secret", rc.App.AppWebhookSecretName); err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	httpClient, err := forgeHTTPClient(rc.ForgeCAPath)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	appConfig := forge.GitHubAppConfig{
 		AppID:          rc.App.AppID,
@@ -1500,26 +1477,25 @@ func buildBoardWebhookWiring(
 	}
 	tok, err := forge.NewAppTokenSource(appConfig)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("board webhook app token source: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("board webhook app token source: %w", err)
 	}
 	client := forge.NewGitHub(forge.GitHubConfig{Host: rc.Host, Token: tok, Client: httpClient})
 	installationResolver, err := forge.NewInstallationResolver(appConfig)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("board webhook installation resolver: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("board webhook installation resolver: %w", err)
 	}
-	// The default installation must get this exact client: its rate gate lives on the
-	// *GitHub and is shared with board and notify reads against that installation.
+	// Reuse the primary client so every default-installation lane shares one budget gate.
 	router := forge.NewOwnerRoutedGitHub(client, installationResolver, appConfig, httpClient)
 	// The board lane reuses the notify lane's head-SHA cache: every check_suite
 	// reaches both lanes, so one cache keeps it to one lookup.
-	notifyLane := buildForgeNotifyLane(cfg, st, hub, client, log)
-	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, client, notifyLane.pulls, log)
+	notifyLane := buildForgeNotifyLane(cfg, st, hub, router, log)
+	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, router, notifyLane.pulls, log)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	sink := &fanoutSink{sinks: []ForgeEventSink{lane.sink, notifyLane.sink}}
 	secret := newCachedWebhookSecret(resolver, rc.App.AppWebhookSecretName)
-	return lane, notifyLane, sink, secret, client, router, nil
+	return lane, notifyLane, sink, secret, router, nil
 }
 
 // buildLinearWebhookWiring builds the shared Linear POST /webhooks/linear
@@ -1566,7 +1542,7 @@ func buildBoardIngestLane(
 	cfg ServeConfig,
 	st *store.Store,
 	issueBrd *board.IssueProjection,
-	client *forge.GitHub,
+	router *forge.OwnerRoutedGitHub,
 	pullNumbers ingest.PullNumberResolver,
 	log *slog.Logger,
 ) (*boardIngestLane, error) {
@@ -1582,15 +1558,15 @@ func buildBoardIngestLane(
 		queueConfigs = &mergeQueueConfigStore{st: st, host: fc.Host}
 	}
 	ref := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: fc.Host}
-	ing := ingest.NewIngester(client, issueBrd, ref)
-	pulls := ingest.NewPullRequestHydrator(client, issueBrd, ref, queues, queueConfigs, log)
-	arm := ingest.NewBoardWebhookArm(client, ing, &boardTargetStore{st: st}, ingest.BoardArmConfig{
+	ing := ingest.NewIngester(router, issueBrd, ref)
+	pulls := ingest.NewPullRequestHydrator(router, issueBrd, ref, queues, queueConfigs, log)
+	arm := ingest.NewBoardWebhookArm(router, ing, &boardTargetStore{st: st}, ingest.BoardArmConfig{
 		Log: log, Pulls: pulls, PullNumbers: pullNumbers,
 	})
-	reconciler := ingest.NewBoardReconciler(client, ing, &boardReconcileStore{st: st, provider: provider, host: fc.Host}, ingest.BoardReconcileConfig{
+	reconciler := ingest.NewBoardReconciler(router, ing, &boardReconcileStore{st: st, provider: provider, host: fc.Host}, ingest.BoardReconcileConfig{
 		Backstop: fc.App.ReconcileBackstop, Log: log, Pulls: pulls,
 	})
-	return &boardIngestLane{arm: arm, reconciler: reconciler, sink: arm, client: client}, nil
+	return &boardIngestLane{arm: arm, reconciler: reconciler, sink: arm, router: router}, nil
 }
 
 // boardTargetStore adapts *store.Store to ingest.TargetChecker: the point
@@ -1662,27 +1638,11 @@ type forgeNotifyLane struct {
 	reconciler *ingest.NotifyReconciler
 	sink       ForgeEventSink // the arm; the ingress fan-out registers it
 	// reader is the notify-read client this lane's reconciler + checks roller
-	// ride. For the GitHub lane it is the SAME *forge.GitHub buildBoardIngestLane
-	// is handed (the shared App client); the Linear lane records its own
-	// *forge.Linear. Recorded here as test-observable state so the RIG-2991
-	// one-budget-gate unit test can assert the GitHub board + notify lanes ride
-	// ONE client — a builder that minted its own would record a different pointer.
-	// Production reads it never.
+	// ride. GitHub records the shared owner router; Linear records its client.
 	reader forge.NotifyReader
-	// pulls is the head_sha->PR-number resolver this lane's router uses for
-	// step 0 (RIG-2869): non-nil on the GitHub lane, nil on the Linear lane,
-	// which emits no CHECKS event. Recorded for the same reason as reader —
-	// without it nothing can observe that the assembly actually threaded a
-	// resolver, so a future edit passing nil here would compile, pass the whole
-	// suite, and silently restore the bug this field's lane exists to fix.
-	// Production reads it never.
+	// This field exists so tests can verify the builder wires the resolver.
 	pulls ingest.PullNumberResolver
-	// identities is the self-origin identity seam this lane's router uses.
-	// Recorded for the same reason as pulls: a builder passing nil here
-	// compiles and leaves every suppression test green, because those tests
-	// construct their own router — production would simply notify agents about
-	// their own actions forever, the bug this lane's resolver exists to fix.
-	// Production reads it never.
+	// Retained so tests can verify the self-origin resolver is wired.
 	identities ingest.IdentityResolver
 }
 
@@ -1951,25 +1911,13 @@ func (p *forgeNotifyPullNumbers) PullNumberForSHA(ctx context.Context, repo, hea
 	return p.client.PullRequestForSHA(ctx, repo, headSHA)
 }
 
-// buildForgeNotifyLane assembles the App-only GitHub agent-notification lane
-// (RIG-2732 T7) over the shared GitHub client. The caller
-// (buildBoardWebhookWiring) owns the App gate, secret validation, and client
-// construction, and only reaches this builder when the App is configured — so it
-// assembles unconditionally and cannot fail (no resolve, no error return).
-//
-// It rides the SAME forge.GitHub client the board lane rides (RIG-2991), so the
-// client-side rate-budget/resetAt gate — the gate the reconciler's
-// ErrBudgetExhausted rides — is ONE gate shared across board ingestion and
-// agent notification against the single App installation, not two independent
-// gates. It assembles the pipeline: the (provider, host)-bound store adapter,
-// the hub-backed dispatcher, the checks roller and the TTL-cached
-// head_sha->PR-number resolver over the shared client, the router, the webhook
-// arm, and the reconciler.
+// buildForgeNotifyLane assembles the GitHub notification lane through the shared owner router.
+// ErrBudgetExhausted is shared by board and notify for the default installation.
 func buildForgeNotifyLane(
 	cfg ServeConfig,
 	st *store.Store,
 	hub *runnerhub.Hub,
-	client *forge.GitHub,
+	router *forge.OwnerRoutedGitHub,
 	log *slog.Logger,
 ) *forgeNotifyLane {
 	fc := cfg.Forge.resolved()
@@ -1977,24 +1925,24 @@ func buildForgeNotifyLane(
 
 	notifyStore := &forgeNotifyStore{st: st, provider: provider, host: fc.Host}
 	dispatcher := &forgeNotifyDispatcher{hub: hub}
-	checks := &forgeNotifyChecksRoller{client: client}
+	checks := &forgeNotifyChecksRoller{client: router}
 	// The head_sha->number step a check_suite needs, TTL-cached so the several
 	// check_suite events one push fires (one per installed App, all carrying the
 	// same head SHA) cost ONE commits/{sha}/pulls GET against the shared budget.
-	pulls := ingest.NewCachedPullNumberResolver(&forgeNotifyPullNumbers{client: client})
+	pulls := ingest.NewCachedPullNumberResolver(&forgeNotifyPullNumbers{client: router})
 	forgeRef := &compassv1.ForgeRef{
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
 		Host:     fc.Host,
 	}
 	identities := &forgeIdentityResolver{st: st, provider: provider, host: fc.Host}
-	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, pulls, identities, forgeRef, log)
-	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
-	reconciler := ingest.NewNotifyReconciler(client, notifyStore, router,
+	eventRouter := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, pulls, identities, forgeRef, log)
+	arm := ingest.NewNotifyWebhookArm(eventRouter, ingest.NotifyArmConfig{Log: log})
+	reconciler := ingest.NewNotifyReconciler(router, notifyStore, eventRouter,
 		compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, fc.Host, ingest.ReconcileConfig{
 			Backstop: fc.App.ReconcileBackstop,
 			Log:      log,
 		})
-	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client, pulls: pulls, identities: identities}
+	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: router, pulls: pulls, identities: identities}
 }
 
 // buildLinearNotifyLane assembles the Linear agent-notification lane (RIG-2732
@@ -2172,14 +2120,11 @@ func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, reason,
 // unwired and Hub.RelayForgeCall fail-closes to an in-band CodeUnavailable
 // (relay_forge.go), the clean degrade — but a PARTIAL misconfig (exactly one App
 // configured) logs a Warn first, since that is a likely operator typo rather than
-// an intentional off. primaryClient is the shared primary App client the author
-// write leg reuses (nil when the App is absent — which, since writes now require
-// the primary App, only coincides with writes being off); linearTokens is the
-// shared Linear token source the Linear coordinate rides (nil when Linear is not
-// configured). On any startup fault it unwinds the caller-bound listeners
-// (udsListener + listeners) before returning, the same teardown path the poll
-// driver and Rehydrate faults use. It returns the wired service so Serve can
-// bound mirror drives to its lifetime; nil means writes are off.
+// an intentional off. primaryRouter is the shared owner router used by the
+// author, board, and notify lanes; linearTokens is the shared Linear write source.
+// On startup fault, it unwinds caller-bound listeners before returning.
+// It returns the wired service so Serve can bound mirror drives to its lifetime.
+// Nil means writes are off.
 func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store, issueBrd *board.IssueProjection, resolver secrets.Resolver, hub *runnerhub.Hub, commsSvc *comms.Comms, log *slog.Logger, primaryRouter *forge.OwnerRoutedGitHub, linearTokens *linearagent.TokenSource, udsListener net.Listener, listeners boundListeners) (*forgeService, error) {
 	declaredSecrets, err := resolver.Resolve(ctx, "forge write")
 	if err != nil {
@@ -2200,14 +2145,12 @@ func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store,
 }
 
 // buildForgeWriteService assembles the agent forge-WRITE chokepoint (the
-// runnerhub.ForgeCaller) for the two-App setup: enabled iff BOTH the primary and
-// reviewer Apps are configured. It validates the reviewer App key, builds its
-// owner router, registers that router beside the primary owner router, adds a
-// Linear coordinate when configured, and returns the service for Serve to mount.
+// runnerhub.ForgeCaller) for the two-App setup. It validates the reviewer App key,
+// builds its owner router, registers that router beside the primary router, adds
+// the Linear coordinate when configured, and returns the service for Serve.
 //
-// The primary owner router reuses the shared GitHub client for the default
-// installation and caches clients for other installations. Board and notify
-// lanes keep the primary client until their own owner-routing cutover.
+// Board and notify lanes use the same primary router, sharing the default
+// installation's rate gate with author writes.
 func buildForgeWriteService(
 	ctx context.Context,
 	cfg ServeConfig,

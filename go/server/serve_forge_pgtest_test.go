@@ -203,20 +203,20 @@ func TestBoardIngestionDisabledWarnsOnEnabledRows(t *testing.T) {
 	const host = forgeTestHost
 	cfg := ServeConfig{Forge: ForgeConfig{Host: host}}
 
-	assertAllNil := func(t *testing.T, lane *boardIngestLane, notify *forgeNotifyLane, sink ForgeEventSink, secret func(context.Context) ([]byte, error), primary *forge.GitHub, router *forge.OwnerRoutedGitHub, err error) {
+	assertAllNil := func(t *testing.T, lane *boardIngestLane, notify *forgeNotifyLane, sink ForgeEventSink, secret func(context.Context) ([]byte, error), router *forge.OwnerRoutedGitHub, err error) {
 		t.Helper()
 		if err != nil {
 			t.Fatalf("buildBoardWebhookWiring (App absent): %v", err)
 		}
-		if lane != nil || notify != nil || sink != nil || secret != nil || primary != nil || router != nil {
-			t.Fatalf("wiring not all-nil with no App configured: lane==nil? %t notify==nil? %t sink==nil? %t secret==nil? %t primary==nil? %t router==nil? %t", lane == nil, notify == nil, sink == nil, secret == nil, primary == nil, router == nil)
+		if lane != nil || notify != nil || sink != nil || secret != nil || router != nil {
+			t.Fatalf("wiring not all-nil with no App configured: lane==nil? %t notify==nil? %t sink==nil? %t secret==nil? %t router==nil? %t", lane == nil, notify == nil, sink == nil, secret == nil, router == nil)
 		}
 	}
 
 	t.Run("no Warn when no enabled rows exist", func(t *testing.T) {
 		h := &capHandler{}
-		lane, notify, sink, secret, primary, router, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, &fakeResolver{}, slog.New(h))
-		assertAllNil(t, lane, notify, sink, secret, primary, router, err)
+		lane, notify, sink, secret, router, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, &fakeResolver{}, slog.New(h))
+		assertAllNil(t, lane, notify, sink, secret, router, err)
 		if n := warnCount(h.recs); n != 0 {
 			t.Fatalf("Warn count with no enabled rows = %d, want 0", n)
 		}
@@ -230,8 +230,8 @@ func TestBoardIngestionDisabledWarnsOnEnabledRows(t *testing.T) {
 
 	t.Run("exactly one Warn when enabled rows exist for the bound coordinate", func(t *testing.T) {
 		h := &capHandler{}
-		lane, notify, sink, secret, primary, router, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, &fakeResolver{}, slog.New(h))
-		assertAllNil(t, lane, notify, sink, secret, primary, router, err)
+		lane, notify, sink, secret, router, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, &fakeResolver{}, slog.New(h))
+		assertAllNil(t, lane, notify, sink, secret, router, err)
 		if n := warnCount(h.recs); n != 1 {
 			t.Fatalf("Warn count with an enabled row = %d, want exactly 1", n)
 		}
@@ -240,8 +240,8 @@ func TestBoardIngestionDisabledWarnsOnEnabledRows(t *testing.T) {
 	t.Run("no Warn for a different bound host (abandoned rows give no false comfort)", func(t *testing.T) {
 		h := &capHandler{}
 		otherCfg := ServeConfig{Forge: ForgeConfig{Host: "other.example.com"}}
-		lane, notify, sink, secret, primary, router, err := buildBoardWebhookWiring(ctx, otherCfg, st, nil, nil, &fakeResolver{}, slog.New(h))
-		assertAllNil(t, lane, notify, sink, secret, primary, router, err)
+		lane, notify, sink, secret, router, err := buildBoardWebhookWiring(ctx, otherCfg, st, nil, nil, &fakeResolver{}, slog.New(h))
+		assertAllNil(t, lane, notify, sink, secret, router, err)
 		if n := warnCount(h.recs); n != 0 {
 			t.Fatalf("Warn count for a different host = %d, want 0 (count is bound-coordinate only)", n)
 		}
@@ -269,7 +269,7 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 	// Neither App secret declared -> the FIRST validateForgeSecret (app key) fails.
 	t.Run("both undeclared fails on the app key", func(t *testing.T) {
 		res := &fakeResolver{resolved: nil}
-		_, _, _, _, _, _, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, res, slog.Default())
+		_, _, _, _, _, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, res, slog.Default())
 		if err == nil {
 			t.Fatal("buildBoardWebhookWiring with no App secrets = nil, want a startup error")
 		}
@@ -284,7 +284,7 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 		// config and assertion, so this subtest reaches webhook-secret
 		// validation instead of duplicating the missing-App-key case.
 		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName("APP_KEY"), Value: "pem"}}}
-		_, _, _, _, _, _, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, res, slog.Default())
+		_, _, _, _, _, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, res, slog.Default())
 		if err == nil {
 			t.Fatal("buildBoardWebhookWiring with the webhook secret undeclared = nil, want a startup error")
 		}

@@ -87,6 +87,13 @@ func TestOwnerRoutedGitHubRoutesByInstallation(t *testing.T) {
 	})
 	router := NewOwnerRoutedGitHub(primary, resolver, appConfig, testAppHTTPClient(t, api))
 
+	defaultClient, err := router.clientFor(context.Background(), "owner-a/repo")
+	if err != nil {
+		t.Fatalf("default owner clientFor: %v", err)
+	}
+	if defaultClient != primary {
+		t.Fatal("default installation resolved to a different client than primary")
+	}
 	if _, err := router.CreateIssue(context.Background(), "owner-a/repo", CreateIssue{Title: "default"}); err != nil {
 		t.Fatalf("default-owner write: %v", err)
 	}
@@ -221,5 +228,133 @@ func TestOwnerRoutedGitHubUsesInstallationIDCache(t *testing.T) {
 	}
 	if mintRequests != 1 {
 		t.Fatalf("installation token mint requests = %d, want one cached source", mintRequests)
+	}
+}
+
+func newOwnerRoutedReadFixture(t *testing.T, reads http.HandlerFunc) *OwnerRoutedGitHub {
+	t.Helper()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
+			if _, err := fmt.Fprint(w, `[{"id":7,"account":{"login":"owner-a"}},{"id":8,"account":{"login":"owner-b"}}]`); err != nil {
+				t.Errorf("write installations: %v", err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/8/access_tokens":
+			w.Header().Set("Content-Type", "application/json")
+			if _, err := fmt.Fprint(w, `{"token":"owner-b-installation-token","expires_at":"2030-01-01T00:00:00Z"}`); err != nil {
+				t.Errorf("write owner B token: %v", err)
+			}
+		default:
+			reads.ServeHTTP(w, r)
+		}
+	}))
+	t.Cleanup(api.Close)
+
+	key := testAppKey(t)
+	appHTTP := testAppHTTPClient(t, api)
+	appConfig := GitHubAppConfig{
+		AppID:          42,
+		InstallationID: 7,
+		PrivateKey:     func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+		Host:           "github.com",
+		Client:         appHTTP,
+	}
+	resolver := newTestInstallationResolver(t, api, appConfig)
+	primary := NewGitHub(GitHubConfig{
+		Host:   "github.com",
+		Token:  routedIdentityTokenSource{token: "primary-default-token"},
+		Client: appHTTP,
+	})
+	return NewOwnerRoutedGitHub(primary, resolver, appConfig, appHTTP)
+}
+
+func TestOwnerRoutedGitHubNotifyReadsUseOwnerInstallation(t *testing.T) {
+	issueBody := `{"number":7,"title":"bug","state":"open","html_url":"https://github.com/example/repo/issues/7","user":{"login":"octocat"}}`
+	commentsBody := `[{"id":1,"html_url":"https://github.com/example/repo/issues/7#comment-1","body":"new","user":{"login":"octocat"}}]`
+	router := newOwnerRoutedReadFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		wantToken := "primary-default-token"
+		if strings.HasPrefix(r.URL.Path, "/repos/owner-b/") {
+			wantToken = "owner-b-installation-token"
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+wantToken {
+			t.Errorf("%s %s Authorization = %q, want Bearer %s", r.Method, r.URL.Path, got, wantToken)
+		}
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/issues/7"):
+			if _, err := fmt.Fprint(w, issueBody); err != nil {
+				t.Errorf("write issue response: %v", err)
+			}
+		case strings.HasSuffix(r.URL.Path, "/issues/7/comments"):
+			if _, err := fmt.Fprint(w, commentsBody); err != nil {
+				t.Errorf("write comments response: %v", err)
+			}
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		repo string
+	}{
+		{name: "default owner", repo: "owner-a/repo"},
+		{name: "owner B", repo: "owner-b/repo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := router.GetIssueConditional(t.Context(), tc.repo, 7, ""); err != nil {
+				t.Fatalf("GetIssueConditional: %v", err)
+			}
+			comments, err := router.ListComments(t.Context(), tc.repo, kindIssueR, 7, "")
+			if err != nil {
+				t.Fatalf("ListComments: %v", err)
+			}
+			if len(comments.V) != 1 || comments.V[0].Body != "new" {
+				t.Fatalf("comments = %+v, want the fixture comment", comments.V)
+			}
+		})
+	}
+}
+
+func TestOwnerRoutedGitHubBoardReadUsesOwnerInstallation(t *testing.T) {
+	var owners []string
+	router := newOwnerRoutedReadFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		owner, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/repos/"), "/")
+		owners = append(owners, owner)
+		wantToken := "primary-default-token"
+		if owner == "owner-b" {
+			wantToken = "owner-b-installation-token"
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+wantToken {
+			t.Errorf("%s %s Authorization = %q, want Bearer %s", r.Method, r.URL.Path, got, wantToken)
+		}
+		switch r.URL.Path {
+		case "/repos/owner-a/repo/issues", "/repos/owner-b/repo/issues":
+			if _, err := fmt.Fprint(w, `[{"number":9,"title":"bug","state":"open","html_url":"https://github.com/example/repo/issues/9","user":{"login":"octocat"}}]`); err != nil {
+				t.Errorf("write issues response: %v", err)
+			}
+		case "/repos/owner-a/repo/issues/9", "/repos/owner-b/repo/issues/9":
+			if _, err := fmt.Fprint(w, `{"number":9,"title":"bug","state":"open","html_url":"https://github.com/example/repo/issues/9","user":{"login":"octocat"}}`); err != nil {
+				t.Errorf("write issue response: %v", err)
+			}
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	for _, repo := range []string{"owner-a/repo", "owner-b/repo"} {
+		issues, err := router.ListIssues(t.Context(), repo, IssueFilter{})
+		if err != nil {
+			t.Fatalf("ListIssues(%q): %v", repo, err)
+		}
+		if len(issues) != 1 || issues[0].Number != 9 {
+			t.Fatalf("ListIssues(%q) = %+v, want issue #9", repo, issues)
+		}
+		if _, err := router.GetIssue(t.Context(), repo, 9); err != nil {
+			t.Fatalf("GetIssue(%q, 9): %v", repo, err)
+		}
+	}
+	if len(owners) != 4 || owners[0] != "owner-a" || owners[1] != "owner-a" || owners[2] != "owner-b" || owners[3] != "owner-b" {
+		t.Fatalf("board read owners = %v, want owner-a list/detail then owner-b list/detail", owners)
 	}
 }
