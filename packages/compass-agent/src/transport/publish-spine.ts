@@ -33,8 +33,8 @@ import type { PublishFrameRequest } from "../gen/compass/v1/agent_gateway_pb";
 import {
 	batchesFlushedBy,
 	batchSizeBy,
-	priorityBatchRetries,
-	priorityFramesLost,
+	priorityBatchRetriesCounter,
+	priorityFramesLostCounter,
 	priorityRetryDepthGauge,
 	traceFramesLostFailedBatch,
 	traceFramesLostOverflow,
@@ -98,6 +98,8 @@ export function createPublishSpine(
 ): PublishSpine {
 	const traceQueueDepth = traceQueueDepthGauge(metricNamespace);
 	const priorityRetryDepth = priorityRetryDepthGauge(metricNamespace);
+	const priorityFramesLost = priorityFramesLostCounter(metricNamespace);
+	const priorityBatchRetries = priorityBatchRetriesCounter(metricNamespace);
 	const batchesFlushed = batchesFlushedBy(metricNamespace);
 	const batchSize = batchSizeBy(metricNamespace);
 	// Effect is confined module-private behind the spine: it backs the sliding trace queue,
