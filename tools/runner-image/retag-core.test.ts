@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
 	assertCoherent,
 	assertNoClosureChange,
@@ -8,13 +8,16 @@ import {
 	EXIT,
 	inspectArgv,
 	MAX_WALK,
+	mainTag,
 	manifestIdentity,
 	type ProbeResult,
 	RetagError,
 	releaseTag,
 	resolveAncestor,
+	resolveMainPair,
 	sha12,
 	splitNulPaths,
+	tagMainPair,
 } from "./retag-core.ts";
 
 describe("registry argv", () => {
@@ -110,6 +113,130 @@ async function expectRetagError(
 	throw new Error("expected a RetagError");
 }
 
+describe("tagMainPair", () => {
+	test("resolves the whole pair before writing, server first", async () => {
+		const events: string[] = [];
+		const resolved = {
+			runner: {
+				commit: commit("aaaa"),
+				sha12: "aaaa00000000",
+				position: 1,
+				raw: manifest(CONFIG_A),
+			},
+			server: {
+				commit: commit("bbbb"),
+				sha12: "bbbb00000000",
+				position: 1,
+				raw: manifest(CONFIG_B),
+			},
+		};
+		await tagMainPair({
+			resolve: async () => {
+				events.push("resolve");
+				return resolved;
+			},
+			write: async (lane) => {
+				events.push(lane);
+			},
+		});
+		expect(events).toEqual(["resolve", "server", "runner"]);
+	});
+
+	test("does not write when pair resolution rejects a closure change", async () => {
+		const write = mock(async (_lane: "server" | "runner") => {});
+		const ancestors = [commit("aaaa"), commit("bbbb")];
+		await expect(
+			tagMainPair({
+				resolve: () =>
+					resolveMainPair({
+						ancestors,
+						probe: {
+							runner: async (short) =>
+								short === "aaaa00000000"
+									? absentFor(`git-${short}`)
+									: found(manifest(CONFIG_A)),
+							server: async () => found(manifest(CONFIG_B)),
+						},
+						changedSince: async (commit) =>
+							commit === ancestors[1] ? ["go/cmd/compass-runner/main.go"] : [],
+						closurePaths: { runner: CLOSURE, server: CLOSURE },
+					}),
+				write,
+			}),
+		).rejects.toThrow("predates runner closure changes");
+		expect(write).not.toHaveBeenCalled();
+	});
+});
+describe("mainTag", () => {
+	test("uses the first-parent count and fixed sha12", () => {
+		expect(mainTag(1638, commit("abcdef123456"))).toBe(
+			"main-1638-abcdef123456",
+		);
+	});
+
+	test.each([
+		[0, commit("abcdef123456")],
+		[1.5, commit("abcdef123456")],
+		[1638, "abcdef123456"],
+	])("rejects invalid count or commit: %s", async (count, sha) => {
+		await expectRetagError(() => mainTag(count, sha), EXIT.usage);
+	});
+});
+
+describe("resolveMainPair", () => {
+	const ancestors = [commit("aaaa"), commit("bbbb")];
+	test("resolves both lane images published at the head", async () => {
+		const closurePaths = { runner: CLOSURE, server: CLOSURE };
+		const pair = await resolveMainPair({
+			ancestors,
+			probe: {
+				runner: async () => found(manifest(CONFIG_A)),
+				server: async () => found(manifest(CONFIG_B)),
+			},
+			changedSince: async () => [],
+			closurePaths,
+		});
+		expect(pair.runner.position).toBe(1);
+		expect(pair.server.position).toBe(1);
+	});
+
+	test("resolves an ancestor when its lane closure is unchanged", async () => {
+		const closurePaths = { runner: CLOSURE, server: CLOSURE };
+		const pair = await resolveMainPair({
+			ancestors,
+			probe: {
+				runner: async (short) =>
+					short === "aaaa00000000"
+						? absentFor(`git-${short}`)
+						: found(manifest(CONFIG_A)),
+				server: async () => found(manifest(CONFIG_B)),
+			},
+			changedSince: async () => ["CHANGELOG.md"],
+			closurePaths,
+		});
+		expect(pair.runner.commit).toBe(commit("bbbb"));
+		expect(pair.runner.position).toBe(2);
+	});
+	test("rejects an ancestor when its lane closure changed", async () => {
+		const closurePaths = { runner: CLOSURE, server: CLOSURE };
+		await expectRetagError(
+			() =>
+				resolveMainPair({
+					ancestors,
+					probe: {
+						runner: async (short) =>
+							short === "aaaa00000000"
+								? absentFor(`git-${short}`)
+								: found(manifest(CONFIG_A)),
+						server: async () => found(manifest(CONFIG_B)),
+					},
+					changedSince: async () => ["go/cmd/compass-runner/main.go"],
+					closurePaths,
+				}),
+			EXIT.noAncestor,
+		);
+	});
+});
 describe("classifyProbe", () => {
 	test("a zero exit is found and carries the manifest bytes", () => {
 		expect(classifyProbe(found("{}"), TAG)).toEqual({

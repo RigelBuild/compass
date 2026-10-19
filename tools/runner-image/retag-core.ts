@@ -271,7 +271,54 @@ export function assertCoherent(
 		);
 	}
 }
+/** Flux orders each shared tag by this first-parent sequence number. */
+export function mainTag(firstParentCount: number, commit: string): string {
+	if (!Number.isInteger(firstParentCount) || firstParentCount < 1) {
+		throw new RetagError(
+			`not a positive first-parent count: ${firstParentCount}`,
+			EXIT.usage,
+		);
+	}
+	return `main-${firstParentCount}-${sha12(commit)}`;
+}
 
+/** Reject stale lane images before pairing tags for a commit. */
+export async function resolveMainPair(input: {
+	ancestors: readonly string[];
+	probe: Record<ImageLane, (sha12: string) => Promise<ProbeResult>>;
+	changedSince: (commit: string) => Promise<string[]>;
+	closurePaths: Record<ImageLane, string>;
+}): Promise<Record<ImageLane, Resolved>> {
+	const resolveLane = async (lane: ImageLane): Promise<Resolved> => {
+		const resolved = await resolveAncestor(
+			input.ancestors,
+			input.probe[lane],
+			lane,
+		);
+		assertNoClosureChange(
+			input.closurePaths[lane],
+			resolved.sha12,
+			await input.changedSince(resolved.commit),
+			lane,
+		);
+		return resolved;
+	};
+	const [server, runner] = await Promise.all([
+		resolveLane("server"),
+		resolveLane("runner"),
+	]);
+	return { runner, server };
+}
+
+/** Resolve both lanes first so failure cannot leave only one new tag. */
+export async function tagMainPair(input: {
+	resolve: () => Promise<Record<ImageLane, Resolved>>;
+	write: (lane: ImageLane, resolved: Resolved) => Promise<void>;
+}): Promise<void> {
+	const pair = await input.resolve();
+	await input.write("server", pair.server);
+	await input.write("runner", pair.runner);
+}
 function assertNever(value: never): never {
 	throw new Error(`unhandled probe: ${JSON.stringify(value)}`);
 }
