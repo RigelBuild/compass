@@ -31,6 +31,9 @@ import {
 } from "./lifecycle";
 import { nativeAsCustomTool } from "./native-tools";
 import { TurnSequence } from "./turn-sequence";
+import { createVcsTools } from "./vcs";
+import type { CommandRunner } from "./vcs-runner";
+import { createSubmitTools } from "./vcs-submit";
 
 // This test reads tool NAMES + registration only — never invokes a tool — so
 // every transport method rejects: reaching one is a test bug, not a code path.
@@ -53,9 +56,12 @@ const lifecycleTransport: LifecycleTransport = {
 	lifecycle: (_req: LifecycleCallRequest): Promise<LifecycleCallResult> =>
 		unreached("lifecycle"),
 };
+const unreachedRunner: CommandRunner = {
+	run: () => unreached("vcs runner"),
+};
 
 // The EXACT Compass native tool set cli.ts registers on the Manager session.
-// Built from the same four factories over real brokers, so the expected set can
+// Built from the same factories over real brokers, so the expected set can
 // never drift from what ships: a new native tool is automatically part of the
 // pinned split.
 function compassNativeTools(): CustomTool[] {
@@ -63,10 +69,14 @@ function compassNativeTools(): CustomTool[] {
 	// and `loadMode: "essential"` mirrors cli.ts's stamp on the whole `customTools`
 	// array. SDK 18.x defaults an omitted `loadMode` to `"discoverable"`, which
 	// would leave these tools inactive and measure the wrong surface.
+	const forge = new ForgeBroker(forgeTransport);
+	const vcs = { jj: unreachedRunner, git: unreachedRunner, cwd: "/", forge };
 	return [
 		...createCommsTools(new CommsBroker(commsTransport)),
 		...createLifecycleTools(new LifecycleBroker(lifecycleTransport)),
-		...createForgeTools(new ForgeBroker(forgeTransport)),
+		...createForgeTools(forge),
+		...createVcsTools(vcs),
+		...createSubmitTools(vcs),
 		...createBoardTools(new BoardBroker(boardTransport)),
 		...createAgentBoardTools(
 			new CommsBroker(commsTransport),

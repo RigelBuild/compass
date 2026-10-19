@@ -86,6 +86,9 @@ import { createTeeSessionStorage } from "./session-tee";
 import type { RunnerTransport } from "./transport/index";
 import { createPublishSpine } from "./transport/publish-spine";
 import { TurnSequence } from "./turn-sequence";
+import { createVcsTools } from "./vcs";
+import { gitRunner, jjRunner } from "./vcs-runner";
+import { createSubmitTools } from "./vcs-submit";
 
 // These tests do real FS work and gate on events, not sleeps; under the parallel
 // pre-push gate that I/O outruns bun's implicit 5s default and flakes (the same
@@ -3140,10 +3143,19 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 			forge: async () => ({}) as never,
 			board: async () => ({}) as never,
 		};
+		const forgeBroker = new ForgeBroker(fakeTransport);
+		const vcsDeps = {
+			jj: jjRunner,
+			git: gitRunner,
+			cwd: "/",
+			forge: forgeBroker,
+		};
 		const expectedNames = [
 			...createCommsTools(new CommsBroker(fakeTransport)),
 			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
-			...createForgeTools(new ForgeBroker(fakeTransport)),
+			...createForgeTools(forgeBroker),
+			...createVcsTools(vcsDeps),
+			...createSubmitTools(vcsDeps),
 			...createBoardTools(new BoardBroker(fakeTransport)),
 			...createAgentBoardTools(
 				new CommsBroker(fakeTransport),
@@ -3185,7 +3197,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(names).toContain("agents_spawn_peer");
 		expect(names).toContain("agents_despawn_peer");
 		expect(names).toContain("forge_get_issue");
-		expect(names).toContain("forge_create_pull_request");
+		expect(names).not.toContain("forge_create_pull_request");
+		expect(names).toContain("vcs_submit");
+		expect(names).toContain("vcs_retire");
+		expect(names).toContain("vcs_pr_status");
 		expect(names).toContain("board_set_issue_state");
 		// Headless approval policy (RIG-1741): the entrypoint pins autoApprove so
 		// the write-approval natives auto-execute with no human in the container.
@@ -3230,10 +3245,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
 		expect(seen[0].disableExtensionDiscovery).toBe(true);
 		// No MCP tools (empty mount → empty connect), but the comms/lifecycle/forge/
-		// board natives are ALWAYS merged in (RIG-1741/RIG-2672/RIG-3191) — so
+		// vcs/board natives are ALWAYS merged in (RIG-1741/RIG-2672/RIG-3191) — so
 		// customTools carries exactly those, and never a discovered MCP tool.
 		expect(toolNames(seen[0].customTools)).toContain("agents_spawn_peer");
-		expect(seen[0].customTools).toHaveLength(31);
+		expect(seen[0].customTools).toHaveLength(37);
 		expect(seen[0].enableMCP).toBe(false);
 	});
 
@@ -3264,9 +3279,9 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
 		// No MCP tools from a skills-only mount, but the natives always merge in
 		// (RIG-1741/RIG-2672/RIG-3191) — so customTools is exactly the comms/
-		// lifecycle/forge/board natives.
+		// lifecycle/forge/vcs/board natives.
 		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
-		expect(seen[0].customTools).toHaveLength(31);
+		expect(seen[0].customTools).toHaveLength(37);
 	});
 
 	// ── RIG-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──

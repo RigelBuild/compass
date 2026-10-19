@@ -31,7 +31,6 @@ import {
 	commentOnPullRequestParameters,
 	createForgeTools,
 	createIssueParameters,
-	createPullRequestParameters,
 	editIssueParameters,
 	ForgeBroker,
 	type ForgeTransport,
@@ -195,7 +194,7 @@ describe("ForgeBroker", () => {
 	});
 });
 describe("createForgeTools", () => {
-	test("exposes all fourteen forge tools and registers transitions as writes", () => {
+	test("exposes all thirteen forge tools and registers transitions as writes", () => {
 		const tools = createForgeTools(
 			new ForgeBroker(new FakeTransport(issueResult())),
 		);
@@ -207,7 +206,6 @@ describe("createForgeTools", () => {
 			"forge_comment_on_pull_request",
 			"forge_submit_review",
 			"forge_create_issue",
-			"forge_create_pull_request",
 			"forge_transition_issue_state",
 			"forge_edit_issue",
 			"forge_transition_pull_request_state",
@@ -239,7 +237,6 @@ describe("createForgeTools", () => {
 			"forge_comment_on_pull_request",
 			"forge_submit_review",
 			"forge_create_issue",
-			"forge_create_pull_request",
 			"forge_transition_issue_state",
 			"forge_transition_pull_request_state",
 			"forge_subscribe",
@@ -1047,84 +1044,6 @@ describe("forge_create_issue", () => {
 	});
 });
 
-describe("forge_create_pull_request", () => {
-	test("puts a createPullRequest arm on the wire with head/base/draft and the dedup key", async () => {
-		const transport = new FakeTransport(
-			pullRequestResult({
-				number: 8,
-				repo: "octo/repo",
-				url: "https://github.com/octo/repo/pull/8",
-			}),
-		);
-		const broker = new ForgeBroker(transport);
-		const t = tool(broker, "forge_create_pull_request");
-		const result = await exec(t, "tc-3", {
-			repo: "octo/repo",
-			title: "Feature",
-			head_ref: "feature",
-			base_ref: "main",
-			draft: true,
-		});
-		const req = transport.requests[0];
-		expect(req.call.case).toBe("createPullRequest");
-		if (req.call.case !== "createPullRequest") throw new Error("expected arm");
-		expect(req.call.value.headRef).toBe("feature");
-		expect(req.call.value.baseRef).toBe("main");
-		expect(req.call.value.draft).toBe(true);
-		expect(req.clientRequestId).toBe(broker.idempotencyKey("tc-3"));
-		expect(textOf(result)).toBe(
-			"Created pull request #8 in octo/repo: https://github.com/octo/repo/pull/8",
-		);
-	});
-
-	test("a dedup-hit skeletal PR renders the already-created branch", async () => {
-		const transport = new FakeTransport(
-			pullRequestResult({ number: 8, repo: "octo/repo", url: "" }),
-		);
-		const t = tool(new ForgeBroker(transport), "forge_create_pull_request");
-		const result = await exec(t, "tc-1", {
-			repo: "octo/repo",
-			title: "Feature",
-			head_ref: "feature",
-		});
-		expect(textOf(result)).toBe(
-			"PR #8 in octo/repo already created by an earlier attempt",
-		);
-	});
-
-	test("maps issue to the link coordinate; omitted issue leaves it unset", async () => {
-		const transport = new FakeTransport(
-			pullRequestResult({ number: 8, repo: "octo/repo", url: "u" }),
-		);
-		const t = tool(new ForgeBroker(transport), "forge_create_pull_request");
-		await exec(t, "tc-1", {
-			repo: "octo/repo",
-			title: "Feature",
-			head_ref: "feature",
-			issue: { forge_provider: "linear", repo: "ENG", number: 12 },
-		});
-		await exec(t, "tc-2", {
-			repo: "octo/repo",
-			title: "Feature",
-			head_ref: "feature",
-			issue: { number: 3 },
-		});
-		await exec(t, "tc-3", { repo: "octo/repo", title: "F", head_ref: "f" });
-		const links = transport.requests.map((r) =>
-			r.call.case === "createPullRequest" ? r.call.value.issue : "wrong arm",
-		);
-		expect(links[0]).toMatchObject({ repo: "ENG", number: 12n });
-		expect(
-			links[0] && typeof links[0] === "object" && links[0].forge?.provider,
-		).toBe(ForgeProvider.LINEAR);
-		expect(links[1]).toMatchObject({ repo: "", number: 3n });
-		expect(
-			links[1] && typeof links[1] === "object" && links[1].forge,
-		).toBeUndefined();
-		expect(links[2]).toBeUndefined();
-	});
-});
-
 describe("forge_subscribe / forge_unsubscribe", () => {
 	test("subscribe maps the kind enum and number and renders the subscription", async () => {
 		const transport = new FakeTransport(
@@ -1493,30 +1412,11 @@ describe("forge parameter schemas", () => {
 		).toBe(false);
 	});
 
-	test("create_pull_request issue needs a number of at least 1", () => {
-		const pr = { repo: "o/r", title: "t", head_ref: "f" };
-		expect(rejects(createPullRequestParameters, { ...pr, issue: {} })).toBe(
-			true,
-		);
-		expect(
-			rejects(createPullRequestParameters, { ...pr, issue: { number: 0 } }),
-		).toBe(true);
-		expect(
-			rejects(createPullRequestParameters, { ...pr, issue: { number: 4 } }),
-		).toBe(false);
-	});
-
 	test("create bodies are optional, comment bodies required non-blank", () => {
 		expect(rejects(createIssueParameters, { repo: "o/r", title: "t" })).toBe(
 			false,
 		);
-		expect(
-			rejects(createPullRequestParameters, {
-				repo: "o/r",
-				title: "t",
-				head_ref: "h",
-			}),
-		).toBe(false);
+
 		expect(
 			rejects(commentOnIssueParameters, {
 				repo: "o/r",

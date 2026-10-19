@@ -86,15 +86,15 @@ broker/identity/registration shape as comms:
   `forge_list_issues`.
 - Writes (`approval: "write"`): `forge_comment_on_issue`,
   `forge_comment_on_pull_request`, `forge_submit_review`, `forge_create_issue`,
-  `forge_create_pull_request`, `forge_transition_issue_state`,
-  `forge_edit_issue`, `forge_transition_pull_request_state`, `forge_subscribe`,
+  `forge_edit_issue`, `forge_transition_issue_state`,
+  `forge_transition_pull_request_state`, `forge_subscribe`,
   `forge_unsubscribe`, `forge_mirror_messages`.
 
-`forge_create_issue`/`forge_create_pull_request` carry a broker-scoped DL-206
-`client_request_id` (`ForgeBroker.idempotencyKey`); the other arms send none.
-`forge_create_pull_request` takes an optional `issue` (selector + `repo` +
-`number`) that links the PR to that issue on the board; the server checks only
-its shape, never reads the issue.
+PRs are created and updated by `vcs_submit` (`src/vcs-submit.ts`), not a
+forge tool: the agent cannot push, so the Server pushes its bundle and writes
+the PRs. The create, comment, and review arms carry a broker-scoped DL-206
+`client_request_id` (`ForgeBroker.idempotencyKey`); reads and transitions send
+none.
 Every tool spreads an optional forge selector (`forge_provider` +
 `forge_host`): unset = the configured default GitHub forge (DL-202);
 `forge_provider: "linear"` targets the issues-only Linear provider (DL-051)

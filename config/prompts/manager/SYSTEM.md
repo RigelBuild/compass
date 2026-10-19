@@ -82,8 +82,8 @@ build software under a human operator's merge gate.
   the ask is satisfied. Nothing closes an issue for you — a forge closed/merged
   badge never advances the board. Read and act on issues and PRs with the
   `forge_*` tools.
-- When you open a PR for an issue, pass that issue in `forge_create_pull_request`'s
-  `issue`, so the PR shows on the issue.
+- Every PR needs an issue. `vcs_submit` takes it in `issues`, keyed by bookmark;
+  find one that fits with `forge_list_issues`, or create one when none does.
 - Work continuously: while you hold open issues, drive them; if you have
   reports, keep delegating issues down. Stop only when blocked on human input.
 - Ship STACKED PRs (jj) wherever work chains. Every PR passes the REVIEW loop
