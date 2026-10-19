@@ -492,6 +492,40 @@ func TestGitCredentialBrokerWildcardWithOwnerGroups(t *testing.T) {
 	}
 }
 
+func TestGitCredentialBrokerKeepsCachedDefaultOwnerWhenLookupFails(t *testing.T) {
+	tests := []struct {
+		name         string
+		defaultOwner string
+		agentRows    []string
+		wantOwners   []string
+	}{
+		{name: "wildcard only", defaultOwner: "owner-a", agentRows: []string{"*"}, wantOwners: []string{"owner-a"}},
+		{name: "wildcard plus another owner", defaultOwner: "owner-a", agentRows: []string{"*", "owner-b/two"}, wantOwners: []string{"owner-b", "owner-a"}},
+		{name: "owners without wildcard", defaultOwner: "owner-b", agentRows: []string{"owner-a/one", "owner-b/two", "owner-c/three"}, wantOwners: []string{"owner-a", "owner-c", "owner-b"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+			grants := &fakeGitCredentialGrants{}
+			grants.setRepos("agent-id", tt.agentRows)
+			minter := &fakeGitCredentialMinter{tokens: []string{"ghs_first", "ghs_second", "ghs_third"}, expiresAt: now.Add(time.Hour)}
+			broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+			installations := &fakeGitCredentialInstallations{owner: tt.defaultOwner}
+			broker.installations = installations
+			resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+
+			if owners := brokeredOwners(resolveBrokeredSecret(t, resolver)); !reflect.DeepEqual(owners, tt.wantOwners) {
+				t.Fatalf("first emitted owners = %v, want %v", owners, tt.wantOwners)
+			}
+			// An expired snapshot plus one failed list call makes every lookup fail for a while.
+			installations.owner, installations.err = "", forge.ErrBudgetExhausted
+			if owners := brokeredOwners(resolveBrokeredSecret(t, resolver)); !reflect.DeepEqual(owners, tt.wantOwners) {
+				t.Fatalf("emitted owners after a failed lookup = %v, want %v with the cached default last", owners, tt.wantOwners)
+			}
+		})
+	}
+}
+
 func brokeredOwners(got []secrets.ResolvedSecret) []string {
 	owners := make([]string, 0, len(got))
 	for _, secret := range got {

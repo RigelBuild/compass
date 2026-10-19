@@ -130,6 +130,9 @@ type gitCredentialBroker struct {
 	backoffUntil   time.Time
 	retryPending   bool
 	group          singleflight.Group
+
+	// lastDefaultOwner is the last login DefaultOwner returned, served while lookups fail.
+	lastDefaultOwner string
 }
 
 // gitCredentialGroup is one owner's share of an agent's grants, minted as one token.
@@ -299,16 +302,21 @@ func (b *gitCredentialBroker) ownGroups(ctx context.Context, groups []gitCredent
 	return set
 }
 
+// defaultOwner falls back to the last resolved login: a lapsed installation snapshot must not
+// drop the "*" credential or move the default to another owner.
 func (b *gitCredentialBroker) defaultOwner(ctx context.Context) string {
 	if b.installations == nil {
 		return ""
 	}
 	login, err := b.installations.DefaultOwner(ctx)
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if err != nil {
-		b.log.ErrorContext(ctx, "resolve default GitHub installation owner", "error", err)
-		return ""
+		b.log.ErrorContext(ctx, "resolve default GitHub installation owner", "cached", b.lastDefaultOwner != "", "error", err)
+		return b.lastDefaultOwner
 	}
-	return strings.ToLower(login)
+	b.lastDefaultOwner = strings.ToLower(login)
+	return b.lastDefaultOwner
 }
 
 func (b *gitCredentialBroker) recordCredentialIfCurrent(agent store.AccountID, owner, key, token string, generation uint64) (string, bool) {
