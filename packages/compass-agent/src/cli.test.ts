@@ -40,8 +40,9 @@ import {
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
-import { BoardFreshness, createAgentBoardTools } from "./agent-board";
+import { createAgentBoardTools } from "./agent-board";
 import { BoardBroker, createBoardTools } from "./board";
+import { BoardFreshness } from "./board-freshness";
 import {
 	AGENT_SOCKET_PATH,
 	authSeedPath,

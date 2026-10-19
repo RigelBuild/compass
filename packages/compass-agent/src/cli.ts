@@ -44,14 +44,10 @@ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { getBlobsDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
-import {
-	attachSubagentBoardSync,
-	BoardFreshness,
-	createAgentBoardTools,
-	seedBoardFreshness,
-} from "./agent-board";
+import { createAgentBoardTools } from "./agent-board";
 import { type BatchWindow, DEFAULT_BATCH_WINDOW } from "./batch-window";
 import { BoardBroker, createBoardTools } from "./board";
+import { BoardFreshness, seedBoardFreshness } from "./board-freshness";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
 	currentConfigDir,
@@ -70,6 +66,7 @@ import {
 	type TranscriptTeeBackend,
 	type TranscriptTeeOptions,
 } from "./session-tee";
+import { attachSubagentBoardSync } from "./subagent-board-sync";
 import { createTraceBridge, type TraceBridge } from "./trace-bridge";
 import { createSocketControlSource } from "./transport/control-source";
 import { createSocketFrameSink } from "./transport/frame-sink";
@@ -1206,7 +1203,9 @@ export async function main(
 		await agent.run();
 	} finally {
 		// Before the drain: pending subagent rows still need the open transport.
-		await detachBoardSync();
+		await detachBoardSync().catch((error: unknown) =>
+			console.error("[compass-agent] subagent board sync shutdown:", error),
+		);
 		// The load-bearing drain→close chain is UNTOUCHED (storage.drain → sink.drain
 		// → transport.close). MCP disconnect wraps it as an OWN outer finally so it
 		// runs unconditionally AFTER the frame barrier: MCP is independent of the send

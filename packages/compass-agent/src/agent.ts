@@ -8,12 +8,12 @@ import type {
 	AgentSession,
 	AgentSessionEvent,
 } from "@oh-my-pi/pi-coding-agent";
-import type { BoardFreshness } from "./agent-board";
 import {
 	type BatchTimer,
 	type BatchWindow,
 	realBatchTimer,
 } from "./batch-window";
+import type { BoardFreshness } from "./board-freshness";
 import {
 	AgentSessionState,
 	type Ask,

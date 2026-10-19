@@ -12,8 +12,9 @@ import {
 	createAgentSession,
 	SessionManager,
 } from "@oh-my-pi/pi-coding-agent";
-import { BoardFreshness, createAgentBoardTools } from "./agent-board";
+import { createAgentBoardTools } from "./agent-board";
 import { BoardBroker, type BoardTransport, createBoardTools } from "./board";
+import { BoardFreshness } from "./board-freshness";
 import { CommsBroker, type CommsTransport, createCommsTools } from "./comms";
 import type { CommsCallRequest, CommsCallResult } from "./compassv1";
 import { createForgeTools, ForgeBroker, type ForgeTransport } from "./forge";

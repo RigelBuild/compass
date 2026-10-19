@@ -31,8 +31,8 @@ import {
 	formatDeliversForPrompt,
 	formatForgeNotifications,
 } from "./agent";
-import { BoardFreshness } from "./agent-board";
 import type { BatchTimer } from "./batch-window";
+import { BoardFreshness } from "./board-freshness";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
 	AgentSessionState,
