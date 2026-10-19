@@ -476,7 +476,7 @@ func (c *Comms) PostMessage(
 	if err != nil {
 		return nil, err
 	}
-	msg, inserted, err := c.store.AppendMessage(ctx, store.Message{
+	msg, topic, inserted, err := c.store.AppendMessageTopic(ctx, store.Message{
 		AuthorAccountID: c.actorFromContext(ctx),
 		TurnSequence:    req.GetTurnSequence(),
 		Blocks:          blocks,
@@ -496,6 +496,10 @@ func (c *Comms) PostMessage(
 	// row unchanged (inserted=false), so re-fanning MessagePosted would emit a
 	// spurious live state-change for a row that did not change.
 	if inserted {
+		// The topic goes first so a live index never holds a message whose topic it lacks.
+		if topic != nil {
+			c.publishTopicUpserted(ctx, *topic)
+		}
 		c.publishMessagePosted(ctx, msg)
 		c.driveCommittedAsks(ctx, msg)
 	}

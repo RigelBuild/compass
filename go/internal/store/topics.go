@@ -158,7 +158,7 @@ func (s *Store) GetOrCreateTopic(ctx context.Context, channelID, name string, au
 	}
 	var topicID string
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
-		id, err := resolveTopicForAppend(ctx, tx, channelID, TopicRef{Name: name, Create: true}, author, time.Now().UnixMilli())
+		id, _, err := resolveTopicForAppend(ctx, tx, channelID, TopicRef{Name: name, Create: true}, author, time.Now().UnixMilli())
 		topicID = id
 		return err
 	})

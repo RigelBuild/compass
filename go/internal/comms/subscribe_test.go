@@ -150,6 +150,37 @@ func firstEventAfterBoundary(t *testing.T, h streamHarness, actor store.AccountI
 	return out
 }
 
+// firstPostAfterBoundary is firstEventAfterBoundary for a topic-creating post:
+// it skips the TopicUpserted that precedes the post's own event.
+func firstPostAfterBoundary(t *testing.T, h streamHarness, actor store.AccountID) <-chan firstEvent {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	connectCtx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set(commsTestActorHeader, string(actor))
+	out := make(chan firstEvent, 1)
+	go func() {
+		stream, err := h.client.SubscribeComms(connectCtx, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+		if err != nil {
+			out <- firstEvent{err: err}
+			return
+		}
+		for {
+			msg, err := stream.Receive()
+			if err != nil {
+				out <- firstEvent{err: err}
+				return
+			}
+			if msg.GetPayload() == nil || msg.GetTopicUpserted() != nil {
+				continue
+			}
+			out <- firstEvent{msg: msg}
+			return
+		}
+	}()
+	return out
+}
+
 // awaitFirst blocks for the first stream event or fails after the deadline. The
 // timeout only fires on a genuine miss; a correctly-fanned event arrives at once.
 func awaitFirst(t *testing.T, ch <-chan firstEvent) *compassv1.SubscribeCommsResponse {
@@ -272,7 +303,7 @@ func TestSubscribeCommsPostDeliversMessagePosted(t *testing.T) {
 	// Open the subscription concurrently AS the poster (a channel member, so the
 	// D9 filter delivers the post to it), then post — half-duplex demands the
 	// subscribe not block the post.
-	events := firstEventAfterBoundary(t, h, poster.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	events := firstPostAfterBoundary(t, h, poster.ID)
 
 	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, TurnSequence: 11, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello stream"}}}})
 	if err != nil {
@@ -352,7 +383,7 @@ func TestSubscribeCommsAgentPresenceSharedChannelScoping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel(stranger): %v", err)
 	}
-	strangerEvents := firstEventAfterBoundary(t, h, stranger.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	strangerEvents := firstPostAfterBoundary(t, h, stranger.ID)
 	h.bus.Publish(t.Context(), presence)
 	posted, err := h.svc.PostMessage(WithActor(ctx, stranger.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(strangerCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible to me"}}}})
 	if err != nil {
@@ -390,7 +421,7 @@ func TestPostMessageIdempotentRetrySuppressesDuplicatePublish(t *testing.T) {
 
 	// Live path: subscribe concurrently (half-duplex), then the first post
 	// delivers exactly one MessagePosted to the member.
-	events := firstEventAfterBoundary(t, h, poster.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	events := firstPostAfterBoundary(t, h, poster.ID)
 	first, err := h.svc.PostMessage(WithActor(ctx, poster.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "only once"}}}, ClientRequestId: "req-dup"})
 	if err != nil {
 		t.Fatalf("PostMessage(first): %v", err)
@@ -438,7 +469,7 @@ func TestPostMessageWriteThrough(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	events := firstEventAfterBoundary(t, h, poster.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	events := firstPostAfterBoundary(t, h, poster.ID)
 
 	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "durable and fanned"}}}})
 	if err != nil {

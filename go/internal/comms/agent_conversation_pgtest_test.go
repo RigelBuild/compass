@@ -114,7 +114,7 @@ func TestAgentPostFansOutOnSubscribeComms(t *testing.T) {
 
 	// Subscribe AS the agent: it is a member of its own home channel, so the D9
 	// stream filter passes the event to it.
-	events := firstEventAfterBoundary(t, h, agent.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	events := firstPostAfterBoundary(t, h, agent.ID)
 
 	resp, err := h.svc.PostAsAccount(ctx, agent.ID, homeTopicPost(textBlocks("fanned out")))
 	if err != nil {

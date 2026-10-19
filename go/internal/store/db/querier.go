@@ -404,7 +404,7 @@ type Querier interface {
 	// RowsAffected branching (RevokeToken is :execrows). ResolveTokenHash maps the
 	// generated row (subject_kind/subject_id/tenant_id/revoked) back to the domain Subject.
 	InsertTokenHash(ctx context.Context, arg InsertTokenHashParams) error
-	InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnoreParams) error
+	InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnoreParams) (int64, error)
 	InsertTranscriptEntry(ctx context.Context, arg InsertTranscriptEntryParams) (int64, error)
 	InsertUserAccount(ctx context.Context, arg InsertUserAccountParams) error
 	InsertUserPeer(ctx context.Context, arg InsertUserPeerParams) (int64, error)
@@ -670,7 +670,7 @@ type Querier interface {
 	ResolveVisibleAgentHandles(ctx context.Context, arg ResolveVisibleAgentHandlesParams) ([]ResolveVisibleAgentHandlesRow, error)
 	ResolveVisibleGlobalHandles(ctx context.Context, arg ResolveVisibleGlobalHandlesParams) ([]ResolveVisibleGlobalHandlesRow, error)
 	ResumeSessionBlobs(ctx context.Context, arg ResumeSessionBlobsParams) ([]ResumeSessionBlobsRow, error)
-	ReviveTopic(ctx context.Context, id string) error
+	ReviveTopic(ctx context.Context, id string) (int64, error)
 	// Agent rows only: a user id deletes nothing, so a user grant is never removed here.
 	RevokeAgentForgeScope(ctx context.Context, arg RevokeAgentForgeScopeParams) (int64, error)
 	RevokeForgeScope(ctx context.Context, arg RevokeForgeScopeParams) error

@@ -30,7 +30,7 @@ UPDATE topics SET last_seq = GREATEST(last_seq, $2) WHERE id = $1;
 -- name: GetTopicChannel :one
 SELECT channel_id FROM topics WHERE id = $1;
 
--- name: InsertTopicIgnore :exec
+-- name: InsertTopicIgnore :execrows
 INSERT INTO topics (id, channel_id, name, created_by_account_id, created_at_unix_ms)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (channel_id, lower(name)) DO NOTHING;
@@ -38,8 +38,8 @@ ON CONFLICT (channel_id, lower(name)) DO NOTHING;
 -- name: GetTopicByName :one
 SELECT id, archived FROM topics WHERE channel_id = $1 AND lower(name) = lower($2);
 
--- name: ReviveTopic :exec
-UPDATE topics SET archived = FALSE WHERE id = $1;
+-- name: ReviveTopic :execrows
+UPDATE topics SET archived = FALSE WHERE id = $1 AND archived;
 
 -- name: MessagesHeadSeq :one
 SELECT COALESCE(MAX(seq), 0)::BIGINT AS head FROM messages;
