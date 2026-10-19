@@ -205,10 +205,8 @@ export type CommsEvent =
 	  };
 
 /** Apply one decoded event to the state, returning the next state. Pure: upserts
- *  the entity by id (dedup — a redelivered post or an update never duplicates a
- *  row) into its collection, or drops it (channelRemoved — the caller's own
- *  ejection). Account changes also refresh channel flags derived from agent home
- *  ids. The stream cursor stays in the driver (see ./stream). */
+ *  the entity by id (a redelivery never duplicates a row), or drops it on
+ *  channelRemoved. The stream cursor stays in the driver (see ./stream). */
 export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 	switch (event.kind) {
 		case "messagePosted":
@@ -224,6 +222,8 @@ export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 				...state,
 				channelGroups: upsertById(state.channelGroups, event.group),
 			};
+		// A home channel can decode before its agent's account, so re-derive the
+		// flag here; otherwise event order decides it, unlike a snapshot.
 		case "accountChanged": {
 			const accounts = upsertById(state.accounts, event.account);
 			const homeIds = agentHomeChannelIds(accounts);
