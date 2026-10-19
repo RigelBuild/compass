@@ -310,13 +310,15 @@ func (b *gitCredentialBroker) defaultOwner(ctx context.Context) string {
 	}
 	login, err := b.installations.DefaultOwner(ctx)
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if err != nil {
-		b.log.ErrorContext(ctx, "resolve default GitHub installation owner", "cached", b.lastDefaultOwner != "", "error", err)
-		return b.lastDefaultOwner
+	if err == nil {
+		b.lastDefaultOwner = strings.ToLower(login)
 	}
-	b.lastDefaultOwner = strings.ToLower(login)
-	return b.lastDefaultOwner
+	owner := b.lastDefaultOwner
+	b.mu.Unlock()
+	if err != nil {
+		b.log.ErrorContext(ctx, "resolve default GitHub installation owner", "cached", owner != "", "error", err)
+	}
+	return owner
 }
 
 func (b *gitCredentialBroker) recordCredentialIfCurrent(agent store.AccountID, owner, key, token string, generation uint64) (string, bool) {
