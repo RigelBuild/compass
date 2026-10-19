@@ -46,7 +46,7 @@ rather than managing its own. The nix pin files stay the version source.
 
 ## The contract gate
 
-The `compass.v1` schema is the only door between any UI and the daemon. It is
+The owned `compass.v1` schema is the only door between any UI and the daemon. It is
 gated three ways:
 
 - **`buf lint`**: schema style and consistency.

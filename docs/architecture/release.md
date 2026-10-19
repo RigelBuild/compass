@@ -40,18 +40,21 @@ what CI publishes is byte-for-byte what a developer loads locally.
 **The release lane.** Publishing is not a job in `ci.yml` and not a required
 check.
 
-- `publish-image` runs on main and on `workflow_dispatch`. It checks the image
-  closure's changed paths in the job, not with a trigger `paths:` filter,
-  because release-pr needs every commit.
-- It has its own concurrency group with `cancel-in-progress: false`, so publishes
-  queue rather than tear a tag pair mid-push.
-- It gets a `packages: write` token that the gate jobs never get.
+- The agent-image publish jobs run only on main, on a push or a
+  `workflow_dispatch`. They check the image closure's changed paths in the job,
+  not with a trigger `paths:` filter, because release-pr needs every commit.
+- `publish-image-manifest` is the only writer of `:git-<sha12>` and `:latest`.
+  Its concurrency group, shared with `release-image`, sets
+  `cancel-in-progress: false` and `queue: max`, so up to 100 pending runs wait
+  in order and a burst of pushes never drops a pending release tag.
+- The publish jobs get a `packages: write` token that the `ci.yml` gate jobs
+  never get.
 - `release.yml` lists no moon projects, like `ci.yml`, because a list goes stale
   silently. `agent-image/` is a standalone devenv, not a moon project.
 
 A published tag is the source of truth. A missing per-push tag is **not** a
-failure: the paths check filtered it out, or a newer push replaced it in the
-queue. `workflow_dispatch` republishes any HEAD on demand.
+failure: the paths check found no closure change. A `workflow_dispatch` on main
+republishes main's HEAD on demand.
 
 The same workflow runs `publish-runner-image`, `publish-server-image`,
 `publish-guest-image` and `publish-gateway-image`, plus the
@@ -100,13 +103,13 @@ registry from installed package exports and supplies it through a local Bun
 plugin. If the SDK adds a supported root option, Compass can use that option and
 remove the plugin.
 
-The image closure is the main CI cost and the reason the `moon` job timeout is
-90m. A PR pays it only when it touches the task's `inputs`: the `agent-image/`
-tree, `packages/compass-agent/`, the root `package.json` and `bun.lock`, and
-`tools/toolchain/versions/bun.nix`. Those mirror the paths that the
-`publish-image` job checks in `release.yml`, including the bun pin, because the
-image builds bun from that pin. Every push to main builds it. As a
-`ci-group.nix` project it runs in the `moon (nix)` leg behind `rollup`.
+The image closure is the main CI cost, but it does not set the `moon` job's 90m
+timeout. A PR pays it only when it touches the task's `inputs`: the
+`agent-image/` tree, `packages/compass-agent/`, the root `package.json` and
+`bun.lock`, and `tools/toolchain/versions/bun.nix`, since the image builds bun
+from that pin. The `publish-image` path check in `release.yml` uses the same set
+plus `release.yml` itself. Every push to main builds it. As a `ci-group.nix`
+project it runs in the `moon (nix)` leg behind `rollup`.
 
 ## Cutting a release
 
