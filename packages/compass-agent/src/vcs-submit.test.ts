@@ -64,32 +64,28 @@ class Jj {
 		const a = args.slice(2);
 		if (a[0] === "bookmark" && a[1] === "list") return ok(this.untracked);
 		if (a[0] !== "log") return ok();
-		const revset = a[3] ?? "";
+		return ok(this.log(a[3] ?? ""));
+	}
+	private localId(revset: string): string | undefined {
+		const name = revset.match(/^(?:remote_)?bookmarks\(exact:"([^"]+)"/)?.[1];
+		return this.own.find((r) => name && r.bookmarks?.includes(name))?.id;
+	}
+	private log(revset: string): string {
 		if (revset === "trunk()")
-			return ok(line({ id: "base", remote: this.trunkBookmarks, parents: [] }));
-		if (revset.startsWith("(descendants"))
-			return ok(this.forks.map(line).join(""));
-		if (revset.startsWith('"b":: ~ "b"'))
-			return ok(this.above.map(line).join(""));
-		if (revset === "@ | @-") return ok(line({ id: "c3", bookmarks: ["b"] }));
+			return line({ id: "base", remote: this.trunkBookmarks, parents: [] });
+		if (revset === "@ | @-") return line({ id: "c3", bookmarks: ["b"] });
+		if (revset.startsWith("(descendants")) return this.forks.map(line).join("");
+		if (revset.startsWith('"b":: ~ "b"')) return this.above.map(line).join("");
+		if (revset.includes(" ~ ::remote_bookmarks("))
+			return this.diverged.map(line).join("");
+		const local = this.localId(revset);
 		if (revset.startsWith("remote_bookmarks(exact:")) {
-			const name =
-				revset.match(/^remote_bookmarks\(exact:"([^"]+)"/)?.[1] ?? "";
-			const local = this.own.find((r) => r.bookmarks?.includes(name));
-			return this.remoteTarget !== undefined
-				? ok(line({ id: this.remoteTarget }))
-				: local
-					? ok(line({ id: this.localTarget ?? local.id }))
-					: ok();
+			const id = this.remoteTarget ?? (local && (this.localTarget ?? local));
+			return id ? line({ id }) : "";
 		}
-		if (revset.startsWith("bookmarks(exact:")) {
-			const name = revset.match(/^bookmarks\(exact:"([^"]+)"\)/)?.[1] ?? "";
-			if (revset.includes(" ~ ::remote_bookmarks("))
-				return ok(this.diverged.map(line).join(""));
-			const local = this.own.find((r) => r.bookmarks?.includes(name));
-			return local ? ok(line({ id: local.id })) : ok();
-		}
-		return ok(this.own.map(line).join(""));
+		if (revset.startsWith("bookmarks(exact:"))
+			return local ? line({ id: local }) : "";
+		return this.own.map(line).join("");
 	}
 }
 
@@ -661,13 +657,15 @@ describe("vcs_submit", () => {
 	});
 
 	test("a request over the limit refuses with no submit call; one just under is sent", async () => {
-		// The rest of the request is small, so a bundle 1 KiB under the cap stays under it.
+		// The bundle alone passes its file check; the entries and framing push the request over.
 		const over = setup({
-			git: new Git(undefined, new Uint8Array(MAX_SUBMIT_BYTES)),
+			git: new Git(undefined, new Uint8Array(MAX_SUBMIT_BYTES - 64)),
 		});
 		await expect(exec(over.tool("vcs_submit"), { issues })).rejects.toThrow(
-			"limit",
+			"over the 15728640-byte limit",
 		);
+		const hook = over.git.calls.findIndex((c) => c.args[0] === "hook");
+		expect(hook).toBeGreaterThan(-1);
 		expect(over.transport.requests.map((r) => r.call.case)).toEqual([
 			"stackStatus",
 		]);
