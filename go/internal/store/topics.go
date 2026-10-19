@@ -151,21 +151,32 @@ func (s *Store) UpdateTopic(ctx context.Context, callerAccountID, topicID string
 }
 
 // GetOrCreateTopic returns the id of the topic named name in channelID, minting
-// it on first use; it shares the append path's race-safe get-or-create.
-func (s *Store) GetOrCreateTopic(ctx context.Context, channelID, name string, author AccountID) (string, error) {
+// it on first use; it shares the append path's race-safe get-or-create. changed
+// is the topic when this call created or revived it, so the caller can announce it.
+func (s *Store) GetOrCreateTopic(ctx context.Context, channelID, name string, author AccountID) (topicID string, changed *Topic, err error) {
 	if channelID == "" || name == "" {
-		return "", fmt.Errorf("%w: get-or-create topic needs a channel and a name", ErrInvalidArgument)
+		return "", nil, fmt.Errorf("%w: get-or-create topic needs a channel and a name", ErrInvalidArgument)
 	}
-	var topicID string
-	err := s.WithTx(ctx, func(tx pgx.Tx) error {
-		id, _, err := resolveTopicForAppend(ctx, tx, channelID, TopicRef{Name: name, Create: true}, author, time.Now().UnixMilli())
+	err = s.WithTx(ctx, func(tx pgx.Tx) error {
+		id, didChange, err := resolveTopicForAppend(ctx, tx, channelID, TopicRef{Name: name, Create: true}, author, time.Now().UnixMilli())
+		if err != nil {
+			return err
+		}
 		topicID = id
-		return err
+		if didChange {
+			row, err := db.New(tx).GetTopic(ctx, id)
+			if err != nil {
+				return fmt.Errorf("store: read created topic: %w", err)
+			}
+			t := topicFromRow(row)
+			changed = &t
+		}
+		return nil
 	})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return topicID, nil
+	return topicID, changed, nil
 }
 
 // applyTopicRename renames in place or merges into the same-channel target;

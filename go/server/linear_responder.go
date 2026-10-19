@@ -40,7 +40,7 @@ var (
 var (
 	_ linearagent.OwnershipIndex  = (*store.Store)(nil)
 	_ linearagent.Memberships     = (*store.Store)(nil)
-	_ linearagent.Topics          = (*store.Store)(nil)
+	_ linearagent.Topics          = (*comms.Comms)(nil)
 	_ linearagent.Associations    = (*store.Store)(nil)
 	_ linearagent.CommsPoster     = (*comms.Comms)(nil)
 	_ linearagent.ManagerResolver = (*linearRouting)(nil)
@@ -162,7 +162,7 @@ func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, bri
 		Resolve:      resolver.ResolveResponder,
 		Poster:       cm,
 		Members:      st,
-		Topics:       st,
+		Topics:       cm,
 		Associations: st,
 		Deliveries:   st,
 		Client:       linearagent.NewClient(tokens, &http.Client{Timeout: linearAPITimeout}, graphQLURL),

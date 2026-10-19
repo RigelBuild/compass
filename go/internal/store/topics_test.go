@@ -153,7 +153,7 @@ func TestListTopicsWithStats(t *testing.T) {
 		}
 		third = msg
 	}
-	if _, err := s.GetOrCreateTopic(ctx, string(ch.ID), "B", author.ID); err != nil {
+	if _, _, err := s.GetOrCreateTopic(ctx, string(ch.ID), "B", author.ID); err != nil {
 		t.Fatalf("GetOrCreateTopic(B): %v", err)
 	}
 	topics, err := s.ListTopicsWithStats(ctx, string(author.ID), string(ch.ID), false)
@@ -183,9 +183,12 @@ func TestGetOrCreateTopicIdempotentPerChannel(t *testing.T) {
 	chA := mustChannel(t, s, author.ID)
 	chB := mustChannel(t, s, author.ID)
 
-	first, err := s.GetOrCreateTopic(ctx, string(chA.ID), "RIG-2717", author.ID)
+	first, created, err := s.GetOrCreateTopic(ctx, string(chA.ID), "RIG-2717", author.ID)
 	if err != nil {
 		t.Fatalf("GetOrCreateTopic(first): %v", err)
+	}
+	if created == nil || created.ID != first {
+		t.Fatalf("first call changed = %+v, want the created topic %q", created, first)
 	}
 	topics, err := s.ListTopics(ctx, string(author.ID), string(chA.ID), false)
 	if err != nil {
@@ -195,15 +198,18 @@ func TestGetOrCreateTopicIdempotentPerChannel(t *testing.T) {
 		t.Fatalf("ListTopics = %+v, want the one minted topic %q", topics, first)
 	}
 
-	again, err := s.GetOrCreateTopic(ctx, string(chA.ID), "RIG-2717", author.ID)
+	again, repeat, err := s.GetOrCreateTopic(ctx, string(chA.ID), "RIG-2717", author.ID)
 	if err != nil {
 		t.Fatalf("GetOrCreateTopic(repeat): %v", err)
 	}
 	if again != first {
 		t.Errorf("repeat id = %q, want %q (get, not a second create)", again, first)
 	}
+	if repeat != nil {
+		t.Errorf("repeat changed = %+v, want nil (nothing created or revived)", repeat)
+	}
 
-	other, err := s.GetOrCreateTopic(ctx, string(chB.ID), "RIG-2717", author.ID)
+	other, _, err := s.GetOrCreateTopic(ctx, string(chB.ID), "RIG-2717", author.ID)
 	if err != nil {
 		t.Fatalf("GetOrCreateTopic(other channel): %v", err)
 	}

@@ -213,6 +213,7 @@ type linE2EWire struct {
 	supervisor store.Account
 	manager    store.Account
 	routingCh  store.ChannelID
+	commsBus   *events.Bus[*compassv1.SubscribeCommsResponse]
 }
 
 func newLinE2EWire(t *testing.T) *linE2EWire {
@@ -290,7 +291,7 @@ func newLinE2EWire(t *testing.T) *linE2EWire {
 	_, handler := NewLinearWebhookHandler(func(context.Context) ([]byte, error) { return secret, nil }, nil, d, nil)
 	return &linE2EWire{
 		st: st, cm: cm, linear: linear, handler: handler, resolver: resolver, secret: secret,
-		adminID: admin.ID, bridgeID: bridge.ID, supervisor: supervisor, manager: manager, routingCh: routingCh,
+		adminID: admin.ID, bridgeID: bridge.ID, supervisor: supervisor, manager: manager, routingCh: routingCh, commsBus: commsBus,
 	}
 }
 
@@ -449,6 +450,7 @@ func (w *linE2EWire) scenarioCreatedRecordedOwner(t *testing.T) {
 	if msg.TopicID != row.TopicID {
 		t.Errorf("post topic = %s, want the associated topic %s", msg.TopicID, row.TopicID)
 	}
+	w.assertTopicAnnouncedFirst(t, row.TopicID)
 
 	var thoughts, updates []linE2ECall
 	for _, c := range w.linear.callsFor(sessionID) {
@@ -466,6 +468,26 @@ func (w *linE2EWire) scenarioCreatedRecordedOwner(t *testing.T) {
 	if len(updates) != 1 || updates[0].Status != http.StatusOK || len(updates[0].ExternalURLs) != 1 || updates[0].ExternalURLs[0].URL != wantURL {
 		t.Errorf("session updates = %+v, want one accepted update with external URL %s", updates, wantURL)
 	}
+}
+
+// assertTopicAnnouncedFirst checks the bus carried the topic's TopicUpserted
+// before any MessagePosted in it, so a live topic index never misses it.
+func (w *linE2EWire) assertTopicAnnouncedFirst(t *testing.T, topicID string) {
+	t.Helper()
+	sub, err := w.commsBus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("commsBus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+	for _, ev := range sub.Replay {
+		if ev.Payload.GetTopicUpserted().GetTopic().GetId() == topicID {
+			return
+		}
+		if ev.Payload.GetMessagePosted().GetMessage().GetTopicId() == topicID {
+			t.Fatalf("MessagePosted in topic %s arrived before its TopicUpserted", topicID)
+		}
+	}
+	t.Fatalf("no TopicUpserted for topic %s on the comms bus", topicID)
 }
 
 // scenarioSessionLinkFollowsOwnership: the one stored link points at the routing
