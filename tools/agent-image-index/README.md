@@ -5,10 +5,14 @@ it to GHCR, and verifies the immutable build tag and `:latest`. It exists to
 publish one verified multi-architecture reference from the per-architecture
 images.
 
+The publisher writes a deterministic local OCI index that refers to the existing
+architecture manifests. Skopeo copies only that index with `--multi-arch
+index-only --preserve-digests`; the per-architecture images must already exist
+in the destination. See the [Skopeo copy manual](https://github.com/containers/skopeo/blob/main/docs/skopeo-copy.1.md#--multi-arch-option), which documents that `index-only` copies only the index and creates a sparse index.
+
 ## Run
 
-From the repository root, with `podman`, `skopeo`, and a populated GHCR auth
-file ready:
+From the repository root, with `skopeo` and a populated GHCR auth file ready:
 
 ```sh
 export GH_SHA="$(git rev-parse HEAD)"
@@ -22,7 +26,7 @@ command after `skopeo login`.
 
 ## Credentials
 
-`REGISTRY_AUTH_FILE` names the auth file used by `skopeo` and `podman`. The
+`REGISTRY_AUTH_FILE` names the auth file used by `skopeo`. The
 `publish-image-manifest` job creates the file with `skopeo login` using
 `secrets.GITHUB_TOKEN`; it grants `packages: write`.
 

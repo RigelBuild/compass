@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export type CommandResult = {
 	exitCode: number;
@@ -21,8 +22,17 @@ export type PublishInput = {
 export type PublishResult = { stdout: string[]; stderr: string[] };
 
 type IndexMember = {
+	mediaType?: string;
 	digest: string;
+	size?: number;
 	platform: { os: string; architecture: string };
+	artifactType?: string;
+};
+
+type ResolvedArchManifest = {
+	raw: string;
+	digest: string;
+	mediaType: string;
 	artifactType?: string;
 };
 
@@ -31,15 +41,13 @@ type ImageIndex = {
 	manifests: IndexMember[];
 };
 
+const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json";
+const EXPECTED_PLATFORMS = "linux/amd64,linux/arm64";
+
 function imageRef(repo: string): string {
 	return `docker://${repo}`;
 }
 
-function localIndexRef(repo: string, sha12: string): string {
-	const name = repo.slice(repo.lastIndexOf("/") + 1);
-	return `localhost/${name}:${sha12}`;
-}
-const EXPECTED_PLATFORMS = "linux/amd64,linux/arm64";
 const INDEX_MEDIA_TYPES = [
 	"application/vnd.oci.image.index.v1+json",
 	"application/vnd.docker.distribution.manifest.list.v2+json",
@@ -109,13 +117,20 @@ function parseIndex(raw: string, description: string): ImageIndex {
 			!isRecord(member.platform) ||
 			typeof member.platform.os !== "string" ||
 			typeof member.platform.architecture !== "string" ||
+			(member.mediaType !== undefined &&
+				typeof member.mediaType !== "string") ||
+			(member.size !== undefined && typeof member.size !== "number") ||
 			(member.artifactType !== undefined &&
 				typeof member.artifactType !== "string")
 		) {
 			throw new Error(`invalid ${description}: malformed manifest member`);
 		}
 		return {
+			...(typeof member.mediaType === "string"
+				? { mediaType: member.mediaType }
+				: {}),
 			digest: member.digest,
+			...(typeof member.size === "number" ? { size: member.size } : {}),
 			platform: {
 				os: member.platform.os,
 				architecture: member.platform.architecture,
@@ -130,6 +145,53 @@ function parseIndex(raw: string, description: string): ImageIndex {
 			typeof parsed.mediaType === "string" ? parsed.mediaType : undefined,
 		manifests,
 	};
+}
+
+function parseRawMember(
+	raw: string,
+	architecture: string,
+): ResolvedArchManifest {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		throw new Error(`invalid ${architecture} member manifest: ${detail}`);
+	}
+	if (
+		!isRecord(parsed) ||
+		typeof parsed.mediaType !== "string" ||
+		(parsed.artifactType !== undefined &&
+			typeof parsed.artifactType !== "string")
+	) {
+		throw new Error(`invalid ${architecture} member manifest descriptor`);
+	}
+	return {
+		raw,
+		digest: sha256(raw),
+		mediaType: parsed.mediaType,
+		...(typeof parsed.artifactType === "string"
+			? { artifactType: parsed.artifactType }
+			: {}),
+	};
+}
+
+function indexPushCommand(
+	localIndexDir: string,
+	authFile: string,
+	target: string,
+): string[] {
+	return [
+		"skopeo",
+		"copy",
+		"--multi-arch",
+		"index-only",
+		"--preserve-digests",
+		"--dest-authfile",
+		authFile,
+		`oci:${localIndexDir}:index`,
+		target,
+	];
 }
 
 function platforms(index: ImageIndex): string {
@@ -164,7 +226,7 @@ async function resolveArchDigests(
 	repo: string,
 	run: CommandRunner,
 	sha12: string,
-): Promise<[string, string]> {
+): Promise<[ResolvedArchManifest, ResolvedArchManifest]> {
 	const ref = imageRef(repo);
 	const amd64Raw = await runChecked(
 		run,
@@ -174,81 +236,79 @@ async function resolveArchDigests(
 		run,
 		inspectCommand(`${ref}:git-${sha12}-arm64`, "--raw"),
 	);
-	const amd64Digest = sha256(amd64Raw);
-	const arm64Digest = sha256(arm64Raw);
-	for (const digest of [amd64Digest, arm64Digest]) {
+	const amd64 = parseRawMember(amd64Raw, "amd64");
+	const arm64 = parseRawMember(arm64Raw, "arm64");
+	for (const digest of [amd64.digest, arm64.digest]) {
 		requireDigest(digest, "invalid per-arch manifest digest");
 	}
-	return [amd64Digest, arm64Digest];
+	return [amd64, arm64];
 }
 
-async function composeLocalIndex(
-	repo: string,
-	authFile: string,
+function composeLocalIndex(
 	runnerTemp: string,
-	sha12: string,
-	[amd64Digest, arm64Digest]: [string, string],
-	run: CommandRunner,
-): Promise<{ localList: string; localDigest: string }> {
-	const ref = imageRef(repo);
-	const localList = localIndexRef(repo, sha12);
-	const anonymousAuthFile = `${runnerTemp}/anonymous-auth.json`;
-	writeFileSync(anonymousAuthFile, "{}");
-	await runChecked(run, ["podman", "manifest", "create", localList]);
-	for (const [digest, architecture] of [
-		[amd64Digest, "amd64"],
-		[arm64Digest, "arm64"],
-	] as const) {
-		await runChecked(run, [
-			"podman",
-			"manifest",
-			"add",
-			"--authfile",
-			anonymousAuthFile,
-			"--os",
-			"linux",
-			"--arch",
-			architecture,
-			localList,
-			`${ref}@${digest}`,
-		]);
-	}
-	const localRaw = await runChecked(run, [
-		"podman",
-		"manifest",
-		"inspect",
-		localList,
-	]);
-	const localIndex = parseIndex(localRaw, "local composed index");
+	[amd64, arm64]: [ResolvedArchManifest, ResolvedArchManifest],
+): { localIndexDir: string; localDigest: string } {
+	const localIndexDir = join(runnerTemp, "local-index");
+	const indexBytes = JSON.stringify({
+		schemaVersion: 2,
+		mediaType: OCI_INDEX_MEDIA_TYPE,
+		manifests: [
+			{
+				mediaType: amd64.mediaType,
+				digest: amd64.digest,
+				size: Buffer.byteLength(amd64.raw),
+				platform: { os: "linux", architecture: "amd64" },
+				...(amd64.artifactType !== undefined
+					? { artifactType: amd64.artifactType }
+					: {}),
+			},
+			{
+				mediaType: arm64.mediaType,
+				digest: arm64.digest,
+				size: Buffer.byteLength(arm64.raw),
+				platform: { os: "linux", architecture: "arm64" },
+				...(arm64.artifactType !== undefined
+					? { artifactType: arm64.artifactType }
+					: {}),
+			},
+		],
+	});
+	const localDigest = sha256(indexBytes);
+	const hex = localDigest.slice("sha256:".length);
+	const localIndex = parseIndex(indexBytes, "local composed index");
 	if (localIndex.manifests.length !== 2) {
 		throw new Error(
 			`::error::composed index has ${localIndex.manifests.length} members, expected exactly 2`,
 		);
 	}
 	requireExpectedPlatforms(localIndex, "composed");
-	const digestFile = `${runnerTemp}/local-index.digest`;
-	await runChecked(run, [
-		"podman",
-		"manifest",
-		"push",
-		"--format",
-		"oci",
-		"--digestfile",
-		digestFile,
-		"--authfile",
-		authFile,
-		localList,
-		`oci:${runnerTemp}/local-index:index`,
-	]);
-	const localDigest = (await runChecked(run, ["cat", digestFile])).trim();
-	requireDigest(localDigest, "podman returned an invalid local index digest");
-	return { localList, localDigest };
+	mkdirSync(join(localIndexDir, "blobs", "sha256"), { recursive: true });
+	writeFileSync(
+		join(localIndexDir, "oci-layout"),
+		JSON.stringify({ imageLayoutVersion: "1.0.0" }),
+	);
+	writeFileSync(
+		join(localIndexDir, "index.json"),
+		JSON.stringify({
+			schemaVersion: 2,
+			manifests: [
+				{
+					mediaType: OCI_INDEX_MEDIA_TYPE,
+					digest: localDigest,
+					size: Buffer.byteLength(indexBytes),
+					annotations: { "org.opencontainers.image.ref.name": "index" },
+				},
+			],
+		}),
+	);
+	writeFileSync(join(localIndexDir, "blobs", "sha256", hex), indexBytes);
+	return { localIndexDir, localDigest };
 }
 
 async function guardImmutableTag(
 	repo: string,
 	authFile: string,
-	localList: string,
+	localIndexDir: string,
 	sha12: string,
 	localDigest: string,
 	run: CommandRunner,
@@ -270,17 +330,7 @@ async function guardImmutableTag(
 		return output;
 	}
 	if (isManifestUnknown(result.stderr)) {
-		await runChecked(run, [
-			"podman",
-			"manifest",
-			"push",
-			"--format",
-			"oci",
-			"--authfile",
-			authFile,
-			localList,
-			tag,
-		]);
+		await runChecked(run, indexPushCommand(localIndexDir, authFile, tag));
 		return output;
 	}
 	throw new Error(
@@ -406,7 +456,7 @@ async function verifyPublishedIndex(
 	repo: string,
 	sha12: string,
 	localDigest: string,
-	archDigests: [string, string],
+	archDigests: [ResolvedArchManifest, ResolvedArchManifest],
 	run: CommandRunner,
 ): Promise<{ gitDigest: string; index: ImageIndex }> {
 	const gitRaw = await runChecked(
@@ -430,7 +480,10 @@ async function verifyPublishedIndex(
 		.map(({ digest }) => digest)
 		.sort()
 		.join(",");
-	const expectedDigests = [...archDigests].sort().join(",");
+	const expectedDigests = archDigests
+		.map(({ digest }) => digest)
+		.sort()
+		.join(",");
 	if (actualDigests !== expectedDigests) {
 		throw new Error(
 			`::error::index member digest set differs: got=${actualDigests} expected=${expectedDigests}`,
@@ -481,18 +534,14 @@ export async function publishImageIndex(
 	const result: PublishResult = { stdout: [], stderr: [] };
 	try {
 		const archDigests = await resolveArchDigests(repo, run, sha12);
-		const { localList, localDigest } = await composeLocalIndex(
-			repo,
-			authFile,
+		const { localIndexDir, localDigest } = await composeLocalIndex(
 			runnerTemp,
-			sha12,
 			archDigests,
-			run,
 		);
 		const guarded = await guardImmutableTag(
 			repo,
 			authFile,
-			localList,
+			localIndexDir,
 			sha12,
 			localDigest,
 			run,
@@ -501,17 +550,10 @@ export async function publishImageIndex(
 		result.stderr.push(...guarded.stderr);
 		const newerIndex = await findNewerIndex(repo, sha, run);
 		if (!newerIndex) {
-			await runChecked(run, [
-				"podman",
-				"manifest",
-				"push",
-				"--format",
-				"oci",
-				"--authfile",
-				authFile,
-				localList,
-				`${imageRef(repo)}:latest`,
-			]);
+			await runChecked(
+				run,
+				indexPushCommand(localIndexDir, authFile, `${imageRef(repo)}:latest`),
+			);
 		} else {
 			result.stderr.push(
 				`::warning::newer :git-${newerIndex} is published; leaving :latest to it`,
@@ -536,7 +578,10 @@ export async function publishImageIndex(
 		);
 		const summary = process.env.GITHUB_STEP_SUMMARY;
 		if (summary) {
-			const lane = repo.slice(repo.lastIndexOf("/") + 1);
+			const lane = repo
+				.slice(repo.lastIndexOf("/") + 1)
+				.replace(/^compass-/, "")
+				.replace(/-image$/, "");
 			appendFileSync(summary, `${lane} image: \`${repo}@${gitDigest}\`\n`);
 		}
 		return result;
