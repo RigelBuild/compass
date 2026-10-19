@@ -295,6 +295,8 @@ export async function runCommsStream(opts: CommsStreamOptions): Promise<void> {
 	// Consecutive reconnect failures, driving the backoff ceiling. Reset to 0 the
 	// moment a subscribe yields a response (the connection is live again).
 	let failures = 0;
+	// Channels whose live backfill failed; their next channelChanged retries it.
+	const unhydrated = new Set<string>();
 
 	// Back off before the next resubscribe so a down, restarting, or
 	// accept-then-drop server isn't hammered by a tight reconnect loop. Full
@@ -364,12 +366,12 @@ export async function runCommsStream(opts: CommsStreamOptions): Promise<void> {
 
 				const event = decodeEvent(state, resp.payload, callerId, mapMessage);
 				if (event?.kind === "channelChanged") {
-					const wasKnown = state.channels.some(
-						(channel) => channel.id === event.channel.id,
-					);
+					const needsHistory =
+						unhydrated.has(event.channel.id) ||
+						!state.channels.some((channel) => channel.id === event.channel.id);
 					state = applyEvent(state, event);
 					onState(state);
-					if (!wasKnown) {
+					if (needsHistory) {
 						try {
 							const [topicsResp, wireMessages] = await Promise.all([
 								client.listTopics(
@@ -391,9 +393,13 @@ export async function runCommsStream(opts: CommsStreamOptions): Promise<void> {
 									message: mapMessage(message),
 								});
 							}
+							unhydrated.delete(event.channel.id);
 							onState(state);
 						} catch (error) {
-							if (!signal?.aborted) onError?.(error);
+							if (!signal?.aborted) {
+								unhydrated.add(event.channel.id);
+								onError?.(error);
+							}
 						}
 					}
 				} else if (event) {
