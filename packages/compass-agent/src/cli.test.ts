@@ -59,14 +59,17 @@ import {
 } from "./cli";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
+	AgentBoardSchema,
 	AgentControlSchema,
 	AgentSessionState,
+	CommsCallResultSchema,
 	create,
 	DeliverControlSchema,
 	MessageBlockSchema,
 	MessageSchema,
 	PromptControlSchema,
 	SteerControlSchema,
+	UpdateAgentBoardResponseSchema,
 	type AgentControl as WireAgentControl,
 } from "./compassv1";
 import { createForgeTools, ForgeBroker } from "./forge";
@@ -529,19 +532,19 @@ function fakeCarrier(
 			: { ...real, drain: () => Promise.reject(hooks.drainError) };
 	return {
 		comms: async (req) =>
-			({
+			create(CommsCallResultSchema, {
 				callId: req.callId,
 				result: {
-					case: "updateBoard" as const,
-					value: {
-						board: {
+					case: "updateBoard",
+					value: create(UpdateAgentBoardResponseSchema, {
+						board: create(AgentBoardSchema, {
 							handle: "test",
 							writtenTurn: 0n,
 							writtenAtUnixMs: BigInt(Date.now()),
-						},
-					},
+						}),
+					}),
 				},
-			}) as never,
+			}),
 		lifecycle: () => Promise.reject(new Error("lifecycle is not used by main")),
 		forge: () => Promise.reject(new Error("forge is not used by main")),
 		board: () => Promise.reject(new Error("board is not used by main")),

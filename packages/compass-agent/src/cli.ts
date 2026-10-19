@@ -1205,7 +1205,8 @@ export async function main(
 		});
 		await agent.run();
 	} finally {
-		detachBoardSync();
+		// Before the drain: pending subagent rows still need the open transport.
+		await detachBoardSync();
 		// The load-bearing drain→close chain is UNTOUCHED (storage.drain → sink.drain
 		// → transport.close). MCP disconnect wraps it as an OWN outer finally so it
 		// runs unconditionally AFTER the frame barrier: MCP is independent of the send

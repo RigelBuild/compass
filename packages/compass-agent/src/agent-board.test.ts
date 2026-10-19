@@ -34,6 +34,9 @@ class FakeTransport implements CommsTransport {
 	refuseNext = false;
 	#gate: Promise<void> | undefined;
 	constructor(private readonly board: AgentBoard) {}
+	set focus(key: string) {
+		this.board.focusTaskKey = key;
+	}
 	/** Holds every reply until the returned release runs. */
 	hold(): () => void {
 		let release = (): void => {};
@@ -141,7 +144,7 @@ const tick = async (): Promise<void> => {
 	await Promise.resolve();
 };
 
-// Drains the call → then → catch → finally chain of an in-flight write.
+// Drains the call → then → finally chain of an in-flight write.
 const settle = async (): Promise<void> => {
 	for (let i = 0; i < 10; i++) await Promise.resolve();
 };
@@ -256,6 +259,26 @@ describe("seedBoardFreshness", () => {
 		expect(freshness.seeded()).toBe(true);
 		expect(freshness.ageMs(0)).toBeUndefined();
 	});
+
+	test("a reply after the deadline still seeds", async () => {
+		const timer = new FakeTimer();
+		const transport = new FakeTransport(board({ focusTaskKey: "late" }));
+		const release = transport.hold();
+		const freshness = new BoardFreshness();
+		const seeded = seedBoardFreshness(
+			new CommsBroker(transport),
+			sequence(),
+			freshness,
+			timer,
+		).catch(() => freshness.seedFailed());
+		timer.advance(10_000);
+		await seeded;
+		expect(freshness.focusKnown()).toBe(false);
+		release();
+		await settle();
+		expect(freshness.focusTaskKey()).toBe("late");
+		expect(freshness.focusKnown()).toBe(true);
+	});
 });
 
 describe("subagent board synchronization", () => {
@@ -310,7 +333,7 @@ describe("subagent board synchronization", () => {
 				endedAtUnixMs: 11_000n,
 			}),
 		]);
-		h.detach();
+		void h.detach();
 	});
 
 	test("a second burst waits a full window after the first write settles", async () => {
@@ -327,7 +350,7 @@ describe("subagent board synchronization", () => {
 		expect(h.patches()[1]?.upsertTasks[0]?.upsertSubagents).toEqual([
 			expect.objectContaining({ id: "b" }),
 		]);
-		h.detach();
+		void h.detach();
 	});
 
 	test("writes never overlap: events during a slow write wait for it", async () => {
@@ -351,7 +374,7 @@ describe("subagent board synchronization", () => {
 		expect(h.patches()[1]?.upsertTasks[0]?.upsertSubagents[0]?.status).toBe(
 			"completed",
 		);
-		h.detach();
+		void h.detach();
 	});
 
 	test("a failed write re-sends its subagents in the next window", async () => {
@@ -364,7 +387,7 @@ describe("subagent board synchronization", () => {
 		await settle();
 		expect(h.patches()).toHaveLength(2);
 		expect(h.patches()[1]?.upsertTasks[0]?.upsertSubagents[0]?.id).toBe("a");
-		h.detach();
+		void h.detach();
 	});
 
 	test("a server refusal is dropped, not retried", async () => {
@@ -376,10 +399,10 @@ describe("subagent board synchronization", () => {
 		h.timer.advance(30_000);
 		await settle();
 		expect(h.patches()).toHaveLength(1);
-		h.detach();
+		void h.detach();
 	});
 
-	test("a late event for a sent settled subagent is ignored", async () => {
+	test("a late settle for a sent subagent is ignored; a follow-up start is not", async () => {
 		const h = attached("parent-task");
 		h.emit("a", "started", "Scan");
 		h.emit("a", "completed");
@@ -389,7 +412,58 @@ describe("subagent board synchronization", () => {
 		h.timer.advance(10_000);
 		await settle();
 		expect(h.patches()).toHaveLength(1);
-		h.detach();
+		h.emit("a", "started");
+		h.timer.advance(5_000);
+		await settle();
+		expect(h.patches()).toHaveLength(2);
+		expect(h.patches()[1]?.upsertTasks[0]?.upsertSubagents[0]?.status).toBe(
+			"started",
+		);
+		void h.detach();
+	});
+
+	test("a subagent keeps the task it started on when the focus moves", async () => {
+		const h = attached("first");
+		h.emit("a", "started");
+		h.timer.advance(5_000);
+		await settle();
+		h.freshness.noteWrite(2n, 2_000, "second");
+		h.emit("a", "completed");
+		h.emit("b", "started");
+		h.timer.advance(5_000);
+		await settle();
+		const tasks = h.patches()[1]?.upsertTasks ?? [];
+		expect(
+			tasks.map((t) => [t.key, t.upsertSubagents.map((s) => s.id)]),
+		).toEqual([
+			["first", ["a"]],
+			["second", ["b"]],
+		]);
+		void h.detach();
+	});
+
+	test("a focused task named subagents keeps its title", async () => {
+		const h = attached("subagents");
+		h.emit("a", "started");
+		h.timer.advance(5_000);
+		await settle();
+		expect(h.patches()[0]?.upsertTasks[0]?.title).toBeUndefined();
+		void h.detach();
+	});
+
+	test("after a failed seed the sync reads the focus before writing", async () => {
+		const h = attached("", { seeded: false });
+		h.transport.focus = "stored-focus";
+		h.freshness.seedFailed();
+		h.emit("a", "started");
+		h.timer.advance(5_000);
+		await settle();
+		expect(h.patches()).toHaveLength(1);
+		expect(h.patches()[0]?.upsertTasks).toHaveLength(0);
+		h.timer.advance(5_000);
+		await settle();
+		expect(h.patches()[1]?.upsertTasks[0]?.key).toBe("stored-focus");
+		void h.detach();
 	});
 
 	test("writes wait for the startup seed, then use its focus", async () => {
@@ -402,7 +476,7 @@ describe("subagent board synchronization", () => {
 		h.timer.advance(5_000);
 		await settle();
 		expect(h.patches()[0]?.upsertTasks[0]?.key).toBe("stored-focus");
-		h.detach();
+		void h.detach();
 	});
 
 	test("with no focus the patch creates a titled subagents task", async () => {
@@ -414,16 +488,34 @@ describe("subagent board synchronization", () => {
 			key: "subagents",
 			title: "Subagents",
 		});
-		h.detach();
+		void h.detach();
 	});
 
-	test("detaching cancels a pending write", () => {
+	test("detaching sends a pending write before it resolves", async () => {
 		const h = attached("parent-task");
 		h.emit("a", "started");
-		h.detach();
-		expect(h.timer.entries.size).toBe(0);
+		await h.detach();
+		expect(h.patches()).toHaveLength(1);
+		h.emit("b", "started");
 		h.timer.advance(5_000);
-		expect(h.patches()).toHaveLength(0);
+		await settle();
+		expect(h.patches()).toHaveLength(1);
+	});
+
+	test("detaching gives up on a hung write after 5 s", async () => {
+		const h = attached("parent-task");
+		h.transport.hold();
+		h.emit("a", "started");
+		h.timer.advance(5_000);
+		let done = false;
+		const detached = h.detach().then(() => {
+			done = true;
+		});
+		await settle();
+		expect(done).toBe(false);
+		h.timer.advance(5_000);
+		await detached;
+		expect(done).toBe(true);
 	});
 });
 

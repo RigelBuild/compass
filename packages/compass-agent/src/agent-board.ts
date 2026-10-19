@@ -24,6 +24,7 @@ import {
 	BoardWaitingOn,
 	BoardWaitingOpSchema,
 	BoardWaitingSchema,
+	type CommsCallRequest,
 	CommsCallRequestSchema,
 	type CommsCallResult,
 	create,
@@ -157,10 +158,12 @@ export class BoardFreshness {
 	#writes = 0;
 	#focusTaskKey = "";
 	#settled = false;
+	#focusKnown = false;
 
 	// Keeps the stored time and focus; a seed landing after this session wrote is stale.
 	seed(_writtenTurn: bigint, writtenAtMs: number, focusTaskKey = ""): void {
 		this.#settled = true;
+		this.#focusKnown = true;
 		if (this.#writes > 0) return;
 		this.#writtenAtMs = writtenAtMs > 0 ? writtenAtMs : undefined;
 		this.#focusTaskKey = focusTaskKey;
@@ -176,11 +179,19 @@ export class BoardFreshness {
 		return this.#settled || this.#writes > 0;
 	}
 
+	/** True once a read or a write returned the board's focus. */
+	focusKnown(): boolean {
+		return this.#focusKnown;
+	}
+
 	noteWrite(turn: bigint, atMs: number, focusTaskKey?: string): void {
 		this.#writtenTurn = turn;
 		this.#writtenAtMs = atMs;
 		this.#writes += 1;
-		if (focusTaskKey !== undefined) this.#focusTaskKey = focusTaskKey;
+		if (focusTaskKey !== undefined) {
+			this.#focusTaskKey = focusTaskKey;
+			this.#focusKnown = true;
+		}
 	}
 
 	wroteThisTurn(turn: bigint): boolean {
@@ -526,44 +537,86 @@ function lifecycleEvent(data: unknown): LifecycleEvent | undefined {
 }
 
 const SETTLED_ID_LIMIT = 256;
+const SHUTDOWN_FLUSH_MS = 5_000;
+
+// An automatic patch with no fields reads the board without changing it.
+function readBoardRequest(
+	callId: string,
+	turnSequence: TurnSequence,
+): CommsCallRequest {
+	return create(CommsCallRequestSchema, {
+		callId: `${callId}-${crypto.randomUUID()}`,
+		call: {
+			case: "updateBoard",
+			value: create(UpdateAgentBoardRequestSchema, {
+				turnSequence: turnSequence.current(),
+				automatic: true,
+			}),
+		},
+	});
+}
+
+function seedFrom(freshness: BoardFreshness, board: AgentBoard): void {
+	freshness.seed(
+		board.writtenTurn,
+		Number(board.writtenAtUnixMs),
+		board.focusTaskKey,
+	);
+}
 
 // Sends at most one automatic patch per 5 s, one at a time, carrying each changed
 // subagent's latest state. A transport failure re-queues; a server refusal drops.
+// The returned detach sends what is pending, bounded by 5 s.
 export function attachSubagentBoardSync(
 	subagentBus: EventBus,
 	broker: CommsBroker,
 	turnSequence: TurnSequence,
 	freshness: BoardFreshness,
 	timer: BatchTimer = realBatchTimer,
-): () => void {
+): () => Promise<void> {
 	const byId = new Map<string, BoardSubagent>();
+	// A subagent's task, fixed at its first send so a focus change cannot strand it.
+	const taskById = new Map<string, string>();
 	// Ids already sent as settled; a late event for one would blank its stored fields.
 	const settled = new Set<string>();
 	const changed = new Set<string>();
 	let cancel: (() => void) | undefined;
-	let inFlight = false;
+	let inFlight: Promise<void> | undefined;
 	let detached = false;
 
 	const arm = (): void => {
 		if (detached || inFlight || cancel !== undefined || changed.size === 0)
 			return;
-		cancel = timer.set(SUBAGENT_SYNC_MS, flush);
+		cancel = timer.set(SUBAGENT_SYNC_MS, () => {
+			cancel = undefined;
+			void flush();
+		});
 	};
 
 	const request = (subagents: BoardSubagent[]) => {
 		const focus = freshness.focusTaskKey();
-		const key = focus.length > 0 ? focus : SUBAGENTS_TASK_KEY;
-		const task = create(BoardTaskPatchSchema, {
-			key,
-			...(key === SUBAGENTS_TASK_KEY ? { title: "Subagents" } : {}),
-			upsertSubagents: subagents,
-		});
+		const byTask = new Map<string, BoardSubagent[]>();
+		for (const s of subagents) {
+			const key =
+				taskById.get(s.id) ?? (focus.length > 0 ? focus : SUBAGENTS_TASK_KEY);
+			taskById.set(s.id, key);
+			byTask.set(key, [...(byTask.get(key) ?? []), s]);
+		}
+		// Only a patch made with no focus names the fallback task; a present title replaces.
+		const titled = focus.length === 0;
+		const tasks = [...byTask].map(([key, upsertSubagents]) =>
+			create(BoardTaskPatchSchema, {
+				key,
+				...(titled && key === SUBAGENTS_TASK_KEY ? { title: "Subagents" } : {}),
+				upsertSubagents,
+			}),
+		);
 		return create(CommsCallRequestSchema, {
 			callId: `subagent-board-sync-${crypto.randomUUID()}`,
 			call: {
 				case: "updateBoard",
 				value: create(UpdateAgentBoardRequestSchema, {
-					upsertTasks: [task],
+					upsertTasks: tasks,
 					turnSequence: turnSequence.current(),
 					automatic: true,
 				}),
@@ -575,26 +628,58 @@ export function attachSubagentBoardSync(
 		for (const s of sent) {
 			if (s.endedAtUnixMs === 0n || byId.get(s.id) !== s) continue;
 			byId.delete(s.id);
+			taskById.delete(s.id);
 			settled.add(s.id);
 			if (settled.size > SETTLED_ID_LIMIT)
 				settled.delete(settled.values().next().value ?? "");
 		}
 	};
 
-	function flush(): void {
-		cancel = undefined;
+	const track = (work: Promise<void>): Promise<void> => {
+		const done = work.finally(() => {
+			inFlight = undefined;
+			arm();
+		});
+		inFlight = done;
+		return done;
+	};
+
+	// A failed startup read leaves the focus unknown, so read it before writing.
+	const readFocus = (): Promise<void> =>
+		track(
+			broker.call(readBoardRequest("subagent-board-read", turnSequence)).then(
+				(result) => {
+					if (result.result.case === "updateBoard") {
+						seedFrom(freshness, boardOf(result, "subagent board read"));
+						return;
+					}
+					// A refused read will not change on retry; fall back to no focus.
+					freshness.seed(0n, 0);
+					// biome-ignore lint/suspicious/noConsole: a refused automatic read is visible in the container log only
+					console.error(
+						"[compass-agent] subagent board read refused:",
+						boardError(result, "subagent board read", "update_board"),
+					);
+				},
+				(error: unknown) => {
+					// biome-ignore lint/suspicious/noConsole: a failed automatic read is visible in the container log only
+					console.error("[compass-agent] subagent board read failed:", error);
+				},
+			),
+		);
+
+	function flush(): Promise<void> | undefined {
 		// Wait for the startup read so the patch lands on the stored focus task.
 		if (!freshness.seeded()) {
 			arm();
-			return;
+			return undefined;
 		}
+		if (!freshness.focusKnown()) return readFocus();
 		const sent = [...changed].flatMap((id) => byId.get(id) ?? []);
 		changed.clear();
-		if (sent.length === 0) return;
-		inFlight = true;
-		broker
-			.call(request(sent))
-			.then(
+		if (sent.length === 0) return undefined;
+		return track(
+			broker.call(request(sent)).then(
 				(result) => {
 					markSent(sent);
 					if (result.result.case !== "updateBoard")
@@ -609,21 +694,21 @@ export function attachSubagentBoardSync(
 					// biome-ignore lint/suspicious/noConsole: a failed automatic patch is visible in the container log only
 					console.error("[compass-agent] subagent board sync failed:", error);
 				},
-			)
-			.finally(() => {
-				inFlight = false;
-				arm();
-			});
+			),
+		);
 	}
 
 	const unsubscribe = subagentBus.on(
 		TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 		(data) => {
 			const event = lifecycleEvent(data);
-			if (event === undefined || settled.has(event.id)) return;
+			if (event === undefined) return;
+			const starting = event.status === "started";
+			// A follow-up run reuses its id and starts again; only late settles are stale.
+			if (starting) settled.delete(event.id);
+			else if (settled.has(event.id)) return;
 			const now = BigInt(Math.trunc(timer.now()));
 			const previous = byId.get(event.id);
-			const starting = event.status === "started";
 			byId.set(
 				event.id,
 				create(BoardSubagentSchema, {
@@ -640,11 +725,27 @@ export function attachSubagentBoardSync(
 		},
 	);
 
-	return () => {
-		detached = true;
+	const drain = async (): Promise<void> => {
+		await inFlight;
+		if (changed.size > 0) await flush();
+		// A read that just learned the focus leaves the write still to send.
+		if (changed.size > 0) await flush();
+	};
+
+	return async () => {
 		unsubscribe();
 		cancel?.();
 		cancel = undefined;
+		detached = true;
+		let stop = (): void => {};
+		const deadline = new Promise<void>((resolve) => {
+			stop = timer.set(SHUTDOWN_FLUSH_MS, resolve);
+		});
+		try {
+			await Promise.race([drain(), deadline]);
+		} finally {
+			stop();
+		}
 	};
 }
 
@@ -657,18 +758,13 @@ export async function seedBoardFreshness(
 	freshness: BoardFreshness,
 	timer: BatchTimer = realBatchTimer,
 ): Promise<void> {
-	const call = broker.call(
-		create(CommsCallRequestSchema, {
-			callId: `board-freshness-seed-${crypto.randomUUID()}`,
-			call: {
-				case: "updateBoard",
-				value: create(UpdateAgentBoardRequestSchema, {
-					turnSequence: turnSequence.current(),
-					automatic: true,
-				}),
-			},
-		}),
-	);
+	// A reply after the deadline still seeds; the deadline only frees the waiters.
+	const call = broker
+		.call(readBoardRequest("board-freshness-seed", turnSequence))
+		.then((result) =>
+			seedFrom(freshness, boardOf(result, "board freshness seed")),
+		);
+	call.catch(() => {});
 	// The unary has no deadline of its own; a hung read must not hold nudges and sync.
 	let cancel = (): void => {};
 	const deadline = new Promise<never>((_, reject) => {
@@ -677,15 +773,7 @@ export async function seedBoardFreshness(
 		);
 	});
 	try {
-		const board = boardOf(
-			await Promise.race([call, deadline]),
-			"board freshness seed",
-		);
-		freshness.seed(
-			board.writtenTurn,
-			Number(board.writtenAtUnixMs),
-			board.focusTaskKey,
-		);
+		await Promise.race([call, deadline]);
 	} finally {
 		cancel();
 	}
