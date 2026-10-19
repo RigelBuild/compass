@@ -664,6 +664,71 @@ func TestGitMirrorRebaseMovesSeededForeignLineInOneReplay(t *testing.T) {
 	}
 }
 
+// One stale expected-old value fails the whole multi-ref transaction, so no ref in the line moves.
+func TestGitMirrorRebaseExpectedOldMismatchMovesNoRef(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	mirrorCommit(t, fixture.work, "base.txt", "base\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+	feature := filepath.Join(fixture.root, "feature")
+	mirrorGit(t, fixture.root, "clone", "--branch", "main", fixture.remote, feature)
+	mirrorGit(t, feature, "switch", "-c", "foreign")
+	mirrorCommit(t, feature, "foreign.txt", "foreign\n")
+	mirrorGit(t, feature, "push", "origin", "foreign")
+	mirrorGit(t, feature, "switch", "-c", "own1")
+	mirrorCommit(t, feature, "own1.txt", "own1\n")
+	mirrorGit(t, feature, "switch", "-c", "own2")
+	mirrorCommit(t, feature, "own2.txt", "own2\n")
+	mainline := filepath.Join(fixture.root, "mainline")
+	mirrorGit(t, fixture.root, "clone", "--branch", "main", fixture.remote, mainline)
+	mirrorGit(t, mainline, "config", "user.name", "Owner")
+	mirrorGit(t, mainline, "config", "user.email", "owner@example.test")
+	onto := mirrorCommit(t, mainline, "main.txt", "main\n")
+	mirrorGit(t, mainline, "push", "origin", "main")
+
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30)
+	own := []string{"refs/heads/own1", "refs/heads/own2"}
+	if _, err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, own...), own); err != nil {
+		t.Fatalf("ApplyBundle: %v", err)
+	}
+	if _, err := m.SeedRef(t.Context(), "owner/repo", "refs/heads/foreign"); err != nil {
+		t.Fatalf("SeedRef: %v", err)
+	}
+	mirror := filepath.Join(fixture.root, "mirrors", "owner", "repo.git")
+	line := []string{"refs/heads/foreign", "refs/heads/own1", "refs/heads/own2"}
+	before := make(map[string]string, len(line))
+	for _, ref := range line {
+		before[ref] = mirrorRef(t, mirror, ref)
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find Git executable: %v", err)
+	}
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "mangled")
+	// Only the first update-ref --stdin (the rebase install) is altered; the rollback runs unchanged.
+	wrapper := "#!/bin/sh\ncase \" $* \" in\n  *' update-ref --stdin '*)\n    if [ ! -f \"$MIRROR_TEST_MARKER\" ]; then\n      : > \"$MIRROR_TEST_MARKER\"\n      sed 's#^update refs/heads/own2 \\([0-9a-f]*\\) [0-9a-f]*$#update refs/heads/own2 \\1 1111111111111111111111111111111111111111#' | \"$MIRROR_TEST_REAL_GIT\" \"$@\"\n      exit $?\n    fi\n    ;;\nesac\nexec \"$MIRROR_TEST_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(wrapper), 0o700); err != nil {
+		t.Fatalf("write Git wrapper: %v", err)
+	}
+	t.Setenv("MIRROR_TEST_REAL_GIT", realGit)
+	t.Setenv("MIRROR_TEST_MARKER", marker)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	heads, conflict, err := m.Rebase(t.Context(), "owner/repo", line, onto)
+	if err == nil || conflict || !strings.Contains(err.Error(), "install rebased refs") {
+		t.Fatalf("Rebase with stale expected-old = (%v, %t, %v), want install error", heads, conflict, err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("update-ref --stdin was never intercepted: %v", err)
+	}
+	for _, ref := range line {
+		if got := mirrorRef(t, mirror, ref); got != before[ref] {
+			t.Fatalf("%s = %s after failed install, want unmoved %s", ref, got, before[ref])
+		}
+	}
+}
+
 func TestGitMirrorReplayFailureIsNotConflict(t *testing.T) {
 	fixture := newMirrorFixture(t)
 	mirrorCommit(t, fixture.work, "main.txt", "main\n")
