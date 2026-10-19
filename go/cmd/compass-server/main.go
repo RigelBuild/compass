@@ -276,6 +276,9 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		TranscriptSafetyValveCapBytes: positiveCap(*f.transcriptSafetyValveCapBytes, os.Getenv("COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES")),
 		UsageEventRetention:           usageRetention,
 		RunnerClustersPath:            firstNonEmpty(*f.runnerClusters, os.Getenv("COMPASS_RUNNER_CLUSTERS")),
+		VCSMirrorDir:                  *f.vcsMirrorDir,
+		VCSMirrorRepoCapBytes:         *f.vcsMirrorRepoCapBytes,
+		VCSMirrorTotalCapBytes:        *f.vcsMirrorTotalCapBytes,
 	}
 	keepListenListener = true
 	return config, false, nil
@@ -325,6 +328,9 @@ type serveFlags struct {
 	publicURL                     *string
 	usageRetention                *string
 	runnerClusters                *string
+	vcsMirrorDir                  *string
+	vcsMirrorRepoCapBytes         *int64
+	vcsMirrorTotalCapBytes        *int64
 }
 
 // registerServeFlags declares the core compass-server flags on the given FlagSet
@@ -409,6 +415,12 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 			"YAML file registering the Kubernetes clusters whose projected ServiceAccount "+
 				"tokens the Runner door accepts. Empty = minted Runner tokens only. "+
 				"Defaults to $COMPASS_RUNNER_CLUSTERS."),
+		vcsMirrorDir: fs.String("vcs-mirror-dir", "",
+			"Directory for per-repository bare Git mirrors. Empty disables server-side Git push."),
+		vcsMirrorRepoCapBytes: fs.Int64("vcs-mirror-repo-cap-bytes", 0,
+			"Maximum bytes for one bare Git mirror; required when --vcs-mirror-dir is set."),
+		vcsMirrorTotalCapBytes: fs.Int64("vcs-mirror-total-cap-bytes", 0,
+			"Maximum bytes across all bare Git mirrors; required when --vcs-mirror-dir is set."),
 	}
 }
 

@@ -134,6 +134,15 @@ type ServeConfig struct {
 	// behavior, zero new requirements on existing deployments. See ForgeConfig,
 	// boardIngestionEnabled, and forgeWritesEnabled.
 	Forge ForgeConfig
+	// VCSMirrorDir enables server-side Git push support when non-empty.
+	VCSMirrorDir string
+	// VCSMirrorRepoCapBytes limits a single bare repository mirror.
+	VCSMirrorRepoCapBytes int64
+	// VCSMirrorTotalCapBytes limits all bare repository mirrors together.
+	VCSMirrorTotalCapBytes int64
+	// Mirror is configured from the GitHub App when VCSMirrorDir is set. An injected
+	// implementation is preserved while the mirror is disabled.
+	Mirror forge.Mirror
 	// OtelEndpoint is the OTLP collector endpoint (OTEL_EXPORTER_OTLP_ENDPOINT);
 	// empty = tracing off. It gates OTel emission on both binaries: when unset,
 	// the bootstrap installs no provider and the RPC interceptors are inert
@@ -899,7 +908,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
-
+	if err := configureVCSMirror(ctx, &cfg, serverResolver, udsListener, listeners); err != nil {
+		return err
+	}
 	// One sessionTail instance is the hub's session-tail sink (writer) and the
 	// service's SubscribeAgentSession source (reader) — a frame the hub relays
 	// fans to that session's stream subscribers.
@@ -2531,4 +2542,36 @@ func listenerAddr(l net.Listener) net.Addr {
 		return nil
 	}
 	return l.Addr()
+}
+func configureVCSMirror(ctx context.Context, cfg *ServeConfig, resolver secrets.Resolver, udsListener net.Listener, listeners boundListeners) error {
+	if cfg.VCSMirrorDir == "" {
+		return nil
+	}
+	if cfg.VCSMirrorRepoCapBytes <= 0 || cfg.VCSMirrorTotalCapBytes <= 0 || cfg.VCSMirrorRepoCapBytes > cfg.VCSMirrorTotalCapBytes {
+		return failStartup(udsListener, listeners, errors.New("vcs mirror requires positive per-repository and total byte caps, with per-repository no larger than total"))
+	}
+	if cfg.Forge.App.AppID == 0 {
+		return failStartup(udsListener, listeners, errors.New("vcs mirror requires the primary github app"))
+	}
+	if err := validateForgeSecret(ctx, resolver, "vcs mirror app key", cfg.Forge.App.AppPrivateKeySecret); err != nil {
+		return failStartup(udsListener, listeners, err)
+	}
+	mirrorHTTP, err := forgeHTTPClient(cfg.Forge.ForgeCAPath)
+	if err != nil {
+		return failStartup(udsListener, listeners, err)
+	}
+	tokens, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
+		AppID:          cfg.Forge.App.AppID,
+		InstallationID: cfg.Forge.App.InstallationID,
+		PrivateKey:     resolveDeclaredSecret(resolver, cfg.Forge.App.AppPrivateKeySecret, "vcs mirror app"),
+		Host:           cfg.Forge.resolved().Host,
+		Client:         mirrorHTTP,
+	})
+	if err != nil {
+		return failStartup(udsListener, listeners, fmt.Errorf("vcs mirror app token source: %w", err))
+	}
+	cfg.Mirror = forge.NewGitMirrorWithHost(cfg.VCSMirrorDir, cfg.Forge.resolved().Host, cfg.VCSMirrorRepoCapBytes, cfg.VCSMirrorTotalCapBytes, func(ctx context.Context, _ string) (string, error) {
+		return tokens.Token(ctx)
+	})
+	return nil
 }
