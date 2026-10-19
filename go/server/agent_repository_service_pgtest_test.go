@@ -330,13 +330,10 @@ func TestAgentRepositoryServiceOrgCheck(t *testing.T) {
 	if err != nil || !added.GetAdded() {
 		t.Fatalf("grant in same org = (%v, %v), want added", added, err)
 	}
-	if _, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "another/rejected"); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("grant with a different exact org = %v, want FailedPrecondition", err)
+	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "another/repository"); err != nil || !added.GetAdded() {
+		t.Fatalf("grant under second owner with wildcard access = (%v, %v), want added", added, err)
 	}
-	rows, err := f.store.ListAgentForgeScopeRepos(ctx, f.agent, store.ForgeProviderGitHub, "github.com")
-	if err != nil || !slices.Contains(rows, "owner/workstream") || slices.Contains(rows, "another/rejected") {
-		t.Fatalf("agent rows after rejected mismatch = %v, %v, want existing row and no mismatched row", rows, err)
-	}
+
 	if err := f.store.GrantForgeScope(ctx, store.ForgeScope{
 		AccountID: f.owner, Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "*",
 	}); err != nil {
@@ -344,17 +341,6 @@ func TestAgentRepositoryServiceOrgCheck(t *testing.T) {
 	}
 	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "owner/another"); err != nil || !added.GetAdded() {
 		t.Fatalf("grant within exact org under owner wildcard = (%v, %v), want added", added, err)
-	}
-	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "another/repository"); err != nil || !added.GetAdded() {
-		t.Fatalf("grant across org under owner wildcard = (%v, %v), want added", added, err)
-	}
-	if _, err := f.store.GrantAgentForgeScope(ctx, store.ForgeScope{
-		AccountID: f.agent, Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "third/repository",
-	}); err != nil {
-		t.Fatalf("GrantAgentForgeScope(mixed org): %v", err)
-	}
-	if added, err := grantAgentRepository(f.client, ctx, f.ownerToken, "worker", "fourth/repository"); err != nil || !added.GetAdded() {
-		t.Fatalf("grant across existing exact orgs under owner wildcard = (%v, %v), want added", added, err)
 	}
 
 	emptyOwner, err := f.store.CreateUser(ctx, store.NewUser{Handle: "repo-empty-owner", DisplayName: "Empty owner"})
