@@ -84,7 +84,7 @@ case "$out" in *"no credential for owner owner-c"*) ;; *) echo "$out"; exit 1 ;;
 			}
 			args = append(args, agentImage, "sh", "-s")
 			cmd := exec.CommandContext(t.Context(), "podman", args...)
-			cmd.Stdin = strings.NewReader(ownerFiles + defaultHosts + "set -eu\n" + tc.setup + tc.check)
+			cmd.Stdin = strings.NewReader(ownerFiles + defaultHosts + "set -eu\n" + tc.setup + "\n" + tc.check)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("owner credential check in %s: %v\n%s", agentImage, err, out)
 			}
