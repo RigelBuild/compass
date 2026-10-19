@@ -55,6 +55,8 @@ export class FakeTransport implements CommsTransport {
 		});
 		return release;
 	}
+	/** Boards a list call returns; defaults to the stored board. */
+	listBoards: AgentBoard[] | undefined;
 	async comms(req: CommsCallRequest): Promise<CommsCallResult> {
 		this.requests.push(req);
 		await this.#gate;
@@ -72,7 +74,7 @@ export class FakeTransport implements CommsTransport {
 				result: {
 					case: "boards",
 					value: create(ListAgentBoardsResponseSchema, {
-						boards: [this.board],
+						boards: this.listBoards ?? [this.board],
 					}),
 				},
 			});
@@ -99,6 +101,7 @@ export class FakeTransport implements CommsTransport {
 			},
 		});
 	}
+	// The server keeps 20 rows per task, dropping the oldest settled first.
 	#apply(patch: BoardTaskPatch): void {
 		let task = this.board.tasks.find((t) => t.key === patch.key);
 		if (task === undefined) {
@@ -106,8 +109,12 @@ export class FakeTransport implements CommsTransport {
 			this.board.tasks.push(task);
 		}
 		if (patch.title !== undefined) task.title = patch.title;
-		for (const s of patch.upsertSubagents)
+		for (const s of patch.upsertSubagents) {
 			task.subagents = [...task.subagents.filter((o) => o.id !== s.id), s];
+			const settled = task.subagents.findIndex((o) => o.endedAtUnixMs !== 0n);
+			if (task.subagents.length > 20 && settled >= 0)
+				task.subagents.splice(settled, 1);
+		}
 	}
 }
 

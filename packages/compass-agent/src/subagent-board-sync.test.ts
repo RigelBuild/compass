@@ -157,10 +157,7 @@ describe("subagent board synchronization", () => {
 		h.emit("b", "completed");
 		await h.window();
 		await h.window();
-		const last = h.writes().at(-1);
-		expect(
-			last?.upsertTasks.map((t) => [t.key, t.upsertSubagents.map((s) => s.id)]),
-		).toEqual([["other", ["a", "b"]]]);
+		await h.window();
 		const other = h.transport.board.tasks.find((t) => t.key === "other");
 		expect(other?.subagents.map((s) => [s.id, s.status])).toEqual([
 			["a", "completed"],
@@ -277,18 +274,67 @@ describe("subagent board synchronization", () => {
 		void h.detach();
 	});
 
-	test("a refused read falls back to a titled subagents task", async () => {
+	test("a refused read drops the pending rows rather than guess a task", async () => {
 		const h = attached("", { seeded: false });
-		h.transport.focus = "stored-focus";
+		h.transport.addTask("subagents", "Mine");
 		h.freshness.seedFailed();
 		h.transport.refuseNext = true;
 		h.emit("a", "started");
 		await h.window();
-		expect(h.writes()[0]?.upsertTasks[0]).toMatchObject({
-			key: "subagents",
-			title: "Subagents",
-		});
+		await h.window();
+		expect(h.writes()).toHaveLength(0);
+		h.emit("b", "started");
+		await h.window();
+		expect(h.writes()[0]?.upsertTasks[0]).toMatchObject({ key: "subagents" });
+		expect(h.writes()[0]?.upsertTasks[0]?.title).toBeUndefined();
 		void h.detach();
+	});
+
+	test("a bad row refused twice drops alone; its batch mates still land", async () => {
+		const h = attached("parent-task");
+		h.emit("a", "completed");
+		h.emit("b", "completed");
+		h.transport.refuseWrites = 2;
+		await h.window();
+		await h.window();
+		await h.window();
+		await h.window();
+		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
+		expect(task?.subagents.map((s) => s.id)).toEqual(["b"]);
+		void h.detach();
+	});
+
+	test("a burst past the server's 20-row cap splits into capped writes", async () => {
+		const h = attached("parent-task");
+		for (let i = 0; i < 25; i++) h.emit(`s${i}`, "started");
+		await h.window();
+		await h.window();
+		expect(
+			h.writes().map((w) => w.upsertTasks[0]?.upsertSubagents.length),
+		).toEqual([20, 5]);
+		void h.detach();
+	});
+
+	test("rows are clipped to the server's field caps; an over-long id is skipped", async () => {
+		const h = attached("parent-task");
+		h.emit("a", "started", `${"d".repeat(250)}\0`);
+		h.emit("i".repeat(65), "started");
+		await h.window();
+		const rows = h.writes()[0]?.upsertTasks[0]?.upsertSubagents ?? [];
+		expect(rows.map((r) => [r.id, [...r.description].length])).toEqual([
+			["a", 200],
+		]);
+		void h.detach();
+	});
+
+	test("a seed landing after a sync read keeps the newer board", () => {
+		const freshness = new BoardFreshness();
+		freshness.noteBoard("new", ["new"]);
+		freshness.forgetBoard();
+		freshness.seed(1n, 5_000, "old", ["old"]);
+		expect(freshness.focusTaskKey()).toBe("new");
+		expect(freshness.boardKnown()).toBe(false);
+		expect(freshness.ageMs(6_000)).toBe(1_000);
 	});
 
 	test("detaching sends a pending write before it resolves", async () => {
@@ -307,6 +353,16 @@ describe("subagent board synchronization", () => {
 		await h.detach();
 		expect(h.writes()).toHaveLength(1);
 		expect(h.writes()[0]?.upsertTasks[0]?.key).toBe("parent-task");
+	});
+
+	test("detaching sends every capped batch and a refused row's retry", async () => {
+		const h = attached("parent-task");
+		for (let i = 0; i < 25; i++) h.emit(`s${i}`, "completed");
+		h.transport.refuseWrites = 1;
+		await h.detach();
+		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
+		expect(task?.subagents).toHaveLength(20);
+		expect(h.writes().length).toBeGreaterThanOrEqual(3);
 	});
 
 	test("a detach that times out during the board read sends no write later", async () => {

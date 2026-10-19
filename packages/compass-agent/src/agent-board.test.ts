@@ -6,8 +6,15 @@ import { board, FakeTransport, sequence } from "./board-test-fakes";
 import { CommsBroker } from "./comms";
 import {
 	AgentBoardSchema,
+	BoardAskSchema,
+	BoardHaltKind,
+	BoardHaltSchema,
+	BoardMirrorState,
+	BoardPrGate,
+	BoardRefSchema,
 	BoardSubagentSchema,
 	BoardTaskSchema,
+	BoardTaskState,
 	BoardWaitingOn,
 	BoardWaitingSchema,
 	create,
@@ -137,5 +144,114 @@ describe("compass_boards", () => {
 		expect(text.split(`</board ${fence}>`)).toHaveLength(2);
 		expect(text.split(`[task ${fence}]`)).toHaveLength(2);
 		expect(transport.requests[0]?.call.case).toBe("boards");
+	});
+
+	test("maps every filter onto the list request", async () => {
+		const transport = new FakeTransport(board());
+		const t = tool(new CommsBroker(transport), "compass_boards");
+		await exec(t, "tc-filter", {
+			agents: ["a", "b"],
+			query: "deploy",
+			ref: "RIG-9",
+			waiting_on: "operator",
+			state: "blocked",
+			halt: "awaiting-user",
+			limit: 7,
+		});
+		const request = transport.requests[0];
+		if (request?.call.case !== "boards") throw new Error("expected boards");
+		expect(request.call.value).toMatchObject({
+			agentHandles: ["a", "b"],
+			query: "deploy",
+			ref: "RIG-9",
+			waitingOn: BoardWaitingOn.OPERATOR,
+			state: BoardTaskState.BLOCKED,
+			halt: BoardHaltKind.AWAITING_USER,
+			limit: 7,
+		});
+	});
+
+	test("renders halt, refs, asks and untracked refs with the fence", async () => {
+		const transport = new FakeTransport(
+			create(AgentBoardSchema, {
+				handle: "worker",
+				focusTaskKey: "k",
+				stale: true,
+				halt: create(BoardHaltSchema, {
+					kind: BoardHaltKind.BLOCKED,
+					ref: "RIG-5",
+					reason: "needs a grant",
+				}),
+				refs: [
+					create(BoardRefSchema, {
+						ref: "RigelBuild/compass#7",
+						gate: BoardPrGate.AWAITING_REVIEW,
+						title: "Board tools",
+					}),
+				],
+				asks: [
+					create(BoardAskSchema, {
+						ref: "RIG-5",
+						header: "Which option?",
+						mirrorState: BoardMirrorState.DONE,
+					}),
+				],
+				untrackedRefs: ["RIG-8", "RigelBuild/docs#2"],
+			}),
+		);
+		const t = tool(new CommsBroker(transport), "compass_boards");
+		const result = await exec(t, "tc-list", {});
+		const text =
+			result.content[0]?.type === "text" ? result.content[0].text : "";
+		const fence = /<board (\w{8}) /.exec(text)?.[1];
+		if (fence === undefined) throw new Error("no fence");
+		expect(text).toContain(`stale="true" focus="k">`);
+		expect(text).toContain(
+			`[halt ${fence}] blocked ref="RIG-5": needs a grant`,
+		);
+		expect(text).toContain(
+			`[ref ${fence}] ref="RigelBuild/compass#7" gate=awaiting-review: Board tools`,
+		);
+		expect(text).toContain(
+			`[ask ${fence}] open mirror=done ref="RIG-5": Which option?`,
+		);
+		expect(text).toContain(`[untracked ${fence}] RIG-8,RigelBuild/docs#2`);
+	});
+
+	test("an empty result renders a none marker", async () => {
+		const transport = new FakeTransport(board());
+		const t = tool(new CommsBroker(transport), "compass_boards");
+		transport.listBoards = [];
+		const result = await exec(t, "tc-none", {});
+		const text =
+			result.content[0]?.type === "text" ? result.content[0].text : "";
+		expect(text).toMatch(/\n\[none \w{8}\]$/);
+	});
+});
+
+describe("board tool errors", () => {
+	test("a refused update throws with the server code and leaves freshness alone", async () => {
+		const transport = new FakeTransport(board());
+		transport.refuseNext = true;
+		const freshness = new BoardFreshness();
+		const t = createAgentBoardTools(
+			new CommsBroker(transport),
+			sequence(),
+			freshness,
+		)[0];
+		if (t === undefined) throw new Error("missing tool");
+		await expect(exec(t, "tc-r", { focus: "k" })).rejects.toThrow(
+			"compass_update_board failed: invalid_argument: task cap",
+		);
+		expect(freshness.writeCount()).toBe(0);
+	});
+
+	test("a refused list throws with the server code", async () => {
+		const transport = new FakeTransport(board());
+		transport.refuseNext = true;
+		const t = tool(new CommsBroker(transport), "compass_boards");
+		await expect(exec(t, "tc-r", {})).rejects.toThrow(
+			"compass_boards failed: invalid_argument: task cap",
+		);
 	});
 });

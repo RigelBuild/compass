@@ -20,9 +20,12 @@ export class BoardFreshness {
 	#focusTaskKey = "";
 	// Undefined until a read or write returned the board.
 	#taskKeys: ReadonlySet<string> | undefined;
+	// Any later read or write is newer than the startup seed, even after a forget.
+	#boardNoted = false;
 	#settled = false;
 
-	// Keeps the stored time and tasks; a seed landing after this session wrote is stale.
+	// Keeps the stored time and tasks; a seed landing after any later read or write is
+	// stale, and only this session's writes set the time.
 	seed(
 		_writtenTurn: bigint,
 		writtenAtMs: number,
@@ -30,8 +33,9 @@ export class BoardFreshness {
 		taskKeys: readonly string[] = [],
 	): void {
 		this.#settled = true;
-		if (this.#writes > 0) return;
-		this.#writtenAtMs = writtenAtMs > 0 ? writtenAtMs : undefined;
+		if (this.#writes === 0)
+			this.#writtenAtMs = writtenAtMs > 0 ? writtenAtMs : undefined;
+		if (this.#boardNoted) return;
 		this.noteBoard(focusTaskKey, taskKeys);
 	}
 
@@ -60,6 +64,7 @@ export class BoardFreshness {
 
 	/** Records the focus and task keys of a board the server returned. */
 	noteBoard(focusTaskKey: string, taskKeys: readonly string[]): void {
+		this.#boardNoted = true;
 		this.#focusTaskKey = focusTaskKey;
 		this.#taskKeys = new Set(taskKeys);
 	}

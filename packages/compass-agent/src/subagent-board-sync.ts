@@ -59,6 +59,15 @@ function lifecycleEvent(data: unknown): LifecycleEvent | undefined {
 	};
 }
 
+// Server caps (store.MaxBoardSubagents and the subagent field limits), in runes.
+const MAX_ROWS_PER_WRITE = 20;
+const ID_CHARS = 64;
+const AGENT_CHARS = 64;
+const DESCRIPTION_CHARS = 200;
+
+const clip = (text: string, max: number): string =>
+	[...text.replaceAll("\0", "")].slice(0, max).join("");
+
 function logSync(what: string, error: unknown): void {
 	// biome-ignore lint/suspicious/noConsole: automatic board sync failures are visible in the container log only
 	console.error(`[compass-agent] subagent board ${what}:`, error);
@@ -134,8 +143,8 @@ export function attachSubagentBoardSync(
 		});
 	};
 
-	// A failed transport read keeps the rows pending; a refused or empty read falls
-	// back to no focus, since a retry would get the same answer.
+	// A failed transport read keeps the rows pending. A refused read drops them: the
+	// server would refuse the write too, and guessing the tasks could rename one.
 	const readBoard = async (): Promise<boolean> => {
 		let result: CommsCallResult;
 		try {
@@ -151,12 +160,12 @@ export function attachSubagentBoardSync(
 				? result.result.value.board
 				: undefined;
 		if (board === undefined) {
-			freshness.noteBoard("", []);
+			changed.clear();
 			logSync(
 				"read refused",
 				boardError(result, "subagent board read", "update_board"),
 			);
-			return true;
+			return false;
 		}
 		freshness.noteBoard(board.focusTaskKey, taskKeysOf(board));
 		return true;
@@ -215,11 +224,22 @@ export function attachSubagentBoardSync(
 		for (const s of sent) forget(s);
 	};
 
+	// Rows refused once retry alone, so a second refusal drops only the bad row.
+	const nextBatch = (): BoardSubagent[] => {
+		const ids = [...changed];
+		const retry = ids.find((id) => refused.has(id));
+		const batch = (retry === undefined ? ids : [retry]).slice(
+			0,
+			MAX_ROWS_PER_WRITE,
+		);
+		for (const id of batch) changed.delete(id);
+		return batch.flatMap((id) => byId.get(id) ?? []);
+	};
+
 	const send = async (): Promise<void> => {
 		if (!freshness.boardKnown() && !(await readBoard())) return;
 		if (closed) return;
-		const sent = [...changed].flatMap((id) => byId.get(id) ?? []);
-		changed.clear();
+		const sent = nextBatch();
 		if (sent.length > 0) await write(sent);
 	};
 
@@ -238,7 +258,13 @@ export function attachSubagentBoardSync(
 		TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 		(data) => {
 			const event = lifecycleEvent(data);
-			if (event === undefined) return;
+			// The id keys the server merge, so one it would refuse cannot be clipped.
+			if (
+				event === undefined ||
+				event.id.includes("\0") ||
+				[...event.id].length > ID_CHARS
+			)
+				return;
 			const starting = event.status === "started";
 			// A follow-up run reuses its id and starts again; only late settles are stale.
 			if (starting) settled.delete(event.id);
@@ -249,8 +275,11 @@ export function attachSubagentBoardSync(
 				event.id,
 				create(BoardSubagentSchema, {
 					id: event.id,
-					agent: event.agent,
-					description: event.description ?? previous?.description ?? "",
+					agent: clip(event.agent, AGENT_CHARS),
+					description: clip(
+						event.description ?? previous?.description ?? "",
+						DESCRIPTION_CHARS,
+					),
 					status: event.status,
 					startedAtUnixMs: starting ? now : (previous?.startedAtUnixMs ?? 0n),
 					endedAtUnixMs: starting ? 0n : now,
@@ -262,9 +291,15 @@ export function attachSubagentBoardSync(
 	);
 
 	// Skips the seed gate: at shutdown the read happens here if the seed has not landed.
+	// Each pass sends one batch, or one row retrying alone after a refusal; the budget
+	// covers both, so a failing transport cannot spin until the deadline.
 	const drain = async (): Promise<void> => {
 		await inFlight;
-		if (changed.size > 0 && !closed) await run();
+		let passes = 2 * changed.size + 2;
+		while (changed.size > 0 && passes > 0 && !closed) {
+			passes -= 1;
+			await run();
+		}
 	};
 
 	return async () => {
