@@ -625,9 +625,9 @@ jobs:
 
       - name: Compose, guard, push, and verify the image index
         env:
+          IMAGE_REPO: ghcr.io/rigelbuild/compass-agent
           GH_SHA: ${{ github.sha }}
         run: bun tools/agent-image-index/index.ts
-
       - name: Verify agent package is public
         run: bun tools/runner-image/assert-public.ts --ref "ghcr.io/rigelbuild/compass-agent:git-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
 
@@ -1543,11 +1543,25 @@ jobs:
         run: |
           set -euo pipefail
           store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
           nix build --no-link "$store"
           echo "$store/bin" >>"$GITHUB_PATH"
-          for store in $(nix build --no-link --print-out-paths -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
-            if [ -x "$store/bin/skopeo" ]; then echo "$store/bin" >>"$GITHUB_PATH"; break; fi
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
           done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
       - name: Pin registry auth and log in
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1760,11 +1774,25 @@ jobs:
         run: |
           set -euo pipefail
           store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
           nix build --no-link "$store"
           echo "$store/bin" >>"$GITHUB_PATH"
-          for store in $(nix build --no-link --print-out-paths -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
-            if [ -x "$store/bin/skopeo" ]; then echo "$store/bin" >>"$GITHUB_PATH"; break; fi
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
           done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
       - name: Pin registry auth and log in
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1785,12 +1813,22 @@ jobs:
     name: tag-main-images
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    needs: [publish-runner-index, publish-server-index]
+    needs:
+      - publish-runner-gate
+      - publish-runner-image
+      - publish-runner-index
+      - publish-server-gate
+      - publish-server-image
+      - publish-server-index
     if: >-
       !cancelled() &&
       contains(fromJSON('["push"]'), github.event_name) &&
       contains(fromJSON('["refs/heads/main"]'), github.ref) &&
+      needs.publish-runner-gate.result == 'success' &&
+      contains(fromJSON('["success", "skipped"]'), needs.publish-runner-image.result) &&
       contains(fromJSON('["success", "skipped"]'), needs.publish-runner-index.result) &&
+      needs.publish-server-gate.result == 'success' &&
+      contains(fromJSON('["success", "skipped"]'), needs.publish-server-image.result) &&
       contains(fromJSON('["success", "skipped"]'), needs.publish-server-index.result)
     permissions:
       contents: read
@@ -2201,11 +2239,25 @@ jobs:
         run: |
           set -euo pipefail
           store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
           nix build --no-link "$store"
           echo "$store/bin" >>"$GITHUB_PATH"
-          for store in $(nix build --no-link --print-out-paths -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
-            if [ -x "$store/bin/skopeo" ]; then echo "$store/bin" >>"$GITHUB_PATH"; break; fi
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
           done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
       - name: Pin registry auth and log in
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2413,11 +2465,25 @@ jobs:
         run: |
           set -euo pipefail
           store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
           nix build --no-link "$store"
           echo "$store/bin" >>"$GITHUB_PATH"
-          for store in $(nix build --no-link --print-out-paths -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
-            if [ -x "$store/bin/skopeo" ]; then echo "$store/bin" >>"$GITHUB_PATH"; break; fi
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
           done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
       - name: Pin registry auth and log in
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

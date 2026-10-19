@@ -1,14 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { publishImageIndex } from "./index.ts";
 
 const SHA = "abcdef0123456789abcdef0123456789abcdef01";
 const SHA12 = SHA.slice(0, 12);
-const AMD64 = `sha256:${"a".repeat(64)}`;
-const ARM64 = `sha256:${"b".repeat(64)}`;
 const AUTH = "/tmp/auth.json";
 const TEMP = mkdtempSync(join(tmpdir(), "agent-image-index-"));
 const REPO = "ghcr.io/rigelbuild/compass-agent";
@@ -16,6 +14,61 @@ function imageRef(repo: string): string {
 	return `docker://${repo}`;
 }
 const REF = imageRef(REPO);
+
+function localDigest(raw: string): string {
+	return `sha256:${createHash("sha256").update(raw).digest("hex")}`;
+}
+
+const EMPTY_CONFIG_DIGEST = localDigest("{}");
+const AMD64_RAW = JSON.stringify({
+	schemaVersion: 2,
+	mediaType: "application/vnd.oci.image.manifest.v1+json",
+	config: {
+		mediaType: "application/vnd.oci.image.config.v1+json",
+		digest: `sha256:${"c".repeat(64)}`,
+		size: 1,
+	},
+	layers: [],
+});
+const ARM64_RAW = JSON.stringify({
+	schemaVersion: 2,
+	mediaType: "application/vnd.oci.image.manifest.v1+json",
+	config: {
+		mediaType: "application/vnd.oci.image.config.v1+json",
+		digest: `sha256:${"d".repeat(64)}`,
+		size: 1,
+	},
+	layers: [],
+});
+const AMD64 = localDigest(AMD64_RAW);
+const ARM64 = localDigest(ARM64_RAW);
+
+const GUEST_AMD64_RAW = JSON.stringify({
+	schemaVersion: 2,
+	mediaType: "application/vnd.oci.image.manifest.v1+json",
+	artifactType: "application/vnd.compass.guest-image.v1",
+	config: {
+		mediaType: "application/vnd.oci.empty.v1+json",
+		digest: EMPTY_CONFIG_DIGEST,
+		size: 2,
+	},
+	layers: [],
+	annotations: { "org.compass.test.arch": "amd64" },
+});
+const GUEST_ARM64_RAW = JSON.stringify({
+	schemaVersion: 2,
+	mediaType: "application/vnd.oci.image.manifest.v1+json",
+	artifactType: "application/vnd.compass.guest-image.v1",
+	config: {
+		mediaType: "application/vnd.oci.empty.v1+json",
+		digest: EMPTY_CONFIG_DIGEST,
+		size: 2,
+	},
+	layers: [],
+	annotations: { "org.compass.test.arch": "arm64" },
+});
+const GUEST_AMD64 = localDigest(GUEST_AMD64_RAW);
+const GUEST_ARM64 = localDigest(GUEST_ARM64_RAW);
 
 const LOCAL_RAW = JSON.stringify({
 	mediaType: "application/vnd.oci.image.index.v1+json",
@@ -28,21 +81,17 @@ const GUEST_RAW = JSON.stringify({
 	mediaType: "application/vnd.oci.image.index.v1+json",
 	manifests: [
 		{
-			digest: AMD64,
+			digest: GUEST_AMD64,
 			artifactType: "application/vnd.compass.guest-image.v1",
 			platform: { os: "linux", architecture: "amd64" },
 		},
 		{
-			digest: ARM64,
+			digest: GUEST_ARM64,
 			artifactType: "application/vnd.compass.guest-image.v1",
 			platform: { os: "linux", architecture: "arm64" },
 		},
 	],
 });
-
-function localDigest(raw: string): string {
-	return `sha256:${createHash("sha256").update(raw).digest("hex")}`;
-}
 
 const DIFFERENT_RAW = JSON.stringify({
 	mediaType: "application/vnd.oci.image.index.v1+json",
@@ -59,6 +108,7 @@ type FakeOptions = {
 	memberConfigMismatch?: boolean;
 	repo?: string;
 	emptyMemberConfig?: boolean;
+	rejectArtifactInspection?: boolean;
 };
 
 type FakeCommandResult = { exitCode: number; stdout: string; stderr: string };
@@ -155,23 +205,71 @@ function fakeRawInspection(
 	);
 }
 
+function isArtifactInspectionFailure(
+	command: string[],
+	options: FakeOptions,
+	tag: string,
+): boolean {
+	const guestRepo = (options.repo ?? REPO).endsWith("compass-guest-image");
+	const artifactRef =
+		guestRepo &&
+		(tag.endsWith("-amd64") ||
+			tag.endsWith("-arm64") ||
+			tag.endsWith(GUEST_AMD64) ||
+			tag.endsWith(GUEST_ARM64));
+	return (
+		options.rejectArtifactInspection === true &&
+		artifactRef &&
+		(command.includes("--format") || command.includes("--config"))
+	);
+}
+
+function fakeConfigInspection(
+	tag: string,
+	options: FakeOptions,
+): FakeCommandResult {
+	const arch = tag.endsWith(AMD64) ? "amd64" : "arm64";
+	const configArch =
+		options.memberConfigMismatch && arch === "amd64" ? "arm64" : arch;
+	return fakeResult(
+		options.emptyMemberConfig
+			? "{}"
+			: JSON.stringify({ os: "linux", architecture: configArch }),
+	);
+}
+
+function fakeRawMemberInspection(
+	tag: string,
+	options: FakeOptions,
+): FakeCommandResult | undefined {
+	if (!tag.endsWith("-amd64") && !tag.endsWith("-arm64")) return undefined;
+	const isGuest = (options.repo ?? REPO).endsWith("compass-guest-image");
+	if (tag.endsWith("-amd64"))
+		return fakeResult(isGuest ? GUEST_AMD64_RAW : AMD64_RAW);
+	return fakeResult(isGuest ? GUEST_ARM64_RAW : ARM64_RAW);
+}
+
 function handleSkopeoCommand(
 	command: string[],
 	options: FakeOptions,
 	state: { immutableRaw: string; latestRaw: string },
 ): FakeCommandResult {
 	const tag = command.at(-1) ?? "";
-	if (command.includes("--format")) {
-		return fakeResult(tag.endsWith("-amd64") ? AMD64 : ARM64);
-	}
-	if (command.includes("--config")) {
-		const arch = tag.endsWith(AMD64) ? "amd64" : "arm64";
-		const configArch =
-			options.memberConfigMismatch && arch === "amd64" ? "arm64" : arch;
-		if (options.emptyMemberConfig) return fakeResult("{}");
+	if (isArtifactInspectionFailure(command, options, tag)) {
 		return fakeResult(
-			JSON.stringify({ os: "linux", architecture: configArch }),
+			"",
+			1,
+			"skopeo inspect cannot inspect OCI artifact members as images",
 		);
+	}
+	if (command.includes("--format"))
+		return fakeResult(tag.endsWith("-amd64") ? AMD64 : ARM64);
+	if (command.includes("--config")) return fakeConfigInspection(tag, options);
+	if (command.includes("--raw")) {
+		const member = fakeRawMemberInspection(tag, options);
+		if (member) return member;
+		if (tag.endsWith(GUEST_AMD64)) return fakeResult(GUEST_AMD64_RAW);
+		if (tag.endsWith(GUEST_ARM64)) return fakeResult(GUEST_ARM64_RAW);
 	}
 	return fakeRawInspection(tag, options, state);
 }
@@ -347,17 +445,60 @@ describe("publishImageIndex latest ownership", () => {
 		expect(fake.latestPushes).toBe(0);
 	});
 });
+test("writes the verified digest-pinned image to the step summary", async () => {
+	const summaryPath = join(TEMP, "step-summary.md");
+	const previousSummary = process.env.GITHUB_STEP_SUMMARY;
+	process.env.GITHUB_STEP_SUMMARY = summaryPath;
+	try {
+		await publishImageIndex(
+			{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			makeRunner().run,
+		);
+		expect(readFileSync(summaryPath, "utf8")).toBe(
+			`compass-agent image: \`${REPO}@${localDigest(LOCAL_RAW)}\`\n`,
+		);
+	} finally {
+		if (previousSummary === undefined) delete process.env.GITHUB_STEP_SUMMARY;
+		else process.env.GITHUB_STEP_SUMMARY = previousSummary;
+	}
+});
 
 afterAll(() => rmSync(TEMP, { recursive: true, force: true }));
 
-test("declares both platform descriptors when composing the index", async () => {
+test("raw artifact digest includes every returned byte", async () => {
 	const repo = "ghcr.io/rigelbuild/compass-guest-image";
 	const fake = makeRunner({
 		repo,
 		localIndex: GUEST_RAW,
 		emptyMemberConfig: true,
+		rejectArtifactInspection: true,
 	});
-	await publishImageIndex(
+	const run = fake.run;
+	fake.run = async (command) => {
+		const result = await run(command);
+		return command[0] === "skopeo" &&
+			command.includes("--raw") &&
+			(command.at(-1)?.endsWith("-amd64") || command.at(-1)?.endsWith("-arm64"))
+			? { ...result, stdout: `${result.stdout}\n\n` }
+			: result;
+	};
+	await expect(
+		publishImageIndex(
+			{ repo, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			fake.run,
+		),
+	).rejects.toThrow("index member digest set differs");
+});
+
+test("resolves and verifies OCI artifact members through raw manifests", async () => {
+	const repo = "ghcr.io/rigelbuild/compass-guest-image";
+	const fake = makeRunner({
+		repo,
+		localIndex: GUEST_RAW,
+		emptyMemberConfig: true,
+		rejectArtifactInspection: true,
+	});
+	const result = await publishImageIndex(
 		{ repo, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 		fake.run,
 	);
@@ -376,9 +517,23 @@ test("declares both platform descriptors when composing the index", async () => 
 		"--arch",
 		"amd64",
 		`localhost/compass-guest-image:${SHA12}`,
-		`${imageRef(repo)}@${AMD64}`,
+		`${imageRef(repo)}@${GUEST_AMD64}`,
 	]);
-	expect(adds[1]).toContain("arm64");
+	expect(adds[1]).toContain(`${imageRef(repo)}@${GUEST_ARM64}`);
+	expect(
+		fake.commands.some(
+			(command) =>
+				command[0] === "skopeo" &&
+				(command.includes("--format") || command.includes("--config")) &&
+				(command.at(-1)?.endsWith("-amd64") ||
+					command.at(-1)?.endsWith("-arm64") ||
+					command.at(-1)?.endsWith(GUEST_AMD64) ||
+					command.at(-1)?.endsWith(GUEST_ARM64)),
+		),
+	).toBe(false);
+	expect(result.stdout).toContain(
+		`verified OCI index ${localDigest(GUEST_RAW)}: linux/amd64,linux/arm64; :latest matches :git-${SHA12}`,
+	);
 });
 
 describe("registry authentication boundaries", () => {
@@ -422,22 +577,6 @@ describe("registry authentication boundaries", () => {
 describe("immutable tag guard", () => {
 	test("matching immutable raw digest skips the immutable push", async () => {
 		const fake = makeRunner({ immutable: "equal" });
-		await publishImageIndex(
-			{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
-			fake.run,
-		);
-		expect(fake.immutablePushes).toBe(0);
-	});
-
-	test("trailing newlines on raw inspect output do not change the digest", async () => {
-		const fake = makeRunner({ immutable: "equal" });
-		const run = fake.run;
-		fake.run = async (command) => {
-			const result = await run(command);
-			return command[0] === "skopeo" && command.includes("--raw")
-				? { ...result, stdout: `${result.stdout}\n\n` }
-				: result;
-		};
 		await publishImageIndex(
 			{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 			fake.run,

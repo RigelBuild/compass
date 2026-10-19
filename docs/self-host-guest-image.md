@@ -56,10 +56,8 @@ non-runnable OCI artifact. It has three layers (kernel, rootfs, initrd) and a
 sha256 annotation per layer. Each push to `main` that changes the guest closure
 publishes a `:git-<sha12>` tag.
 
-Deploy by digest, never by tag. The trusted source for the digest is the
-`publish-guest-image` job in `.github/workflows/release.yml`: its step summary
-prints `guest image: ghcr.io/rigelbuild/compass-guest-image@sha256:<hex>`. Use
-that reference.
+Deploy by digest, never by tag. Take the pin from the `publish-guest-index`
+job summary line `guest image: \`<repo>@<index digest>\``.
 
 ```console
 $ compass-stack up \
@@ -144,28 +142,42 @@ and point `--guest-dir` at it.
 ### Option A: copy a materialised artifact
 
 On a connected host, run `compass-stack up --guest-artifact …` once with the
-digest from the publish job summary, as above. Then copy
+index digest from the publish job summary. Then copy
 `<state-dir>/guest-image/<hex>/` as it is. It holds the four files `--guest-dir`
 needs, and `up` wrote its `manifest.sha256` only after the blobs matched the
 pinned digest.
 
-The directory also holds `manifest.oci.json`, the raw artifact manifest. On the
-receiving host, check it against the trusted digest from the publish job
-summary, then check each asset against its layer descriptor. Do not trust the
-copied `manifest.sha256` alone: someone who replaces an asset can replace it
-too.
+The raw `manifest.oci.json` may be an OCI index. On the receiving host, check
+its sha256 against the pin. If it is an index, also verify
+`manifest.selected.oci.json` against the host-architecture member, then check
+the layers in that selected manifest. Do not trust the copied `manifest.sha256`
+alone.
 
 ```bash
 set -euo pipefail
 dir=/var/lib/compass-guest/<sha12>
-digest=<hex from the publish job summary, without sha256:>
+digest=<index digest hex from the publish job summary, without sha256:>
 test "$(sha256sum < "$dir/manifest.oci.json" | cut -d' ' -f1)" = "$digest"
+selected="$dir/manifest.oci.json"
+if jq -e '.mediaType == "application/vnd.oci.image.index.v1+json"' \
+  "$dir/manifest.oci.json" >/dev/null; then
+  case "$(uname -m)" in
+    x86_64) arch=amd64 ;;
+    aarch64) arch=arm64 ;;
+    *) echo "unsupported host architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+  member=$(jq -er --arg arch "$arch" \
+    '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest] | if length == 1 then .[0] else error("expected one host-architecture member") end' \
+    "$dir/manifest.oci.json")
+  test "$(sha256sum < "$dir/manifest.selected.oci.json" | cut -d' ' -f1)" = "${member#sha256:}"
+  selected="$dir/manifest.selected.oci.json"
+fi
 jq -r '.layers
   | "\(.[0].digest[7:])  kernel\n\(.[1].digest[7:])  rootfs.erofs\n\(.[2].digest[7:])  initrd"' \
-  "$dir/manifest.oci.json" | (cd "$dir" && sha256sum -c -)
+  "$selected" | (cd "$dir" && sha256sum -c -)
 ```
 
-Both steps must pass. Layer order is fixed: kernel, rootfs, initrd.
+All digest and layer checks must pass. Layer order is fixed: kernel, rootfs, initrd.
 
 ### Option B: extract from the Runner image
 

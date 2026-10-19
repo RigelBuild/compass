@@ -12,6 +12,7 @@ const workflow = Bun.YAML.parse(
 		string,
 		{
 			needs?: string | string[];
+			if?: string;
 			outputs?: Record<string, string>;
 			strategy?: {
 				matrix?: { include?: { arch: string; runner: string }[] };
@@ -72,12 +73,11 @@ describe("P6 paired main tags", () => {
 			),
 		).toEqual([source]);
 	});
-	test("tag-main-images waits for both publishers and checks out full history", () => {
+	test("tag-main-images waits for both indexes and checks out full history", () => {
 		const job = workflow.jobs["tag-main-images"];
-		expect(needsList(job)).toEqual([
-			"publish-runner-index",
-			"publish-server-index",
-		]);
+		expect(needsList(job)).toEqual(
+			expect.arrayContaining(["publish-runner-index", "publish-server-index"]),
+		);
 		expect(job?.permissions).toEqual({ contents: "read", packages: "write" });
 		expect(job?.concurrency).toEqual({
 			group: "tag-main-images",
@@ -132,11 +132,33 @@ describe("P7 multi-arch release publishers", () => {
 			expect(gate?.outputs).toBeDefined();
 		}
 	});
-	test("tag-main-images waits on the runner and server indexes", () => {
-		expect(needsList(workflow.jobs["tag-main-images"])).toEqual([
+	test("tag-main-images needs all publisher stages and gates their results", () => {
+		const job = workflow.jobs["tag-main-images"];
+		expect(needsList(job)).toEqual([
+			"publish-runner-gate",
+			"publish-runner-image",
 			"publish-runner-index",
+			"publish-server-gate",
+			"publish-server-image",
 			"publish-server-index",
 		]);
+		expect(job?.if).toContain("!cancelled()");
+		expect(job?.if).toContain(
+			"contains(fromJSON('[\"push\"]'), github.event_name)",
+		);
+		expect(job?.if).toContain(
+			"contains(fromJSON('[\"refs/heads/main\"]'), github.ref)",
+		);
+		for (const lane of ["runner", "server"]) {
+			expect(job?.if).toContain(
+				`needs.publish-${lane}-gate.result == 'success'`,
+			);
+			for (const stage of ["image", "index"]) {
+				expect(job?.if).toContain(
+					`contains(fromJSON('[\"success\", \"skipped\"]'), needs.publish-${lane}-${stage}.result)`,
+				);
+			}
+		}
 	});
 });
 

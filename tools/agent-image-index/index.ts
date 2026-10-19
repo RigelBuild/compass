@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 
 export type CommandResult = {
 	exitCode: number;
@@ -78,7 +78,7 @@ async function runChecked(
 }
 
 function sha256(raw: string): string {
-	return `sha256:${createHash("sha256").update(raw.replace(/\n+$/, "")).digest("hex")}`;
+	return `sha256:${createHash("sha256").update(raw).digest("hex")}`;
 }
 
 function requireDigest(digest: string, message: string): void {
@@ -166,14 +166,16 @@ async function resolveArchDigests(
 	sha12: string,
 ): Promise<[string, string]> {
 	const ref = imageRef(repo);
-	const amd64Tag = `${ref}:git-${sha12}-amd64`;
-	const arm64Tag = `${ref}:git-${sha12}-arm64`;
-	const amd64Digest = (
-		await runChecked(run, inspectCommand(amd64Tag, "--format", "{{.Digest}}"))
-	).trim();
-	const arm64Digest = (
-		await runChecked(run, inspectCommand(arm64Tag, "--format", "{{.Digest}}"))
-	).trim();
+	const amd64Raw = await runChecked(
+		run,
+		inspectCommand(`${ref}:git-${sha12}-amd64`, "--raw"),
+	);
+	const arm64Raw = await runChecked(
+		run,
+		inspectCommand(`${ref}:git-${sha12}-arm64`, "--raw"),
+	);
+	const amd64Digest = sha256(amd64Raw);
+	const arm64Digest = sha256(arm64Raw);
 	for (const digest of [amd64Digest, arm64Digest]) {
 		requireDigest(digest, "invalid per-arch manifest digest");
 	}
@@ -325,14 +327,43 @@ async function findNewerIndex(
 	return "";
 }
 
-async function verifyMemberConfig(
-	repo: string,
+async function verifyArtifactConfig(
+	memberRef: string,
+	member: IndexMember,
+	run: CommandRunner,
+): Promise<void> {
+	const manifestRaw = await runChecked(run, inspectCommand(memberRef, "--raw"));
+	let manifest: unknown;
+	try {
+		manifest = JSON.parse(manifestRaw);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		throw new Error(
+			`invalid artifact manifest for ${member.digest}: ${detail}`,
+		);
+	}
+	if (!isRecord(manifest) || !isRecord(manifest.config)) {
+		throw new Error(`invalid artifact config descriptor for ${member.digest}`);
+	}
+	const config = manifest.config;
+	if (
+		manifest.artifactType !== member.artifactType ||
+		config.mediaType !== "application/vnd.oci.empty.v1+json" ||
+		config.digest !== sha256("{}") ||
+		config.size !== 2
+	) {
+		throw new Error(`invalid artifact config descriptor for ${member.digest}`);
+	}
+}
+
+async function verifyImageMemberConfig(
+	memberRef: string,
 	member: IndexMember,
 	run: CommandRunner,
 ): Promise<void> {
 	const configRaw = await runChecked(
 		run,
-		inspectCommand(`${imageRef(repo)}@${member.digest}`, "--config"),
+		inspectCommand(memberRef, "--config"),
 	);
 	let config: unknown;
 	try {
@@ -341,16 +372,8 @@ async function verifyMemberConfig(
 		const detail = error instanceof Error ? error.message : String(error);
 		throw new Error(`invalid member config for ${member.digest}: ${detail}`);
 	}
-	if (!isRecord(config)) {
-		throw new Error(`invalid member config for ${member.digest}`);
-	}
-	if (member.artifactType !== undefined) {
-		if (Object.keys(config).length !== 0) {
-			throw new Error(`invalid artifact config for ${member.digest}`);
-		}
-		return;
-	}
 	if (
+		!isRecord(config) ||
 		typeof config.os !== "string" ||
 		typeof config.architecture !== "string"
 	) {
@@ -364,6 +387,19 @@ async function verifyMemberConfig(
 			`::error::member ${member.digest} config is ${config.os}/${config.architecture}, declared ${member.platform.os}/${member.platform.architecture}`,
 		);
 	}
+}
+
+async function verifyMemberConfig(
+	repo: string,
+	member: IndexMember,
+	run: CommandRunner,
+): Promise<void> {
+	const memberRef = `${imageRef(repo)}@${member.digest}`;
+	if (member.artifactType !== undefined) {
+		await verifyArtifactConfig(memberRef, member, run);
+		return;
+	}
+	await verifyImageMemberConfig(memberRef, member, run);
 }
 
 async function verifyPublishedIndex(
@@ -498,6 +534,11 @@ export async function publishImageIndex(
 		result.stdout.push(
 			`verified OCI index ${gitDigest}: ${EXPECTED_PLATFORMS}; :latest matches :${expectedTag}`,
 		);
+		const summary = process.env.GITHUB_STEP_SUMMARY;
+		if (summary) {
+			const lane = repo.slice(repo.lastIndexOf("/") + 1);
+			appendFileSync(summary, `${lane} image: \`${repo}@${gitDigest}\`\n`);
+		}
 		return result;
 	} catch (error) {
 		if (error instanceof CommandFailure && error.stderr)
