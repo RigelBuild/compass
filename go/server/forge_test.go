@@ -1333,6 +1333,37 @@ func TestForgeEditIssueTitleOnlyLeavesBodyUnset(t *testing.T) {
 	}
 }
 
+// A body edit reserves the owner header against the provider limit before calling EditIssue.
+func TestForgeEditIssueBodyLimitRejectsBeforeProviderCall(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	body := "four"
+	header, err := forge.StampOwner("", forge.Author{
+		AgentHandle: testAgentHandle,
+		OwnerHandle: testOwnerHandle,
+		SessionID:   testSessionID,
+	}, 0)
+	if err != nil {
+		t.Fatalf("reference stamp: %v", err)
+	}
+	author.BodyLimitResult = len(header) + len(body) - 1
+	svc, _ := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	call := &compassv1internal.ForgeCallRequest{
+		Call: &compassv1internal.ForgeCallRequest_EditIssue{EditIssue: &compassv1internal.EditIssueRequest{
+			Repo: testRepo, IssueNumber: 1, Body: &body,
+		}},
+	}
+
+	result := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if fe := result.GetError(); fe == nil || fe.GetCode() != "invalid_argument" {
+		t.Fatalf("oversized edit error = %v, want invalid_argument", fe)
+	}
+	for _, got := range author.Calls() {
+		if got.Method == "EditIssue" {
+			t.Fatalf("provider calls = %+v, want no EditIssue call", author.Calls())
+		}
+	}
+}
+
 func TestForgeEditIssueOutsideScopeReturnsNotFound(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
 	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
