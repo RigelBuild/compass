@@ -9,6 +9,7 @@ import {
 	prBadge,
 	primaryPr,
 	prLifecycle,
+	queueChip,
 	reviewBadge,
 } from "./board-render";
 import type {
@@ -331,10 +332,9 @@ describe("openPrs", () => {
 	});
 });
 
-// prLifecycle places a PR in a PRs-board column (design D1 / T6). Precedence:
-// merged > ready > in_review > in_progress, defined over the reviewBadge/ciBadge
-// roll-ups. D1a: an approved + CI-green PR with an UNRESOLVED thread is NOT
-// ready — it stays "in review". Total over board rows (forgeState !== "closed").
+// prLifecycle places a PR in a PRs-board column. Precedence: merged > queued >
+// draft > ready > in_review > in_progress. D1a: an approved + CI-green PR with
+// an UNRESOLVED thread is NOT ready — it stays "in review".
 describe("prLifecycle", () => {
 	const review = (author: string, verdict: Review["verdict"]): Review => ({
 		author,
@@ -349,17 +349,50 @@ describe("prLifecycle", () => {
 	});
 	const green = { headSha: "a", state: "success" as const, checks: [] };
 
-	test("merged wins even over approved + green + all-resolved", () => {
+	test("merged wins over queued and approved + green + all-resolved", () => {
 		expect(
 			prLifecycle(
 				pr({
 					forgeState: "merged",
+					mergeQueue: { provider: "github", state: "queued" },
 					reviews: [review("a", "approved")],
 					checks: green,
 					threads: [thread(true)],
 				}),
 			),
 		).toBe("merged");
+	});
+
+	test("queued and testing entries use the queue lane", () => {
+		for (const state of ["queued", "testing"] as const) {
+			expect(
+				prLifecycle(pr({ mergeQueue: { provider: "github", state } })),
+			).toBe("queued");
+		}
+	});
+
+	test("queued wins over draft", () => {
+		expect(
+			prLifecycle(
+				pr({
+					draft: true,
+					mergeQueue: { provider: "github", state: "queued" },
+				}),
+			),
+		).toBe("queued");
+	});
+
+	test("queued wins over ready", () => {
+		expect(
+			prLifecycle(
+				pr({
+					mergeQueue: { provider: "github", state: "testing" },
+					reviews: [review("a", "approved")],
+					checks: green,
+					threads: [thread(true)],
+				}),
+			),
+		).toBe("queued");
 	});
 
 	test("ready: approved + CI success + all threads resolved", () => {
@@ -418,13 +451,65 @@ describe("prLifecycle", () => {
 		);
 	});
 
-	test("in_progress: draft-open with no reviews or threads", () => {
+	test("draft-open with no reviews or threads uses the draft lane", () => {
 		expect(prLifecycle(pr({ draft: true, reviews: [], threads: [] }))).toBe(
-			"in_progress",
+			"draft",
 		);
 	});
 
-	test("in_progress: a bare open PR (no reviews, no threads, no checks)", () => {
+	test("draft takes precedence over ready", () => {
+		expect(
+			prLifecycle(
+				pr({
+					draft: true,
+					reviews: [review("a", "approved")],
+					checks: green,
+					threads: [thread(true)],
+				}),
+			),
+		).toBe("draft");
+	});
+
+	test("a merged queue entry is merged while the forge still reports open", () => {
+		expect(
+			prLifecycle(pr({ mergeQueue: { provider: "trunk", state: "merged" } })),
+		).toBe("merged");
+	});
+
+	test("failed and removed queue entries stay in the review lane", () => {
+		for (const state of ["failed", "removed"] as const) {
+			expect(
+				prLifecycle(
+					pr({
+						mergeQueue: { provider: "github", state },
+						reviews: [review("a", "commented")],
+						threads: [],
+					}),
+				),
+			).toBe("in_review");
+		}
+	});
+
+	test("a bare open PR with no reviews, threads, or checks is in progress", () => {
 		expect(prLifecycle(pr({ reviews: [], threads: [] }))).toBe("in_progress");
+	});
+});
+
+describe("queueChip", () => {
+	for (const state of ["failed", "removed"] as const) {
+		test(`${state} entry returns a queue chip`, () => {
+			expect(queueChip(pr({ mergeQueue: { provider: "github", state } }))).toBe(
+				state,
+			);
+		});
+	}
+
+	test("queued, testing, merged, and absent entries have no queue chip", () => {
+		for (const state of ["queued", "testing", "merged"] as const) {
+			expect(queueChip(pr({ mergeQueue: { provider: "github", state } }))).toBe(
+				undefined,
+			);
+		}
+		expect(queueChip(pr({}))).toBeUndefined();
 	});
 });

@@ -716,6 +716,14 @@
 	gap: 3px;
 }
 
+.card-queue[data-state="failed"] {
+	color: var(--cx-error);
+}
+
+.card-queue[data-state="removed"] {
+	color: var(--cx-text-dim);
+}
+
 .card-title {
 	font-size: 12px;
 	line-height: 1.35;

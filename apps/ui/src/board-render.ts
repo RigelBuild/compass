@@ -115,20 +115,33 @@ export function ciBadge(pr: PullRequest): ChecksSummary["state"] | undefined {
 }
 
 /** The PR-lifecycle column a PR sits in on the PRs board (design D1 / T6).
- *  Precedence: merged > ready > in_review > in_progress. Defined over the
- *  reviewBadge/ciBadge roll-ups so it inherits their latest-per-author rule.
- *  D1a: an approved + CI-green PR with an UNRESOLVED thread is NOT ready — it
- *  stays "in review". Total over board rows (forgeState !== "closed"); the
- *  defensive default keeps it total if the type widens. */
+ *  Precedence: merged > queued > draft > ready > in_review > in_progress.
+ *  Defined over the reviewBadge/ciBadge roll-ups so it inherits their
+ *  latest-per-author rule. D1a: an approved + CI-green PR with an UNRESOLVED
+ *  thread is NOT ready — it stays "in review". A failed or removed queue entry
+ *  leaves the PR in its review-derived lane and shows `queueChip` instead. */
 export function prLifecycle(pr: PullRequest): PrLifecycle {
-	if (pr.forgeState === "merged") return "merged";
+	// The queue can report merged before the forge webhook lands; the server gate agrees.
+	if (pr.forgeState === "merged" || pr.mergeQueue?.state === "merged") {
+		return "merged";
+	}
+	if (pr.mergeQueue?.state === "queued" || pr.mergeQueue?.state === "testing") {
+		return "queued";
+	}
+	if (pr.draft) return "draft";
 	const approvedGreen =
 		reviewBadge(pr) === "approved" && ciBadge(pr) === "success";
 	const allThreadsResolved = pr.threads.every((t) => t.resolved);
 	if (approvedGreen && allThreadsResolved) return "ready";
 	const hasOpenThreads = pr.threads.some((t) => !t.resolved);
 	if (reviewBadge(pr) !== undefined || hasOpenThreads) return "in_review";
-	return "in_progress"; // incl. draft-open + the defensive default
+	return "in_progress";
+}
+
+/** A visible queue-failure marker for entries that stopped before merging. */
+export function queueChip(pr: PullRequest): "failed" | "removed" | undefined {
+	const state = pr.mergeQueue?.state;
+	return state === "failed" || state === "removed" ? state : undefined;
 }
 
 /** The open PRs of an issue — `forgeState === "open"` (drafts included), `prs`
