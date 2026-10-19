@@ -44,6 +44,9 @@ function captureVirtualizer(): void {
 
 const VIEWPORT_H = 500;
 const ROW_H = 100;
+// .conv-stream's vertical padding (app.css: 12px top and bottom), which a
+// browser counts in scrollHeight.
+const STREAM_PAD_Y = 24;
 
 // happy-dom does not back scrollTop, so track each scroller's offset separately.
 const scrollTops = new WeakMap<HTMLElement, number>();
@@ -77,11 +80,12 @@ beforeEach(() => {
 	define("scrollHeight", {
 		get(this: HTMLElement) {
 			if (!this.classList?.contains("conv-stream")) return 0;
-			// The content height the component sizes .conv-sizer to (getTotalSize()),
-			// floored at clientHeight as a browser does: max scroll is never negative.
+			// The content height the component sizes .conv-sizer to (getTotalSize())
+			// plus the scroller's padding, floored at clientHeight as a browser does.
 			const sizer = this.querySelector<HTMLElement>(".conv-sizer");
 			const h = sizer?.style.height ?? "";
-			return Math.max(Number.parseInt(h, 10) || 0, this.clientHeight);
+			const content = (Number.parseInt(h, 10) || 0) + STREAM_PAD_Y;
+			return Math.max(content, this.clientHeight);
 		},
 	});
 	define("scrollTop", {
