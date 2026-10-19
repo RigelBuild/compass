@@ -752,7 +752,7 @@ interface SessionTrace {
 
 /** A session runs until either stream reports a terminal state; terminal is
  *  absorbing, so whichever stream saw it first wins. No state at all is not running. */
-function isRunning(
+function isNonTerminalSession(
 	status: AgentSessionState,
 	tail: AgentSessionState | undefined,
 ): boolean {
@@ -952,7 +952,11 @@ function createLiveSessions(
 			const session: AgentSession = {
 				sessionId: status.sessionId,
 				agentAccountId: agentId,
-				running: isRunning(status.state, trace?.state),
+				running: isNonTerminalSession(status.state, trace?.state),
+				state:
+					trace?.state !== undefined && isTerminalSessionState(trace.state)
+						? trace.state
+						: status.state,
 				events: trace?.events ?? [],
 				...(trace?.batchPending ? { batchPending: trace.batchPending } : {}),
 			};

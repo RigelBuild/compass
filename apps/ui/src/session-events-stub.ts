@@ -3,6 +3,7 @@
 // deterministic ids + monotonic epoch-ms timestamps (no Date.now) so the panel renders
 // identically every run. Replaced when the live OMP session-event stream is wired.
 
+import { AgentSessionState } from "@compass/client";
 import type { AgentSession } from "./session-events";
 
 // A representative typed session per agent, keyed by agent account id. Only the
@@ -13,6 +14,7 @@ export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
 		sessionId: "sess-compass-server-1",
 		agentAccountId: "acc-compass-server",
 		running: true,
+		state: AgentSessionState.WORKING,
 		fixture: true,
 		events: [
 			// A thinking beat before the turn.
@@ -139,6 +141,7 @@ export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
 		sessionId: "sess-compass-native-1",
 		agentAccountId: "acc-compass-native",
 		running: false,
+		state: AgentSessionState.READY,
 		fixture: true,
 		events: [
 			{
@@ -153,6 +156,7 @@ export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
 		sessionId: "sess-compass-ui-1",
 		agentAccountId: "acc-compass-ui",
 		running: true,
+		state: AgentSessionState.WORKING,
 		fixture: true,
 		events: [
 			{

@@ -67,11 +67,16 @@ function mountLogPanel(
 
 /** A server-sourced session (no `fixture` marker) for the agent — the only kind
  *  Stop may actually issue for. */
-const served = (agentId: string, running: boolean): AgentSession => ({
+const served = (
+	agentId: string,
+	running: boolean,
+	state?: AgentSessionState,
+): AgentSession => ({
 	sessionId: "sess-7",
 	agentAccountId: agentId,
 	running,
 	events: STUB_SESSION_EVENTS[agentId]?.events ?? [],
+	...(state === undefined ? {} : { state }),
 });
 
 const liveBatchPending = (
@@ -197,6 +202,31 @@ describe("LogPanel (T-U2)", () => {
 		expect(
 			container.querySelector("aside.log-panel")?.getAttribute("aria-label"),
 		).toBe("Session Log");
+	});
+	test("READY session renders idle in the header", () => {
+		const { container } = mountLogPanel("acc-compass-native", {
+			"acc-compass-native": served(
+				"acc-compass-native",
+				true,
+				AgentSessionState.READY,
+			),
+		});
+
+		expect(container.querySelector(".obs-run")?.textContent).toContain("idle");
+	});
+
+	test("WORKING session renders running in the header", () => {
+		const { container } = mountLogPanel("acc-compass-server", {
+			"acc-compass-server": served(
+				"acc-compass-server",
+				true,
+				AgentSessionState.WORKING,
+			),
+		});
+
+		expect(container.querySelector(".obs-run")?.textContent).toContain(
+			"running",
+		);
 	});
 
 	// SHELL INVARIANT (stays GREEN): minimizing collapses the panel — the trace

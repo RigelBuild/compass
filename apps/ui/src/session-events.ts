@@ -2,7 +2,7 @@
 // render-ready TraceItems (design: architecture-lineage). `foldSession` reduces the raw
 // stream (text deltas, tool calls + updates, plans, notices) into TraceItem[]: text deltas
 // coalesce, tool updates fold into their call, a later plan supersedes. Pure, never mutates.
-
+import type { AgentSessionState } from "@compass/client";
 /** Lifecycle of a tool call, latest-wins as updates arrive. */
 export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
 
@@ -44,7 +44,7 @@ export type SessionEvent = { id: string; atUnixMs: number } & (
 	| { kind: "notice"; text: string; link?: string }
 );
 
-/** An agent's live session: whether it is running, its trace, and pending batch state. */
+/** An agent's live session: whether it is non-terminal, its trace, and pending batch state. */
 export interface AgentSession {
 	/** The server-minted session id — the cursor StartAgentSession returned, and
 	 *  the ONLY field StopAgentSession takes (compass_pb.ts:831-836). Carried
@@ -52,6 +52,7 @@ export interface AgentSession {
 	sessionId: string;
 	agentAccountId: string;
 	running: boolean;
+	state?: AgentSessionState;
 	events: SessionEvent[];
 	/** Items queued in the agent's open batching window, when one is reported. */
 	batchPending?: BatchPending;

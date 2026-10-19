@@ -181,6 +181,10 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 			fake.pushSessionFrame("sess-1", { state: AgentSessionState.STOPPED });
 			await settle(() => store.focusedView().agentSession()?.running === false);
 			expect(store.focusedView().agentSession()?.running).toBe(false);
+			// The status stream still says WORKING; the tail's terminal state must win.
+			expect(store.focusedView().agentSession()?.state).toBe(
+				AgentSessionState.STOPPED,
+			);
 			await settle(() => fake.openSessionTails().length === 0);
 			expect(fake.openSessionTails()).toEqual([]);
 		} finally {

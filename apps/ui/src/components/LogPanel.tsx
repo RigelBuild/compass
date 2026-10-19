@@ -1,4 +1,5 @@
 import { type Component, Show } from "solid-js";
+import { agentSessionStateLabel } from "../agent-state";
 import { useStore } from "../context";
 import { foldSession } from "../session-events";
 import type { Agent } from "../stub-data";
@@ -52,7 +53,11 @@ const TracePane: Component = () => {
 export const LogPanel: Component<{ agent: Agent }> = (props) => {
 	const store = useStore();
 	const view = useView();
-	const running = () => view.agentSession()?.running ?? false;
+	const sessionActive = () => view.agentSession()?.running ?? false;
+	const statusLabel = () => {
+		const state = view.agentSession()?.state;
+		return state === undefined ? "idle" : agentSessionStateLabel(state);
+	};
 	// Fixture sessions lack the server ID required by Stop.
 	const fixture = () => view.agentSession()?.fixture === true;
 	// This pane's window, not the focused view's, so split panes stay apart.
@@ -68,18 +73,18 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 				</Show>
 				<span class="obs-spacer" />
 				<span
-					class={["obs-run", { live: running() }]}
-					title={running() ? "Agent is running" : "Agent is idle"}
+					class={["obs-run", { live: statusLabel() === "running" }]}
+					title={`Agent is ${statusLabel()}`}
 				>
 					<span class="obs-run-dot" aria-hidden="true" />
-					<Show when={store.logOpen()}>{running() ? "running" : "idle"}</Show>
+					<Show when={store.logOpen()}>{statusLabel()}</Show>
 				</span>
 				<Show when={store.logOpen()}>
 					{/* Start now skips the open batch window; no window is a server no-op. */}
 					<button
 						type="button"
 						class="obs-start"
-						disabled={!running() || fixture()}
+						disabled={!sessionActive() || fixture()}
 						title={
 							fixture()
 								? "Can't start now: this session is fixture data, not a server-minted session."
@@ -94,7 +99,7 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 					<button
 						type="button"
 						class="obs-stop"
-						disabled={!running() || fixture()}
+						disabled={!sessionActive() || fixture()}
 						title={
 							fixture()
 								? "Can't stop: this session is fixture data, not a server-minted session."
