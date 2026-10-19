@@ -555,12 +555,7 @@ func TestBuildForgeWriteServiceEnforcesScopesBehaviorally(t *testing.T) {
 				ReviewerApp:              ForgeAppConfig{AppID: 43, InstallationID: 8, AppPrivateKeySecret: reviewerKey},
 			}}
 			resolver := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName(reviewerKey), Value: "key"}}}
-			primaryConfig := forge.GitHubAppConfig{AppID: 42, InstallationID: 7, PrivateKey: func(context.Context) ([]byte, error) { return []byte("unused"), nil }, Host: forgeTestHost}
-			installations, err := forge.NewInstallationResolver(primaryConfig)
-			if err != nil {
-				t.Fatalf("NewInstallationResolver: %v", err)
-			}
-			primaryRouter := forge.NewOwnerRoutedGitHub(primary, installations, primaryConfig, nil)
+			primaryRouter := newScopeTestOwnerRoutedGitHub(t, primary)
 			svc, err := buildForgeWriteService(ctx, cfg, st, nil, resolver, primaryRouter, nil, slog.New(slog.DiscardHandler))
 			if err != nil {
 				t.Fatalf("buildForgeWriteService: %v", err)
@@ -622,4 +617,39 @@ func newScopeTestGitHubProvider(t *testing.T) (*forge.GitHub, *atomic.Int32) {
 		Client: &http.Client{Transport: &armedRewriteTransport{target: target}},
 	})
 	return primary, calls
+}
+
+func newScopeTestOwnerRoutedGitHub(t *testing.T, primary *forge.GitHub) *forge.OwnerRoutedGitHub {
+	t.Helper()
+	installationAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/app/installations" {
+			t.Errorf("installation request = %s %s, want GET /app/installations", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer eyJ") {
+			t.Errorf("installation authorization = %q, want an App JWT", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`[{"id":7,"account":{"login":"owner"}}]`)); err != nil {
+			t.Errorf("write installation response: %v", err)
+		}
+	}))
+	t.Cleanup(installationAPI.Close)
+	installationTarget, err := url.Parse(installationAPI.URL)
+	if err != nil {
+		t.Fatalf("parse installation fake URL: %v", err)
+	}
+	appKey := testForgeAppKey(t)
+	primaryConfig := forge.GitHubAppConfig{
+		AppID: 42, InstallationID: 7,
+		PrivateKey: func(context.Context) ([]byte, error) { return appKey, nil },
+		Host:       forgeTestHost,
+		Client:     &http.Client{Transport: testForgeRewriteTransport{target: installationTarget}},
+	}
+	installations, err := forge.NewInstallationResolver(primaryConfig)
+	if err != nil {
+		t.Fatalf("NewInstallationResolver: %v", err)
+	}
+	return forge.NewOwnerRoutedGitHub(primary, installations, primaryConfig, nil)
 }
