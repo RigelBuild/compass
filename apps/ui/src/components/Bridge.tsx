@@ -412,7 +412,9 @@ export const Bridge: Component = () => {
 						setTab("issues");
 					},
 					ariaLabel: `PR ${row.pr.repo}#${row.pr.number}`,
-					ariaDescription: `${laneLabel(stop.col)} column, row ${stop.row + 1}`,
+					ariaDescription: `${laneLabel(stop.col)} column, row ${stop.row + 1}${
+						queueChip(row.pr) ? `, queue ${queueChip(row.pr)}` : ""
+					}`,
 				});
 				continue;
 			}

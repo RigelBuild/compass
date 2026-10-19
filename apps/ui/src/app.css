@@ -716,17 +716,12 @@
 	gap: 3px;
 }
 
-.card-queue {
-	font-family: var(--cx-font-ui);
-	font-size: 9px;
-}
-
 .card-queue[data-state="failed"] {
 	color: var(--cx-error);
 }
 
 .card-queue[data-state="removed"] {
-	color: var(--rigel-haze);
+	color: var(--cx-text-dim);
 }
 
 .card-title {

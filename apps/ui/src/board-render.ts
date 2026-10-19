@@ -121,7 +121,10 @@ export function ciBadge(pr: PullRequest): ChecksSummary["state"] | undefined {
  *  thread is NOT ready — it stays "in review". A failed or removed queue entry
  *  leaves the PR in its review-derived lane and shows `queueChip` instead. */
 export function prLifecycle(pr: PullRequest): PrLifecycle {
-	if (pr.forgeState === "merged") return "merged";
+	// The queue can report merged before the forge webhook lands; the server gate agrees.
+	if (pr.forgeState === "merged" || pr.mergeQueue?.state === "merged") {
+		return "merged";
+	}
 	if (pr.mergeQueue?.state === "queued" || pr.mergeQueue?.state === "testing") {
 		return "queued";
 	}

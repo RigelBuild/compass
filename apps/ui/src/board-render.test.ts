@@ -470,6 +470,12 @@ describe("prLifecycle", () => {
 		).toBe("draft");
 	});
 
+	test("a merged queue entry is merged while the forge still reports open", () => {
+		expect(
+			prLifecycle(pr({ mergeQueue: { provider: "trunk", state: "merged" } })),
+		).toBe("merged");
+	});
+
 	test("failed and removed queue entries stay in the review lane", () => {
 		for (const state of ["failed", "removed"] as const) {
 			expect(

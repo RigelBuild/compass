@@ -938,6 +938,24 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(cursor.getAttribute("aria-keyshortcuts")).toBe("Space");
 	});
 
+	test("a failed queue entry shows its chip and names it in the card description", () => {
+		const { container } = mountApp("/", {
+			initialIssues: STUB_ISSUES.map((issue) => ({
+				...issue,
+				prs: issue.prs.map((pr) =>
+					pr.number === 444
+						? { ...pr, mergeQueue: { provider: "trunk", state: "failed" } }
+						: pr,
+				),
+			})),
+		});
+		clickTab(container, "PRs");
+		const card = cardByLabel(container, "PR RigelBuild/compass#444");
+		if (!card) throw new Error("PR #444 card was not rendered");
+		expect(card.querySelector(".card-queue")?.textContent).toBe("queue failed");
+		expect(card.getAttribute("aria-description")).toContain("queue failed");
+	});
+
 	test("the container is a kanban board without an ARIA grid role (DL-220)", () => {
 		const { container } = mountBridge();
 		const grid = container.querySelector<HTMLElement>(".bridge-grid");
