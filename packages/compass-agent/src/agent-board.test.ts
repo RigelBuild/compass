@@ -18,6 +18,7 @@ import {
 	BoardTaskSchema,
 	BoardWaitingOn,
 	BoardWaitingSchema,
+	CommsCallErrorSchema,
 	type CommsCallRequest,
 	type CommsCallResult,
 	CommsCallResultSchema,
@@ -30,6 +31,7 @@ import { TurnSequence } from "./turn-sequence";
 class FakeTransport implements CommsTransport {
 	readonly requests: CommsCallRequest[] = [];
 	failNext = false;
+	refuseNext = false;
 	#gate: Promise<void> | undefined;
 	constructor(private readonly board: AgentBoard) {}
 	/** Holds every reply until the returned release runs. */
@@ -46,6 +48,19 @@ class FakeTransport implements CommsTransport {
 		if (this.failNext) {
 			this.failNext = false;
 			throw new Error("transport down");
+		}
+		if (this.refuseNext) {
+			this.refuseNext = false;
+			return create(CommsCallResultSchema, {
+				callId: req.callId,
+				result: {
+					case: "error",
+					value: create(CommsCallErrorSchema, {
+						code: "invalid_argument",
+						message: "task cap",
+					}),
+				},
+			});
 		}
 		return create(CommsCallResultSchema, {
 			callId: req.callId,
@@ -215,16 +230,41 @@ describe("seedBoardFreshness", () => {
 		freshness.seed(2n, 10_000, "old");
 		expect(freshness.ageMs(51_000)).toBe(1_000);
 		expect(freshness.focusTaskKey()).toBe("mine");
+		expect(freshness.wroteThisTurn(3n)).toBe(true);
+		expect(freshness.wroteThisTurn(2n)).toBe(false);
+	});
+
+	test("a seed with no reply fails at the deadline and settles freshness", async () => {
+		const timer = new FakeTimer();
+		const transport = new FakeTransport(board());
+		transport.hold();
+		const freshness = new BoardFreshness();
+		const seeded = seedBoardFreshness(
+			new CommsBroker(transport),
+			sequence(),
+			freshness,
+			timer,
+		).catch((error: unknown) => {
+			freshness.seedFailed();
+			return error;
+		});
+		timer.advance(9_999);
+		await settle();
+		expect(freshness.seeded()).toBe(false);
+		timer.advance(1);
+		expect(String(await seeded)).toContain("no reply within 10 s");
+		expect(freshness.seeded()).toBe(true);
+		expect(freshness.ageMs(0)).toBeUndefined();
 	});
 });
 
 describe("subagent board synchronization", () => {
-	function attached(focus: string) {
+	function attached(focus: string, opts: { seeded?: boolean } = {}) {
 		const timer = new FakeTimer();
 		const transport = new FakeTransport(board({ focusTaskKey: focus }));
 		const bus = new EventBus();
 		const freshness = new BoardFreshness();
-		freshness.seed(1n, 1_000, focus);
+		if (opts.seeded !== false) freshness.seed(1n, 1_000, focus);
 		const detach = attachSubagentBoardSync(
 			bus,
 			new CommsBroker(transport),
@@ -243,7 +283,7 @@ describe("subagent board synchronization", () => {
 			transport.requests.flatMap((r) =>
 				r.call.case === "updateBoard" ? [r.call.value] : [],
 			);
-		return { timer, transport, emit, patches, detach };
+		return { timer, transport, freshness, emit, patches, detach };
 	}
 
 	test("coalesces a grandchild start and completion into one automatic patch", async () => {
@@ -300,7 +340,12 @@ describe("subagent board synchronization", () => {
 		expect(h.patches()).toHaveLength(1);
 		release();
 		await settle();
-		h.timer.advance(5_000);
+		// The queued write still waits a full window from the settle.
+		expect(h.patches()).toHaveLength(1);
+		h.timer.advance(4_999);
+		await settle();
+		expect(h.patches()).toHaveLength(1);
+		h.timer.advance(1);
 		await settle();
 		expect(h.patches()).toHaveLength(2);
 		expect(h.patches()[1]?.upsertTasks[0]?.upsertSubagents[0]?.status).toBe(
@@ -319,6 +364,44 @@ describe("subagent board synchronization", () => {
 		await settle();
 		expect(h.patches()).toHaveLength(2);
 		expect(h.patches()[1]?.upsertTasks[0]?.upsertSubagents[0]?.id).toBe("a");
+		h.detach();
+	});
+
+	test("a server refusal is dropped, not retried", async () => {
+		const h = attached("parent-task");
+		h.transport.refuseNext = true;
+		h.emit("a", "started");
+		h.timer.advance(5_000);
+		await settle();
+		h.timer.advance(30_000);
+		await settle();
+		expect(h.patches()).toHaveLength(1);
+		h.detach();
+	});
+
+	test("a late event for a sent settled subagent is ignored", async () => {
+		const h = attached("parent-task");
+		h.emit("a", "started", "Scan");
+		h.emit("a", "completed");
+		h.timer.advance(5_000);
+		await settle();
+		h.emit("a", "completed");
+		h.timer.advance(10_000);
+		await settle();
+		expect(h.patches()).toHaveLength(1);
+		h.detach();
+	});
+
+	test("writes wait for the startup seed, then use its focus", async () => {
+		const h = attached("", { seeded: false });
+		h.emit("a", "started");
+		h.timer.advance(15_000);
+		await settle();
+		expect(h.patches()).toHaveLength(0);
+		h.freshness.seed(1n, 1_000, "stored-focus");
+		h.timer.advance(5_000);
+		await settle();
+		expect(h.patches()[0]?.upsertTasks[0]?.key).toBe("stored-focus");
 		h.detach();
 	});
 

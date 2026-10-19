@@ -659,6 +659,51 @@ describe("CompassAgent board freshness", () => {
 		await h.close();
 	});
 
+	test("no reminder while the startup seed is pending; a failed seed allows one", async () => {
+		const freshness = new BoardFreshness();
+		const h = boardAgent(freshness, 61 * 60_000);
+		const toolEnd = {
+			type: "tool_execution_end",
+			toolCallId: "t",
+			toolName: "read",
+			result: {},
+		} as AgentSessionEvent;
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.drive(toolEnd);
+		expect(h.session.agent.steers).toEqual([]);
+		freshness.seedFailed();
+		h.drive(toolEnd);
+		expect(h.session.agent.steers).toHaveLength(1);
+		await h.close();
+	});
+
+	test("a nonterminal settle inside the re-prompt keeps it a re-prompt", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(0n, 0);
+		const h = boardAgent(freshness);
+		await h.feed({ kind: "replayComplete" });
+		h.turn({ tool: true });
+		expect(h.session.agent.prompts).toEqual([REPROMPT]);
+		// The re-prompt run pauses with a deliver queued, then ends without a write.
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.drive({
+			type: "tool_execution_start",
+			toolCallId: "t",
+			toolName: "read",
+			args: {},
+		} as AgentSessionEvent);
+		h.session.agent.state.isStreaming = true;
+		h.agent.deliver(deliverMsg("later", "queued reply"));
+		h.drive({ type: "agent_end", isTerminal: false } as AgentSessionEvent);
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		expect(h.session.agent.prompts.filter((p) => p === REPROMPT)).toHaveLength(
+			1,
+		);
+		expect(h.session.agent.prompts.at(-1)).toContain("queued reply");
+		await h.close();
+	});
+
 	test("the mid-turn reminder fires once per turn past twenty minutes", async () => {
 		const freshness = new BoardFreshness();
 		freshness.seed(0n, 0);

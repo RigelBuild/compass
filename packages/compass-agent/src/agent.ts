@@ -516,18 +516,7 @@ export class CompassAgent {
 			return;
 		}
 		if (event.type === "tool_execution_end") {
-			const age = freshness.ageMs(this.#now());
-			if (!this.#turnNudgeSent && (age === undefined || age > 20 * 60_000)) {
-				this.#turnNudgeSent = true;
-				this.#session.agent.steer({
-					role: "user",
-					content:
-						"Your status board is stale. Update it with compass_update_board before continuing.",
-					steering: true,
-					attribution: "user",
-					timestamp: 0,
-				});
-			}
+			this.#nudgeIfStale(freshness);
 			return;
 		}
 		if (event.type !== "agent_end" || event.isTerminal === false) return;
@@ -542,6 +531,37 @@ export class CompassAgent {
 		this.#turnHadTool = false;
 		this.#turnNudgeSent = false;
 		this.#repromptTurn = false;
+	}
+
+	#nudgeIfStale(freshness: BoardFreshness): void {
+		if (this.#turnNudgeSent || !freshness.seeded()) return;
+		const age = freshness.ageMs(this.#now());
+		if (age !== undefined && age <= 20 * 60_000) return;
+		this.#turnNudgeSent = true;
+		this.#session.agent.steer({
+			role: "user",
+			content:
+				"Your status board is stale. Update it with compass_update_board before continuing.",
+			steering: true,
+			attribution: "user",
+			timestamp: 0,
+		});
+	}
+
+	// A pending re-prompt takes the turn alone and leaves the queues for its `agent_end`.
+	#takeTurnEndQueues(): {
+		boardReprompt: boolean;
+		delivers: Message[];
+		forges: { notification: ForgeNotification; ackRail: () => void }[];
+	} {
+		const boardReprompt = this.#boardReprompt;
+		this.#boardReprompt = false;
+		if (boardReprompt) return { boardReprompt, delivers: [], forges: [] };
+		const delivers = this.#deliverQueue;
+		const forges = this.#forgeQueue;
+		this.#deliverQueue = [];
+		this.#forgeQueue = [];
+		return { boardReprompt, delivers, forges };
 	}
 
 	// Track a session turn edge (RIG-1310 §8, RIG-2732 W3). A turn-start edge marks
@@ -570,19 +590,13 @@ export class CompassAgent {
 	// Ack means injected, not turn-finished; a mid-turn crash keeps the receipt.
 	// On settled rejection, deliveries remain eligible for redelivery; forge re-enqueue stays with Runner.
 	// An idle tail drains last and adds one message to the trace topology.
+
 	// A board re-prompt runs alone; the queues wait for its `agent_end`. It is set and
 	// consumed on one `agent_end` edge, so an idle steer tail never meets it.
 	#flushTurnEnd(tail?: SteerTail): void {
 		// A started turn's `agent_end` owns whatever queues next, so the window closes.
 		this.#cancelBatch();
-		const boardReprompt = this.#boardReprompt;
-		this.#boardReprompt = false;
-		const delivers = boardReprompt ? [] : this.#deliverQueue;
-		const forges = boardReprompt ? [] : this.#forgeQueue;
-		if (!boardReprompt) {
-			this.#deliverQueue = [];
-			this.#forgeQueue = [];
-		}
+		const { boardReprompt, delivers, forges } = this.#takeTurnEndQueues();
 		if (
 			delivers.length === 0 &&
 			forges.length === 0 &&
@@ -632,7 +646,8 @@ export class CompassAgent {
 		} else {
 			this.#tracer?.clearTurnTrigger();
 		}
-		this.#repromptTurn = boardReprompt;
+		// A nonterminal settle flushes inside an open run; keep that run's re-prompt mark.
+		if (!this.#runOpen) this.#repromptTurn = boardReprompt;
 		const startPrompt = (): Promise<void> => this.#session.agent.prompt(input);
 		const started =
 			this.#tracer !== undefined && parent !== undefined
