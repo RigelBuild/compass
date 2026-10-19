@@ -104,12 +104,10 @@ type ServeConfig struct {
 	// ListenListener is an already-bound network-door listener inherited from
 	// the parent. When set, it replaces Listen as the bind source.
 	ListenListener net.Listener
-	// AdminHandle is the handle of the bootstrap-admin account created (or found)
-	// at startup — the identity the local-socket door attributes callers to and
-	// the network door's AdminGate compares against. Empty defaults to "admin".
-	// Bootstrap is find-or-create by handle, so a handle that already names a
-	// non-admin account fails startup rather than elevating it. When the network
-	// door is enabled, this account's token is written 0600 under the state dir.
+	// AdminHandle identifies the bootstrap admin used by the local door and network
+	// AdminGate; empty defaults to "admin". Bootstrap finds or creates by handle and
+	// rejects an existing non-admin account rather than elevating it. With the network
+	// door enabled, its token is written 0600 under the state directory.
 	AdminHandle string
 	// AdminTokenFile names a private file containing the supplied bootstrap-admin token.
 	AdminTokenFile string
@@ -119,20 +117,12 @@ type ServeConfig struct {
 	// CORSAllowedOrigin, when set, is the single browser origin the network door
 	// exposes gRPC-Web CORS for. Empty = closed (no CORS on the network door).
 	CORSAllowedOrigin string
-	// PublicURL is the per-deployment public base URL Compass is reachable at
-	// (e.g. "https://host.example.ts.net"), the base for the Linear Agent
-	// responder's stable session link and the channel it redirects to.
-	// Per-deployment, never hardcoded and with no default — the managed-service
-	// host is a deployment concern that does not live in this repo. The CLI
-	// supplies it (flag --public-url / $COMPASS_PUBLIC_URL); a deployment that
-	// consumes Linear webhooks needs it non-empty, enforced by requirePublicURL's
-	// boot guard where the responder is assembled.
+	// PublicURL is the deployment's public base URL for Linear session links.
+	// It has no default because the host is deployment-specific; the CLI supplies it
+	// and webhook startup requires it when the responder is enabled.
 	PublicURL string
-	// Forge is the board webhook-ingestion lane + forge-write config (RIG-2883).
-	// All-optional exactly like S3: board ingestion is off (no GitHub App) and
-	// writes are off (no write secrets) unless the operator opts in — today's
-	// behavior, zero new requirements on existing deployments. See ForgeConfig,
-	// boardIngestionEnabled, and forgeWritesEnabled.
+	// Forge configures optional board webhook ingestion and forge writes. Both stay
+	// off unless their App configuration and write secrets are supplied.
 	Forge ForgeConfig
 	// VCSMirrorDir enables server-side Git push support when non-empty.
 	VCSMirrorDir string
@@ -148,13 +138,10 @@ type ServeConfig struct {
 	// the bootstrap installs no provider and the RPC interceptors are inert
 	// no-ops (no active span, so no traceresponse header).
 	OtelEndpoint string
-	// SecretProvider is the secretspec provider URI both secret resolvers resolve
-	// through (e.g. "keyring://", "onepassword://Production", "dotenv://path").
-	// Empty uses secretspec's default provider chain — today's behavior, so an
-	// existing deployment is unchanged. The CLI supplies it (flag
-	// --secret-provider / $COMPASS_SECRET_PROVIDER). It is the ONE knob that
-	// points the whole deployment's custody — including the master key — at a
-	// managed store, per the record's A2 KMS-by-provider-URI custody note.
+	// SecretProvider selects the secretspec provider used by both resolvers.
+	// Empty preserves the default provider chain. The CLI supplies the optional
+	// flag/env value; this setting controls deployment secret custody, including the
+	// master key.
 	SecretProvider string
 	// UsageEventRetention is how long raw token- and compute-usage events are kept.
 	// 0 turns the daily prune off. The CLI defaults it to 90 days.
@@ -193,31 +180,19 @@ type ForgeConfig struct {
 	// App secrets are declared; otherwise board ingestion is hard-off with a
 	// boot Warn. No PAT fallback on the read path (Constraint #3).
 	App ForgeAppConfig
-	// ReviewerApp is the SECOND GitHub App credential — a distinct App
-	// definition (own AppID + private key + one installation) serving ONLY the
-	// reviewer write client (the submit_review arm). A distinct GitHub identity
-	// from the primary App so an agent approving a PR it authored dispatches
-	// submit_review on a different account than it authored with, dissolving the
-	// author-approving-own-PR 422 at the credential layer (F1, DEC-1). The
-	// reviewer App registers NO webhook and no read lane, so its
-	// AppWebhookSecretName is unused; reads/webhooks/board/author-writes all ride
-	// the primary App (2-App topology, DEC-3).
+	// ReviewerApp is a distinct GitHub App used only for submit_review. Its identity
+	// lets an agent review from an account other than the one that authored the PR.
+	// It has no webhook or read lane; those use the primary App.
 	ReviewerApp ForgeAppConfig
-	// LinearClientIDSecretName / LinearClientSecretName are the declared
-	// server_only secret NAMEs holding the Linear OAuth client-credentials pair
-	// (actor=app, the RIG-2682 "Compass" app). The Linear write + notify lanes
-	// mint one shared client-credentials token from this pair (never a member
-	// PAT); a Linear coordinate + notify lane are wired iff BOTH names resolve to
-	// a declared secret (the VALUEs never cross config or a flag). Default to
-	// LINEAR_FORGE_CLIENT_ID / LINEAR_FORGE_CLIENT_SECRET.
+	// These name the server-only Linear OAuth client-credentials pair; the values
+	// never enter config or flags. The write and notify lanes share one app-actor
+	// token, so both names must resolve. Defaults are LINEAR_FORGE_CLIENT_ID and
+	// LINEAR_FORGE_CLIENT_SECRET.
 	LinearClientIDSecretName string
 	LinearClientSecretName   string
-	// LinearWebhookSecretName is the declared server_only secret NAME holding
-	// the Linear webhook signing secret the shared POST /webhooks ingress
-	// verifies deliveries against (the VALUE never crosses config or a flag).
-	// The Linear data-change arm runs iff this resolves to a declared secret —
-	// INDEPENDENT of the GitHub App gate (a deployment can run Linear
-	// notifications without a GitHub App and vice versa).
+	// LinearWebhookSecretName names the server-only signing secret for the shared
+	// webhook ingress. It enables the Linear data-change arm independently of the
+	// GitHub App gate; the secret value never enters config or a flag.
 	LinearWebhookSecretName string
 	// TrunkTokenSecretName is the declared server-only secret name for Trunk API access.
 	TrunkTokenSecretName string
@@ -298,34 +273,24 @@ func prepareMergeQueueSweeper(ctx context.Context, cfg ServeConfig, st *store.St
 // Forge config defaults, applied by resolveForge when a field is zero.
 const (
 	defaultForgeHost = "github.com"
-	// defaultForgeLinearClientIDSecretName / defaultForgeLinearClientSecretName
-	// are the default declared-secret NAMEs holding the Linear OAuth
-	// client-credentials pair (actor=app, the RIG-2682 "Compass" app). The Linear
-	// write coordinate + notify lane are wired iff BOTH resolve to a declared
-	// secret; otherwise the write path is GitHub-only and the notify lane is off.
-	// Secret NAMEs, not values (see the gosec note below).
+	// These are the default declared-secret names for the Linear OAuth pair.
+	// Both must resolve for the write and notify lanes; otherwise Linear stays off.
+	// They are names, not credential values.
 	defaultForgeLinearClientIDSecretName = "LINEAR_FORGE_CLIENT_ID"     //nolint:gosec // G101: the default declared-secret NAME (an env-var identifier), not a credential value — resolved from the secrets provider, never hardcoded
 	defaultForgeLinearClientSecretName   = "LINEAR_FORGE_CLIENT_SECRET" //nolint:gosec // G101: the default declared-secret NAME (an env-var identifier), not a credential value — resolved from the secrets provider, never hardcoded
 	// defaultReconcileBackstop is the board reconciler's default sweep cadence
 	// (OQ-5): startup sweep + a 30-min ticker (a 304 page-1 GET per enabled repo
 	// is ≈ free, notify_reader.go:12-13; a cold-start zero watermark walks once).
 	defaultReconcileBackstop = 30 * time.Minute
-	// forgeTokenTTL is the TTL the cachedWebhookSecret hot-path cache holds a
-	// resolved webhook signing secret for: /webhooks/{github,linear} resolve the
-	// secret on every request before the HMAC check, and a resolve reads the whole
-	// declared-secret registry, writes a manifest temp file, and spawns a full
-	// `secretspec export` against the provider (SpecResolver.Resolve), so an
-	// uncached resolve would let a garbage POST force that whole export ahead of
-	// authentication. The cache bounds the per-request cost to a memcmp; a
-	// rotated secret still takes effect within the TTL.
+	// forgeTokenTTL bounds the cached webhook-secret lifetime. Each unauthenticated
+	// request resolves the secret before HMAC validation; caching prevents garbage
+	// POSTs from triggering a full secretspec export. Rotation takes effect within
+	// the TTL.
 	forgeTokenTTL = 5 * time.Minute
 )
 
-// boardIngestionEnabled reports whether the board webhook lane runs: iff the
-// GitHub App is configured (AppID != 0). The two App secrets are additionally
-// required and fail fast in buildBoardWebhookWiring (the shared site, RIG-2991);
-// this predicate is the cheap AppID gate the caller checks before resolving
-// anything (Constraint #3).
+// boardIngestionEnabled is the cheap AppID gate. buildBoardWebhookWiring also
+// validates both App secrets and fails fast if either is missing.
 func (c ForgeConfig) boardIngestionEnabled() bool {
 	return c.App.AppID != 0
 }
@@ -350,26 +315,17 @@ func (c ForgeConfig) resolved() ForgeConfig {
 	return c
 }
 
-// forgeWritesEnabled reports whether the agent forge-WRITE path is enabled: iff
-// BOTH the primary App and the reviewer App are configured — each with AppID != 0
-// AND its private-key secret present in declared (the 2-App cutover, DEC-1/DEC-3,
-// re-keying the retired two-PAT-names predicate). Requiring the primary App to
-// enable writes force-enables board ingestion (boardIngestionEnabled keys on the
-// same App.AppID) — the unified shape Matt explicitly wants (DL-305). It is a
-// pure predicate over the resolved declared-secret set so the rule is
-// unit-testable without a running Serve; buildForgeWriteService re-validates each
-// App key through validateForgeSecret to fail fast. Called on the resolved()
-// config so the defaulted names apply.
+// forgeWritesEnabled requires both Apps' IDs and declared private-key names; the
+// primary App also enables board ingestion. The predicate is pure over resolved
+// declarations, and buildForgeWriteService revalidates both keys at startup.
 func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool {
 	havePrimary, haveReviewer := c.forgeWriteAppsConfigured(declared)
 	return havePrimary && haveReviewer
 }
 
-// forgeHTTPClient returns the Forge clients' HTTP client. With no CA configured
-// it keeps http.DefaultTransport, so the primary and reviewer clients go on
-// sharing one connection pool exactly as they did before this knob existed; a
-// configured bundle gets a cloned transport whose roots are the system pool
-// plus the operator's PEM. Linear and unrelated clients never use it.
+// forgeHTTPClient preserves the shared default transport when no CA is set.
+// With a CA bundle, it clones the transport and adds the PEM to system roots;
+// unrelated clients do not use this client.
 func forgeHTTPClient(path string) (*http.Client, error) {
 	if path == "" {
 		return &http.Client{Timeout: 30 * time.Second}, nil
@@ -402,19 +358,15 @@ func forgeHTTPClient(path string) (*http.Client, error) {
 	return &http.Client{Transport: transport, Timeout: 30 * time.Second}, nil
 }
 
-// forgeWriteAppsConfigured reports which of the two required write Apps — the
-// primary (c.App) and the reviewer (c.ReviewerApp) — are configured: AppID != 0
-// AND the App's private-key secret NAME present in the resolved declared set.
-// Both true is the writes-enabled state (forgeWritesEnabled); exactly one true is
-// a partial misconfiguration warnPartialForgeWriteSecrets surfaces. Resolves the
-// config internally so any defaulted names apply — the caller need not
-// pre-resolve.
+// forgeWriteAppsConfigured reports whether each required App has a nonzero ID
+// and a declared private-key name. Both configured enables writes; exactly one
+// configured triggers the partial-configuration warning. It resolves defaults
+// internally so callers need not pre-resolve.
 func (c ForgeConfig) forgeWriteAppsConfigured(declared []secrets.ResolvedSecret) (havePrimary, haveReviewer bool) {
 	fc := c.resolved()
-	// serverSecretName-wrapped: these COMPARE against the SERVER resolver's
-	// resolved set. Unwrapped, both stay false forever and forge writes fail
-	// closed fleet-wide with no error — a silent capability loss, since
-	// warnPartialForgeWriteSecrets reads both-absent as "not configured".
+	// Compare SERVER-prefixed names. Without the wrapper both Apps appear absent,
+	// silently disabling writes because the partial-config warning treats that as
+	// the intentional off-state.
 	havePrimary = fc.App.AppID != 0 && secretDeclared(declared, serverSecretName(fc.App.AppPrivateKeySecret))
 	haveReviewer = fc.ReviewerApp.AppID != 0 && secretDeclared(declared, serverSecretName(fc.ReviewerApp.AppPrivateKeySecret))
 	return havePrimary, haveReviewer
@@ -435,27 +387,10 @@ func secretDeclared(declared []secrets.ResolvedSecret, name string) bool {
 	return false
 }
 
-// serverSecretName maps one of the six forge secret NAMEs onto the reserved
-// server-secret keyspace the SERVER resolver declares them under.
-//
-// This is the resolve-side half of an INVARIANT, not a hand-listed set of call
-// sites. The provider keyspace is keyed by name, so the declare side (which
-// applies the same prefix) and every resolve-side comparison must agree on the
-// prefixed name or the resolve silently misses.
-//
-// The rule, applied without exception:
-//
-//   - Every name compared against a resolved secrets.ResolvedSecret.Name is
-//     wrapped in serverSecretName.
-//   - Every name that reaches a log line, an error string, or operator-facing
-//     config is NOT wrapped — the operator configured the unprefixed name and
-//     must see the name they wrote.
-//
-// Getting this wrong is silent in both directions, which is why it is a helper
-// with a stated rule rather than a set of ad-hoc string concatenations: an
-// unwrapped comparison leaves the write-Apps gate false forever (forge writes
-// disabled fleet-wide with no boot error), and a wrapped log line tells the
-// operator to set a name that is not the one they configure.
+// serverSecretName maps forge secret names to the SERVER resolver's keyspace.
+// Wrap names compared with ResolvedSecret.Name; keep operator-facing logs and
+// errors unprefixed. A mismatch silently disables writes or tells operators to
+// configure a name they did not set.
 func serverSecretName(name string) string {
 	if name == "" {
 		// An unset name is "not configured", not a secret called "SERVER_".
@@ -482,15 +417,9 @@ const masterKeySaltLen = 32
 // record) is what advances it.
 const initialKeyVersion int16 = 1
 
-// resolveMasterKey resolves the at-rest master key and its generation for boot.
-// It resolves store.MasterKeyName through the server resolver, decodes it (64
-// hex chars -> 32 bytes), builds the envelope.Key, and reconciles it against the
-// server_key_state tripwire: first boot writes the row, a later boot verifies
-// the key matches the one the stored ciphertexts were sealed under.
-//
-// It NEVER generates a key (operator-seeded custody, DL-355) and NEVER echoes
-// the value or any part of it in an error — a wrong length or non-hex value is
-// reported by what was expected, not by what was found.
+// resolveMasterKey resolves and decodes the operator-provisioned key, then checks
+// it against the server_key_state tripwire. It never generates a key or includes
+// any key value in an error.
 func resolveMasterKey(ctx context.Context, st *store.Store, server secrets.Resolver) (envelope.Key, int16, error) {
 	resolved, err := server.Resolve(ctx, "master key resolve")
 	if err != nil {
@@ -534,11 +463,9 @@ func decodeMasterKey(value string) ([]byte, error) {
 	return raw, nil
 }
 
-// reconcileKeyState verifies key against the server_key_state tripwire: first
-// boot writes the fingerprint row and returns the initial generation; a later
-// boot recomputes the fingerprint under the stored salt and constant-time
-// compares it, failing closed if a different key is configured than the one the
-// data was sealed under.
+// reconcileKeyState writes a fingerprint row on first boot. Later boots compare
+// the key fingerprint in constant time and fail closed if the key differs from
+// the one used to seal stored data.
 func reconcileKeyState(ctx context.Context, st *store.Store, key envelope.Key) (envelope.Key, int16, error) {
 	state, err := st.ServerKeyState(ctx)
 	switch {
@@ -573,18 +500,9 @@ func reconcileKeyState(ctx context.Context, st *store.Store, key envelope.Key) (
 	return key, state.KeyVersion, nil
 }
 
-// buildServerSecretResolver constructs the read-only SERVER-secret resolver: a
-// SpecResolver whose manifest is built from the SEPARATE server_secrets registry
-// (the ServerDeclaredSecrets view), resolving through cfg.SecretProvider. It is
-// the surface resolveMasterKey and the forge-secret consumers read, and the
-// value-free Statuses probe ListServerSecrets uses. Its own state dir keeps its
-// manifest off the (now DB-backed) user path's disk. An empty provider uses
-// secretspec's default chain — today's behavior.
-//
-// The user/container side is no longer a SpecResolver: it is the DB-backed
-// StoreResolver (record A4), built in Serve from the master key this resolver
-// yields, so a server secret cannot be delivered into an agent container by
-// construction — the two paths read different tables.
+// buildServerSecretResolver creates the read-only SpecResolver over
+// server_secrets. The user/container path uses a separate DB-backed resolver, so
+// deployment secrets cannot be delivered into agent containers.
 func buildServerSecretResolver(st *store.Store, cfg ServeConfig) secrets.Resolver {
 	opts := []secrets.SpecOption{}
 	if cfg.SecretProvider != "" {
@@ -597,12 +515,9 @@ func buildServerSecretResolver(st *store.Store, cfg ServeConfig) secrets.Resolve
 	)
 }
 
-// buildUserSecretResolver declares the server-secret names (including the
-// reserved master-key name, without which resolveMasterKey reads a provisioned
-// key as absent), resolves the master key, and returns the DB-backed user-secret
-// resolver built from it. Fail-closed per DL-355: an absent, empty, wrong-length
-// or non-hex key aborts startup with the provisioning runbook, and boot NEVER
-// generates one — nothing decrypts a stored value until this succeeds.
+// buildUserSecretResolver declares server-secret names, resolves the master key,
+// and builds the DB-backed user resolver. A missing or invalid key fails startup,
+// and boot never generates a replacement; nothing decrypts until this succeeds.
 func buildUserSecretResolver(
 	ctx context.Context, st *store.Store, cfg ServeConfig, serverResolver secrets.Resolver,
 ) (*secrets.StoreResolver, envelope.Key, int16, error) {
@@ -619,42 +534,25 @@ func buildUserSecretResolver(
 	return secrets.NewStoreResolver(st, masterKey, keyVersion), masterKey, keyVersion, nil
 }
 
-// declareServerSecretNames declares the six forge secret NAMEs into
-// server_secrets, under their reserved prefix, from the RESOLVED forge config —
-// the same accessor every live forge consumer reads, so the declared set and
-// the resolved set cannot drift.
-//
-// This runs on EVERY boot and is idempotent by construction: DeclareServerSecret
-// is not idempotent, so an already-declared name comes back ErrConflict and is
-// tolerated as the no-op it is (the same tolerated-conflict arm SetSecret uses).
-//
-// It is gated on the SAME predicates that enable the forge lanes, so a
-// deployment running neither the GitHub App nor Linear declares nothing and
-// requires nothing. Without this declare the server resolver's registry is
-// EMPTY, and Resolve short-circuits an empty registry to (nil, nil) with no
-// provider call — so every re-pointed consumer would see an absent name and a
-// configured App would hard-fail its boot.
-//
-// It declares NAMES only. The operator populates the VALUES in the provider
-// directly, before the server runs, which is what dissolves the
-// chicken-and-egg of needing a running server to reach the provisioning RPC.
+// declareServerSecretNames registers configured forge secret names in
+// server_secrets under the SERVER prefix. It tolerates existing-name conflicts
+// and follows each lane's enable predicate. It declares names only; operators
+// provision values directly in the provider before boot.
 func declareServerSecretNames(ctx context.Context, st *store.Store, cfg ServeConfig) error {
 	fc := cfg.Forge.resolved()
 	var names []string
 	if fc.boardIngestionEnabled() {
 		names = append(names, fc.App.AppPrivateKeySecret, fc.App.AppWebhookSecretName)
 	}
-	// The reviewer App is gated on its OWN AppID, independent of the primary,
-	// because forgeWriteAppsConfigured evaluates the two independently. Nesting
-	// it under boardIngestionEnabled (keyed on the primary) would declare
-	// nothing for a reviewer-only deployment, silencing warnPartialForgeWriteSecrets.
+	// Declare the reviewer key independently: its AppID gate is separate from the
+	// primary App's board-ingestion gate. Nesting it would miss reviewer-only setups
+	// and silence the partial-write warning.
 	if fc.ReviewerApp.AppID != 0 {
 		names = append(names, fc.ReviewerApp.AppPrivateKeySecret)
 	}
-	// The Linear gate reads the RAW config, not resolved(): resolved() DEFAULTS
-	// the client-credential names, so gating on those would declare Linear secrets
-	// for every deployment and force a provider resolve. A half-set pair declares
-	// nothing, matching buildLinearTokenSource's both-absent off-state.
+	// Gate Linear on raw config: resolved() supplies defaults, which would declare
+	// both secrets for every deployment and force a provider resolve. A half-set
+	// pair declares neither, matching buildLinearTokenSource's off-state.
 	raw := cfg.Forge
 	if raw.LinearClientIDSecretName != "" && raw.LinearClientSecretName != "" {
 		names = append(names, raw.LinearClientIDSecretName, raw.LinearClientSecretName)
@@ -698,12 +596,8 @@ func (cfg ServeConfig) resolvedAdminHandle() string {
 	return bootstrapAdminHandle
 }
 
-// secretsStateDir returns the Server-owned directory the secret resolver writes
-// its generated SecretSpec manifests under: a "secrets" subdirectory of the same
-// state dir the bootstrap-admin token is written under (cfg.StateDir, defaulting
-// to the socket's parent, then "."), matching the network door's stateDir
-// derivation (network_door.go). Server state, never repo state; NewSpecResolver
-// creates it 0700 if absent.
+// secretsStateDir returns the server-owned secrets directory under cfg.StateDir
+// (or the socket's parent, then "."). NewSpecResolver creates it with mode 0700.
 func secretsStateDir(cfg ServeConfig) string {
 	base := cfg.StateDir
 	if base == "" {
@@ -714,11 +608,9 @@ func secretsStateDir(cfg ServeConfig) string {
 	return filepath.Join(base, "secrets")
 }
 
-// openStore opens the store of record and wires the RIG-1667 T4 object-store
-// archive seam onto it. When the S3 config is ABSENT (no endpoint/bucket) the
-// seam is left nil and the server boots socket-only — the store's nil-guard
-// fails a flush loudly only if one is ever attempted, so a dev server with no
-// archive configured still starts. A present-but-invalid S3 config fails here.
+// openStore opens the store and configures the optional S3 archive. Without S3 the
+// server still starts; the store's nil guard fails a flush loudly only if one is
+// attempted. An invalid S3 config fails startup.
 func openStore(ctx context.Context, cfg ServeConfig) (*store.Store, error) {
 	st, err := store.Open(ctx, cfg.DatabaseDSN)
 	if err != nil {
@@ -738,17 +630,10 @@ func openStore(ctx context.Context, cfg ServeConfig) (*store.Store, error) {
 	return st, nil
 }
 
-// seedBootstrapAccounts brings up the two platform accounts a boot needs before
-// serving: the bootstrap admin — the account the local-socket door attributes
-// every RPC to until the network door sets a real caller (the 0600 socket is the
-// local credential) — and the reserved system sender @compass, the first-turn
-// delivery sender. Both are find-or-create by handle: minted on first boot,
-// fetched on every later one, so the call is idempotent. The admin handle is
-// operator-settable via --admin-handle (defaulting to bootstrapAdminHandle); a
-// non-default handle already naming a non-admin account fails rather than
-// elevating it, and a pre-existing @compass row of the wrong shape fails rather
-// than being silently adopted — neither reserved account is ever quietly reused.
-// The @linear bridge is returned for the Linear responder and its routing seed.
+// seedBootstrapAccounts finds or creates the bootstrap admin, @compass system
+// sender, and @linear bridge. Reserved handles with the wrong account shape fail
+// startup rather than being adopted or elevated. The admin handle is configurable;
+// the returned bridge serves the Linear responder and routing seed.
 func seedBootstrapAccounts(ctx context.Context, st *store.Store, cfg ServeConfig) (admin, system, linearBridge store.Account, err error) {
 	admin, err = st.BootstrapAdmin(ctx, store.NewUser{Handle: cfg.resolvedAdminHandle(), DisplayName: bootstrapAdminDisplayName})
 	if err != nil {
@@ -924,11 +809,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// lifecycle T3-a, RelayBoardCall), and comms<->hub ask-answer wake (RIG-1577)
 	// construction cycles; see wireHubServiceCycles in sinks.go.
 	wireHubServiceCycles(hub, commsSvc, st, issueBrd)
-	// The SecretsService is an account-facing sibling of CompassService/CommsService:
-	// it mounts on every account door behind the same bearer + admin-gate chain
-	// (classified authenticatedOpen; the handler enforces user-only writes and the
-	// user-or-agent list). The hub is its SecretsVersion signaler; it shares the
-	// one resolver with FetchSecrets.
+	// SecretsService mounts on each account door behind the same auth chain as CompassService.
+	// Its handler enforces user-only writes and user-or-agent listing; the hub signals
+	// secret-version changes through the shared resolver.
 	secretsSvc := newSecretsService(st, resolver, serverResolver, hub)
 
 	// The forge read-side credentials, built BEFORE the doors because the network
@@ -947,11 +830,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		compassID: systemAccount.ID, linearBridgeID: linearRoutingBridge(forgeWiring.linearTokens, linearBridge.ID)})
 	defer cancelSeed()
 
-	// Assemble the three compass.v1 doors (shipped socket, optional dev loopback,
-	// optional authenticated network) plus the Linear notify lane and session
-	// responder. On a net-door build error the listeners this Serve bound are
-	// still ours to close.
-	// buildDoors takes BOTH instances — see its parameter docs for why.
+	// Assemble the Compass doors, Linear notify lane, and session responder.
+	// On assembly failure, Serve still owns and closes its bound listeners.
 	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, linearBridge.ID, resolver, serverResolver,
 		devListener, netListener, netTLS, forgeWiring.webhookSink, forgeWiring.webhookSecret, forgeWiring.linearTokens, masterKey, keyVersion)
 	if err != nil {
@@ -1060,12 +940,9 @@ type serveDoors struct {
 	runnerVerifier keyRefresher
 }
 
-// buildDoors assembles the three compass.v1 doors off the already-built service
-// graph and pre-bound listeners. It is split out of Serve so the door assembly —
-// whose interceptor ordering is security-critical (see the dev door below) —
-// reads as one unit. It does not serve; the returned servers are driven by the
-// caller's errgroup. On a net-door build error it returns the error and the
-// caller owns listener cleanup (nothing here is registered for teardown).
+// buildDoors assembles the doors from the service graph and pre-bound listeners.
+// It returns servers for the caller's errgroup; on failure, the caller closes
+// listeners. Interceptor ordering is security-critical (see the dev door).
 func buildDoors(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -1076,11 +953,9 @@ func buildDoors(
 	st *store.Store,
 	adminID store.AccountID,
 	linearBridgeID store.AccountID,
-	// resolver is the CONTAINER user-secret resolver (the DB-backed StoreResolver
-	// reading `secrets`), threaded to buildNetworkServer -> the FetchSecrets
-	// delivery path. serverResolver reads `server_secrets` and is threaded ONLY to
-	// the Linear webhook wiring. Do not collapse these: that is how every server
-	// secret ends up delivered into every agent container.
+	// resolver is the container StoreResolver used by FetchSecrets. serverResolver
+	// reads server_secrets and is only for webhook wiring; mixing them would expose
+	// deployment secrets to agent containers.
 	resolver *secrets.StoreResolver,
 	serverResolver secrets.Resolver,
 	devListener net.Listener,
@@ -1364,11 +1239,8 @@ func newLocalDoorServer(h http.Handler, header, idle time.Duration) *http.Server
 	return &http.Server{Handler: h, Protocols: cleartextHTTP2(), ReadHeaderTimeout: header, IdleTimeout: idle}
 }
 
-// cleartextHTTP2 enables HTTP/1.1 and prior-knowledge cleartext HTTP/2 (h2c) on
-// a server: native gRPC clients speak HTTP/2, while gRPC-Web and Connect clients
-// reach the same handler over either version. Because the stdlib server serves
-// both, their connections are tracked by http.Server.Shutdown and drain
-// gracefully.
+// cleartextHTTP2 enables HTTP/1.1 and cleartext HTTP/2 for gRPC, gRPC-Web, and
+// Connect clients on one handler. http.Server tracks both protocols for shutdown.
 func cleartextHTTP2() *http.Protocols {
 	p := new(http.Protocols)
 	p.SetHTTP1(true)
@@ -1385,11 +1257,8 @@ func classifyServe(err error, ctx string) error {
 	return fmt.Errorf("%s terminated with an error: %w", ctx, err)
 }
 
-// boardIngestLane is the assembled board webhook-ingestion lane (RIG-2883): the
-// T1 webhook arm (whose Run drains the ingress queue and whose Enqueue is the
-// accepted-event sink) and the T3 reconciler (whose Run sweeps the backstop).
-// The caller composes sink into the ingress fanoutSink and adds arm.Run +
-// reconciler.Run to the serve errgroup.
+// boardIngestLane combines the webhook arm and reconciliation sweep; Serve runs
+// both in the shared errgroup and mounts its sink on the webhook ingress.
 type boardIngestLane struct {
 	arm        *ingest.BoardWebhookArm
 	reconciler *ingest.BoardReconciler
@@ -1398,12 +1267,9 @@ type boardIngestLane struct {
 	router *forge.OwnerRoutedGitHub
 }
 
-// forgeReadWiring bundles the forge read-side credentials Serve builds once and
-// threads into the doors + write path: board and notify lanes route by repository
-// owner, while the router's default installation shares the primary client with
-// the author write leg. Linear lanes share one OAuth token source with writes.
-// Board fields are nil when the GitHub App is absent; linearTokens is nil when
-// Linear is not configured.
+// forgeReadWiring bundles the read-side credentials shared by doors and writes.
+// Board and notify lanes route by owner; author writes share the primary client.
+// Linear lanes reuse one OAuth token source. Board fields are nil without its App.
 type forgeReadWiring struct {
 	boardLane     *boardIngestLane
 	notifyLane    *forgeNotifyLane
@@ -1504,20 +1370,10 @@ func buildBoardWebhookWiring(
 	return lane, notifyLane, sink, secret, router, nil
 }
 
-// buildLinearWebhookWiring builds the shared Linear POST /webhooks/linear
-// handler (DL-302) when the Linear webhook secret is declared — an
-// App-INDEPENDENT gate (a deployment can run Linear notifications without a
-// GitHub App, so this does NOT check boardIngestionEnabled). When the secret is
-// undeclared it returns a nil handler and buildNetworkServer mounts no
-// /webhooks/linear route. A resolve FAULT fails startup (the same fail-fast as
-// forgeSecretDeclared); an absent name is the clean off-state, not an error.
-//
-// dataSink feeds the Linear notify lane and sessionSink the session responder;
-// each is nil when Linear is not configured, and the handler then acks-and-drops
-// that arm with a 200. The secret is TTL-cached (newCachedWebhookSecret):
-// /webhooks/linear is an internet-facing, unauthenticated endpoint whose secret
-// is resolved on EVERY request BEFORE the HMAC check, so an uncached resolve
-// would let a garbage POST force a full secretspec export ahead of authentication.
+// buildLinearWebhookWiring builds the shared Linear handler when its signing
+// secret is declared, independent of the GitHub App gate. Missing secrets leave
+// the route off; resolve faults fail startup. Nil sinks ack and drop events.
+// Cache the secret because this unauthenticated endpoint checks HMAC after resolve.
 func buildLinearWebhookWiring(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -1588,12 +1444,9 @@ func (a *boardTargetStore) IsEnabledRepo(ctx context.Context, repo string) (bool
 	return a.st.IsEnabledForgeRepo(ctx, repo)
 }
 
-// boardReconcileStore adapts *store.Store to ingest.BoardStore, binding the
-// forge coordinate half (provider, host) so the ingest-side seam stays
-// repo-keyed and this package holds the store dependency the ingest package's
-// no-store rule keeps out. ListEnabledRepos is repo-only keyed (the T4 seam),
-// so the bound coordinate is used only for the coordinate-keyed watermark
-// load/store.
+// boardReconcileStore adapts the store to ingest.BoardStore and binds provider
+// and host for watermark operations. Target enumeration remains repo-keyed and
+// spans coordinates.
 type boardReconcileStore struct {
 	st       *store.Store
 	provider store.ForgeProvider
@@ -1633,12 +1486,9 @@ func (a *boardReconcileStore) MarkPRsBackfilled(ctx context.Context, repo string
 	return a.st.MarkPRsBackfilled(ctx, a.provider, a.host, repo, at)
 }
 
-// forgeNotifyLane is the assembled GitHub agent-notification lane (RIG-2732 T7):
-// the notify webhook arm (whose Run drains the ingress queue and whose Enqueue is
-// the accepted-event sink) and the notify reconciler (whose Run sweeps the
-// backstop). It rides the SAME /webhooks/github ingress the board lane mounts —
-// the caller composes sink into the ingress fanoutSink and adds arm.Run +
-// reconciler.Run to the serve errgroup, exactly like the board lane.
+// forgeNotifyLane combines the webhook arm and reconciliation sweep for the
+// GitHub notification lane. Both run in the serve group and share the GitHub
+// webhook ingress with the board lane.
 type forgeNotifyLane struct {
 	arm        *ingest.NotifyWebhookArm
 	reconciler *ingest.NotifyReconciler
@@ -1652,13 +1502,9 @@ type forgeNotifyLane struct {
 	identities ingest.IdentityResolver
 }
 
-// forgeNotifyStore adapts *store.Store to ingest.NotifyStore, binding the forge
-// coordinate half (provider, host) so the ingest-side seam stays coordinate-free
-// and this package holds the store dependency the ingest package's no-store rule
-// keeps out. The ingest ArtifactKind enum and the store ForgeArtifactKind enum
-// share the same underlying int32 values (both mirror the forge.proto kind), so
-// the (provider, host)-drop conversion is a direct cast, the established pattern
-// (ListForgeNotifyTargets, forge_subscriptions.go:401).
+// forgeNotifyStore adapts the store to ingest.NotifyStore, binding provider and
+// host while keeping the ingest seam coordinate-free. Artifact-kind enums mirror
+// the wire kind, so their conversion is a direct cast.
 type forgeNotifyStore struct {
 	st       *store.Store
 	provider store.ForgeProvider
@@ -1775,27 +1621,17 @@ func toIngestCursor(cur *store.ForgeArtifactCursor) *ingest.ArtifactCursor {
 	}
 }
 
-// forgeIdentityResolver adapts *store.Store to ingest.IdentityResolver, binding
-// the forge coordinate half (provider, host) like forgeNotifyStore so the
-// ingest-side seam stays coordinate-free. It resolves the OWNER-QUALIFIED
-// Compass handle (owner handle + agent handle) that self-origin suppression
-// matches on. A clean miss — an unknown account, a non-agent account, or no
-// ownership row at the coordinate — returns a zero ingest.Handle with a NIL
-// error so the router fails OPEN (delivers). A real store fault returns the
-// error alongside a zero Handle (NEVER a populated one — a caller that used it
-// would suppress), which the router logs at warn and likewise delivers.
+// forgeIdentityResolver binds the store lookup to a forge coordinate and resolves
+// owner-qualified handles for self-origin suppression. Clean misses and store
+// faults return a zero Handle, so the router fails open and delivers.
 type forgeIdentityResolver struct {
 	st       *store.Store
 	provider store.ForgeProvider
 	host     string
 }
 
-// HandleForAccount resolves an agent account id to its owner-qualified handle via
-// TWO PK reads: GetAccount(accountID) yields the agent's own handle and its
-// OwnerUserID (the owner as an *id*, not a handle — no id->handle projection
-// exists), then GetAccount(OwnerUserID) yields the owner's handle. ErrNotFound at
-// EITHER read, or an account that is not an agent (no owner to qualify by), is a
-// clean miss: a zero Handle with a nil error.
+// HandleForAccount resolves an agent and its owner's handle with two account reads.
+// Missing rows or a non-agent account are clean misses with a zero Handle.
 func (r *forgeIdentityResolver) HandleForAccount(ctx context.Context, accountID string) (ingest.Handle, error) {
 	agent, err := r.st.GetAccount(ctx, store.AccountID(accountID))
 	if err != nil {
@@ -1818,13 +1654,9 @@ func (r *forgeIdentityResolver) HandleForAccount(ctx context.Context, accountID 
 	return ingest.Handle{Owner: owner.Handle, Agent: agent.Handle}, nil
 }
 
-// AuthorHandle resolves the DL-055 ownership row's recorded authoring agent at
-// the bound coordinate, then that agent's owner-qualified handle. It reads the
-// row via AuthoredArtifactByCoordinate (kind mapped with the same direct cast
-// forgeNotifyStore uses, both enums mirroring the wire kind) then delegates to
-// HandleForAccount for the two-read owner resolution. ErrNotFound at the
-// ownership row (no recorded author at the coordinate) is a clean miss; a miss
-// inside HandleForAccount is one too.
+// AuthorHandle resolves the recorded author at the bound coordinate, then uses
+// HandleForAccount for owner qualification. Missing ownership or account rows are
+// clean misses, not errors.
 func (r *forgeIdentityResolver) AuthorHandle(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, number uint64) (ingest.Handle, error) {
 	row, err := r.st.AuthoredArtifactByCoordinate(ctx, r.provider, r.host, repo, store.ForgeArtifactKind(kind), number)
 	if err != nil {
@@ -1842,12 +1674,8 @@ func (r *forgeIdentityResolver) AuthorHandle(ctx context.Context, repo string, k
 // not a cursor advance — no cursor is touched on a no-session dispatch.
 var errNoLiveSession = errors.New("forge notify: no live session for account")
 
-// notifySessionDispatcher is the hub surface forgeNotifyDispatcher drives:
-// resolve an account to its live session, then dispatch a control frame to it.
-// Both methods are on *runnerhub.Hub (the production impl); naming them as a
-// local interface lets a unit test inject a fake and exercise Notify's resolve/
-// miss branches and the AgentControl wrapping without a live hub or Postgres.
-// It mirrors the delivery package's SessionResolver + ControlDispatcher split.
+// notifySessionDispatcher is the hub surface used by forgeNotifyDispatcher.
+// Its local interface lets tests exercise dispatch without a live hub or database.
 type notifySessionDispatcher interface {
 	SessionForAccount(ctx context.Context, account store.AccountID) (sessionID string, ok bool)
 	DispatchControl(ctx context.Context, sessionID string, op *compassv1internal.AgentControl) error
@@ -1875,17 +1703,9 @@ func (d *forgeNotifyDispatcher) Notify(ctx context.Context, account string, n *c
 	})
 }
 
-// forgeNotifyChecksRoller adapts a forge.NotifyReader to ingest.ChecksRoller: the
-// combined checks roll-up a CHECKS event needs. NotifyReader's ChecksConditional
-// has the exact RollUp signature (notify_router.go:111-113), so this is a
-// one-method forwarding adapter rather than a method value, keeping the seam an
-// explicit named type. It holds the NotifyReader interface (not a concrete
-// *forge.GitHub) so ONE adapter serves both the GitHub lane (client is a
-// *forge.GitHub) and the Linear lane (client is a *forge.Linear) — both satisfy
-// forge.NotifyReader (notify_reader.go:77,367). Linear's ChecksConditional
-// returns ErrUnsupported, but the router invokes RollUp only on a CHECKS-kind
-// event, which Linear (issues-only) never produces — so it is correct and
-// never-called (fail-closed if one somehow arrived).
+// forgeNotifyChecksRoller adapts NotifyReader to the checks roll-up seam.
+// GitHub and Linear share this adapter; Linear returns ErrUnsupported, but its
+// issues-only event stream never produces CHECKS, so RollUp is never called.
 type forgeNotifyChecksRoller struct {
 	client forge.NotifyReader
 }
@@ -1896,17 +1716,8 @@ func (r *forgeNotifyChecksRoller) RollUp(ctx context.Context, repo string, numbe
 	return r.client.ChecksConditional(ctx, repo, number, headSHA, etag)
 }
 
-// forgeNotifyPullNumbers adapts a forge.PullRequestResolver to
-// ingest.PullNumberResolver: the head_sha->PR-number step a check_suite webhook
-// needs (RIG-2869). The seam names differ (PullNumberForSHA vs
-// PullRequestForSHA) because the router's seam is named for what it needs — a
-// number for its coordinate — so this is a one-method forwarding adapter, the
-// forgeNotifyChecksRoller pattern.
-//
-// It holds forge.PullRequestResolver, satisfied by *forge.GitHub only: the
-// endpoint is GitHub's commit->pulls association. The Linear lane wires a NIL
-// resolver (Linear is issues-only and never produces a CHECKS event), which the
-// router tolerates — no unreachable ErrUnsupported arm.
+// forgeNotifyPullNumbers adapts the GitHub head-SHA-to-PR-number resolver needed
+// by CHECKS events. Linear is issues-only, so its lane leaves this resolver nil.
 type forgeNotifyPullNumbers struct {
 	client forge.PullRequestResolver
 }
@@ -1951,21 +1762,10 @@ func buildForgeNotifyLane(
 	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: router, pulls: pulls, identities: identities}
 }
 
-// buildLinearNotifyLane assembles the Linear agent-notification lane (RIG-2732
-// T7), the Linear sibling of buildForgeNotifyLane. It is gated by the caller on
-// the shared Linear OAuth client-credentials token source: a nil tokens means
-// Linear is not configured, so it returns nil — the off-state the caller reads
-// as "mount no Linear notify sink". A non-nil tokens builds the lane over a
-// Linear client riding the SAME token-source instance the write coordinate rides
-// (the one-instance rule, DEC-4), so it cannot fail (no resolve, no error
-// return).
-//
-// Linear is issues-only and check-less (DL-051): its event alphabet is
-// Issue/Comment, so no CHECKS/REVIEW arms ever fire. The checks roller is still
-// wired (the router's ChecksRoller seam is non-optional) over the same
-// forgeNotifyChecksRoller adapter the GitHub lane uses — the Linear client's
-// ChecksConditional returns ErrUnsupported, but the router invokes RollUp only on
-// a CHECKS event Linear never produces (correct and never-called).
+// buildLinearNotifyLane returns nil when the shared Linear OAuth source is absent.
+// Otherwise it reuses that source for the issue-only notify lane and write path.
+// Linear emits no CHECKS events; the required checks roller's unsupported result
+// is therefore never called.
 func buildLinearNotifyLane(
 	st *store.Store,
 	hub *runnerhub.Hub,
@@ -2005,17 +1805,10 @@ func buildLinearNotifyLane(
 	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client, pulls: nil, identities: identities}
 }
 
-// newDeclaredSecretResolver returns a func that resolves the declared server_only
-// secret NAME to its raw value bytes on each call — the lazy PEM/webhook-secret
-// seam the App token source and the webhook ingress consume. A resolve fault or
-// an absent name is an error the caller surfaces (a per-mint auth failure for the
-// token source; a 503 for the ingress). It threads the caller's ctx into the
-// resolve, never re-rooting.
-// name is the OPERATOR-FACING (unprefixed) name: the comparison uses the
-// serverSecretName-wrapped one (these secrets live in the server keyspace) and
-// the error reports the unprefixed one. This closure mints the GitHub App token
-// and verifies webhook HMACs, so an unwrapped comparison here fails every
-// resolve at runtime, not at boot.
+// newDeclaredSecretResolver resolves an operator-facing secret name from the
+// SERVER resolver on each call. It compares the prefixed registry name but keeps
+// errors unprefixed, propagates ctx, and surfaces faults or absent names.
+// It serves App-token and webhook-HMAC paths; unprefixed comparison fails at runtime.
 func newDeclaredSecretResolver(resolver secrets.Resolver, name string) func(ctx context.Context) ([]byte, error) {
 	return resolveDeclaredSecret(resolver, name, "board webhook")
 }
@@ -2040,18 +1833,10 @@ func resolveDeclaredSecret(resolver secrets.Resolver, name, label string) func(c
 	}
 }
 
-// cachedWebhookSecret wraps newDeclaredSecretResolver in a TTL cache for the hot
-// path: the webhook-secret resolver is invoked on EVERY request to the
-// internet-facing, unauthenticated POST /webhooks/github, BEFORE the HMAC check
-// (github_webhook.go resolves the secret, then verifies the signature). An
-// uncached resolve there lets an attacker force one full secretspec export
-// (registry read + manifest temp-file write + CLI subprocess) per cheap
-// garbage POST — an asymmetric-cost amplification ahead of authentication. The
-// cache (forgeTokenTTL) bounds the per-request cost to a memcmp while a rotated
-// signing secret still takes effect within the TTL. A resolve fault is surfaced to the caller (a 503),
-// never cached. Unlike the App-key resolver (also newDeclaredSecretResolver but
-// cold — NewAppTokenSource caches the minted token and only reads the key on
-// mint), this one is on the request hot path, so it needs the cache.
+// cachedWebhookSecret TTL-caches the webhook secret because unauthenticated
+// requests resolve it before HMAC validation. Without caching, each garbage POST
+// could trigger a full secretspec export; rotation takes effect within the TTL.
+// Resolve faults are returned, never cached. App-key resolution is cold-path.
 type cachedWebhookSecret struct {
 	base func(ctx context.Context) ([]byte, error)
 	ttl  time.Duration
@@ -2090,17 +1875,9 @@ func (c *cachedWebhookSecret) get(ctx context.Context) ([]byte, error) {
 	return c.value, nil
 }
 
-// validateForgeSecret resolves the declared secret set once and asserts the
-// configured name is present. A resolve that ERRORS is transient
-// ("forge secret resolve failed at startup: %w"); a name ABSENT from the
-// resolved set is a permanent misconfiguration ("forge secret %q not declared").
-// The two are distinguishable so a crash-loop is diagnosable.
-//
-// name is the OPERATOR-FACING (unprefixed) name. This function owns both halves
-// of the invariant so no caller has to: it compares against the
-// serverSecretName-wrapped name, because the six forge secrets are declared in
-// the server keyspace, but reports the UNPREFIXED name in the error — the
-// operator must be told to declare the name they actually configure.
+// validateForgeSecret distinguishes transient resolve faults from permanent
+// missing-secret misconfiguration. It compares prefixed names in the SERVER
+// keyspace but reports the unprefixed operator-facing name.
 func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, reason, name string) error {
 	resolved, err := resolver.Resolve(ctx, reason)
 	if err != nil {
@@ -2119,18 +1896,10 @@ func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, reason,
 	return fmt.Errorf("forge secret %q not declared: set %s in the provider", name, serverSecretName(name))
 }
 
-// wireForgeWriteCaller builds the write chokepoint and mounts it on the hub via
-// SetForgeCaller when the forge-WRITE path is enabled (BOTH the primary and
-// reviewer Apps configured). A resolve FAULT (not an absent name) fails startup
-// regardless of whether writes are on; when writes are off, the caller is left
-// unwired and Hub.RelayForgeCall fail-closes to an in-band CodeUnavailable
-// (relay_forge.go), the clean degrade — but a PARTIAL misconfig (exactly one App
-// configured) logs a Warn first, since that is a likely operator typo rather than
-// an intentional off. primaryRouter is the shared owner router used by the
-// author, board, and notify lanes; linearTokens is the shared Linear write source.
-// On startup fault, it unwinds caller-bound listeners before returning.
-// It returns the wired service so Serve can bound mirror drives to its lifetime.
-// Nil means writes are off.
+// wireForgeWriteCaller mounts writes only when both Apps are configured. Resolve
+// faults fail startup; with writes off, Hub.RelayForgeCall fails closed with
+// CodeUnavailable, and a partial config warns. Setup faults close bound listeners;
+// Serve bounds mirror work to the returned service's lifetime (nil: writes off).
 func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store, issueBrd *board.IssueProjection, resolver secrets.Resolver, hub *runnerhub.Hub, commsSvc *comms.Comms, log *slog.Logger, primaryRouter *forge.OwnerRoutedGitHub, linearTokens *linearagent.TokenSource, udsListener net.Listener, listeners boundListeners) (*forgeService, error) {
 	declaredSecrets, err := resolver.Resolve(ctx, "forge write")
 	if err != nil {
@@ -2150,13 +1919,9 @@ func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store,
 	return forgeSvc, nil
 }
 
-// buildForgeWriteService assembles the agent forge-WRITE chokepoint (the
-// runnerhub.ForgeCaller) for the two-App setup. It validates the reviewer App key,
-// builds its owner router, registers that router beside the primary router, adds
-// the Linear coordinate when configured, and returns the service for Serve.
-//
-// Board and notify lanes use the same primary router, sharing the default
-// installation's rate gate with author writes.
+// buildForgeWriteService builds the two-App write caller and registers GitHub
+// plus optional Linear coordinates. The reviewer has a distinct identity;
+// board, notify, and author writes share the primary router's rate gate.
 func buildForgeWriteService(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -2270,16 +2035,9 @@ func registerLinearForgeCoordinate(reg *forgeProviderRegistry, linear forge.Prov
 	return reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host: forge.LinearHost}, linear, linear, false)
 }
 
-// buildLinearTokenSource builds the ONE shared Linear OAuth client-credentials
-// token source (actor=app) from the declared client-id/secret pair, or returns
-// nil when Linear is not configured (neither name declared — the clean off-state
-// for a deployment that runs no Linear lane). Exactly ONE of the two names
-// declared is a likely operator typo: it Warns and treats Linear as off (mirrors
-// warnPartialForgeWriteSecrets). When BOTH are declared it builds the source and
-// runs a boot-time mint check — one Token(ctx) call — so a bad pair or a disabled
-// client_credentials toggle fails Serve at startup (fail-fast like
-// validateForgeSecret), not on the first write. The returned instance is passed
-// to BOTH the notify lane and the write coordinate (the one-instance rule, DEC-4).
+// buildLinearTokenSource returns nil when neither client-credential name is set;
+// a partial pair warns and stays off. With both names declared, it builds and
+// boot-checks one shared app-actor token source for notify and write lanes.
 func buildLinearTokenSource(ctx context.Context, cfg ServeConfig, resolver secrets.Resolver, log *slog.Logger) (*linearagent.TokenSource, error) {
 	fc := cfg.Forge.resolved()
 	declared, err := resolver.Resolve(ctx, "forge linear")
@@ -2287,9 +2045,7 @@ func buildLinearTokenSource(ctx context.Context, cfg ServeConfig, resolver secre
 		return nil, fmt.Errorf("forge secret resolve failed at startup: %w", err)
 	}
 	var clientID, clientSecret string
-	// COMPARISON side: matched against the SERVER resolver's resolved names, so
-	// both cases are serverSecretName-wrapped. The Warn below reports the
-	// UNWRAPPED names, because that is what the operator configures.
+	// Compare SERVER-prefixed names; keep the warning's names unprefixed for operators.
 	wantID, wantSecret := serverSecretName(fc.LinearClientIDSecretName), serverSecretName(fc.LinearClientSecretName)
 	for _, s := range declared {
 		switch s.Name {
@@ -2326,16 +2082,10 @@ func buildLinearTokenSource(ctx context.Context, cfg ServeConfig, resolver secre
 	return tokens, nil
 }
 
-// forgeSecretDeclared reports whether name is present in the resolved
-// declared-secret set — the additive Linear gate (register a Linear coordinate
-// iff its secret is declared). A resolve fault fails fast the same way
-// validateForgeSecret's does; unlike validateForgeSecret an absent name is NOT an
-// error (Linear is the optional additive coordinate, not the required path).
-// name is the OPERATOR-FACING (unprefixed) name; the comparison is against the
-// serverSecretName-wrapped one, since the Linear credentials live in the server
-// keyspace. Unwrapped, this returns (false, nil) forever — which
-// buildLinearWebhookWiring maps to a legitimate off-state, so the Linear
-// webhook ingress would silently unmount rather than fail loudly.
+// forgeSecretDeclared checks the optional secret in the SERVER resolver; faults
+// fail startup, while absence is a valid off-state for Linear.
+// Compare the prefixed registry name but keep the operator-facing name unprefixed.
+// An unwrapped comparison silently leaves the Linear webhook route unmounted.
 func forgeSecretDeclared(ctx context.Context, resolver secrets.Resolver, name string) (bool, error) {
 	resolved, err := resolver.Resolve(ctx, "forge write")
 	if err != nil {
@@ -2350,12 +2100,9 @@ func forgeSecretDeclared(ctx context.Context, resolver secrets.Resolver, name st
 	return false, nil
 }
 
-// reconcileForgeSeed inserts each seed repo as an enabled target, bootstrap-only
-// (ON CONFLICT DO NOTHING via EnsureForgeRepoSubscription): the flag creates
-// rows that do not yet exist and leaves an existing row entirely untouched (a
-// dropped-from-flag repo is neither deleted nor disabled; a soft-disabled row
-// stays disabled). Each repo is validated owner/name and lowercased for GITHUB
-// before insert, so a Owner/Name and owner/name seed mint ONE PK row.
+// reconcileForgeSeed inserts missing seed repos as enabled targets and leaves
+// existing rows unchanged, including disabled rows. It validates and lowercases
+// owner/name so case variants do not create duplicate keys.
 func reconcileForgeSeed(ctx context.Context, st *store.Store, provider store.ForgeProvider, host string, seed []string) error {
 	for _, raw := range seed {
 		repo, err := normalizeGitHubRepo(raw)
@@ -2374,12 +2121,8 @@ func reconcileForgeSeed(ctx context.Context, st *store.Store, provider store.For
 	return nil
 }
 
-// warnDisabledBoardIngestion emits exactly one slog.Warn when the board webhook
-// lane is off (no GitHub App configured) but the table already holds enabled
-// subscription rows for the bound (provider, host) — a deployment that landed a
-// manual row (or a prior --forge-repos seed) without wiring the App. Never
-// fail-fast: it keeps board ingestion hard-off (Constraint #3). No Warn when no
-// enabled rows exist. The count covers ONLY the bound coordinate.
+// warnDisabledBoardIngestion warns when enabled targets exist for this coordinate
+// but the GitHub App is absent. It never enables ingestion or fails startup.
 func warnDisabledBoardIngestion(ctx context.Context, st *store.Store, provider store.ForgeProvider, host string, log *slog.Logger) {
 	enabled, err := st.ListEnabledForgeRepoSubscriptions(ctx, provider, host)
 	if err != nil {
@@ -2393,11 +2136,8 @@ func warnDisabledBoardIngestion(ctx context.Context, st *store.Store, provider s
 		"targets", len(enabled), "forge_host", host)
 }
 
-// fanoutSink fans one accepted webhook event to every registered sink; it
-// satisfies server.ForgeEventSink (github_webhook.go:47). Board-first this is a
-// single-element fan-out over the board arm; the notify arm composes in later
-// via T7 through the one-line registration seam (OQ-7). Enqueue MUST NOT block:
-// it just forwards to each sink's non-blocking Enqueue, adding no blocking work.
+// fanoutSink forwards each accepted webhook event to all registered sinks.
+// Enqueue stays non-blocking because each sink's Enqueue is non-blocking.
 type fanoutSink struct{ sinks []ForgeEventSink }
 
 // Enqueue forwards the event to every registered sink.
@@ -2407,14 +2147,9 @@ func (f *fanoutSink) Enqueue(ctx context.Context, ev forge.ForgeEvent) {
 	}
 }
 
-// warnPartialForgeWriteSecrets emits exactly one slog.Warn when the forge-WRITE
-// path is disabled because exactly ONE of the two required Apps (the primary and
-// the reviewer) is configured — a likely operator typo (a missing App id or an
-// undeclared App key secret), which otherwise silently fails every agent forge
-// write closed (CodeUnavailable) with nothing in the startup log to explain it.
-// The intentional both-absent OFF state stays silent. Mirrors
-// warnDisabledBoardIngestion: diagnostic only, never fail-fast, and logs a role
-// name never a secret value.
+// warnPartialForgeWriteSecrets warns when exactly one required App is configured,
+// since writes would otherwise fail closed with no startup explanation.
+// Both absent is the intentional off-state; the warning names roles, never secrets.
 func warnPartialForgeWriteSecrets(ctx context.Context, fc ForgeConfig, declared []secrets.ResolvedSecret, log *slog.Logger) {
 	havePrimary, haveReviewer := fc.forgeWriteAppsConfigured(declared)
 	if havePrimary == haveReviewer {
