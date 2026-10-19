@@ -12,9 +12,10 @@ bookmark. Raw `jj` stays available for reads and for local history edits the
 tools do not cover.
 
 You never push. `vcs_submit` sends a git bundle of your commits to the Compass
-Server, and the Server pushes them and writes the PRs. Your forge token is
-read-only, so a raw `git push` or PR write is refused. Hard limits: **never push
-or force-push `main`, never merge** — the human operator holds the merge gate.
+Server, and the Server pushes them and writes the PRs. Your forge credential
+can still write today, but a raw `git push` or PR write skips every check the
+tools make, so never use one. Hard limits: **never push or force-push `main`,
+never merge** — the human operator holds the merge gate.
 
 ## Mental model
 
@@ -65,7 +66,7 @@ These hold on every change, no exceptions.
   `.github/PULL_REQUEST_TEMPLATE.md`. That commit's subject becomes the PR
   title, with the issue appended, and its sections become the PR body. Later
   commits on the bookmark take `text` instead. The PR text is written once; to
-  change it, call `vcs_submit` with `text`.
+  change it, call `vcs_submit` with `text` and that bookmark's issue in `issues`.
 - **Review fixes are a NEW commit, never an amend.** Land each fix as a new
   commit on the bookmark with `vcs_commit` and submit again. An amend loses the
   link between a review thread and its code and shows no interdiff.
@@ -159,16 +160,22 @@ replacement (`forge_comment_on_pull_request`).
 A PR opened before the `vcs_*` tools carries a block between
 `<!-- start jj-vine stack -->` and `<!-- end jj-vine stack -->` in its body.
 The Server has no record that you wrote it, so the tools cannot update or close
-it. Move each such line once:
+it. Move each such line once, onto new commits under new bookmark names:
 
-1. Run `vcs_sync`, then `jj bookmark rename <old> <new>` for each bookmark in
-   the line, so every PR gets a new head branch.
-2. Run `vcs_submit` with each bookmark's issue in `issues`. Then, for each new
-   PR, run `vcs_submit` with `text` naming its bookmark and a body line that
-   links the PR it replaces; `text` covers one bookmark per call.
-3. Check that the new line has every change in the old one. Then close each old
-   PR with `gh pr close <number> --comment <new PR URL>`; the `vcs_*` tools
-   cannot close a PR the Server has no record of.
+1. Run `vcs_sync`. Copy the line with `jj duplicate <bottom>::<tip>`; the copies
+   sit on the same base with the same content and messages.
+2. Run `jj bookmark forget <old>` for each old bookmark. This drops the local
+   name and stops tracking `<old>@origin`, so the tools leave the old branch
+   alone.
+3. Run `jj bookmark create <new> -r <copy>` for each copy. Use names the old
+   line never used.
+4. Run `jj diff --from <old tip>@origin --to <new tip> --stat`; it must show no
+   change. Then run `vcs_submit` with `bookmark` set to the new tip and each new
+   bookmark's issue in `issues`. For each new PR, run `vcs_submit` again with
+   that bookmark's issue in `issues` and `text` whose body links the PR it
+   replaces; `text` covers one bookmark per call.
+5. Close each old PR with `gh pr close <number> --comment <new PR URL>`. The
+   `vcs_*` tools cannot close a PR the Server has no record of.
 
 Review history stays on the old PR. The move is done when none of your open
 PRs carries that block.
@@ -183,7 +190,7 @@ PRs carries that block.
 | Rebase onto latest trunk | `vcs_sync` |
 | Push and open or update the PRs | `vcs_submit { issues }` |
 | Take the tip PR out of draft | `vcs_submit { ready: true }` |
-| Replace one PR's title and body | `vcs_submit { text: { bookmark, subject, sections } }` |
+| Replace one PR's title and body | `vcs_submit { issues, text: { bookmark, subject, sections } }` |
 | PR, checks, authorship | `vcs_pr_status` |
 | Close a PR and delete its branch | `vcs_retire { bookmark }` |
 | Add or remove a subagent workspace | `vcs_workspace` |
