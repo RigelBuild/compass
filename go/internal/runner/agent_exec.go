@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RigelBuild/compass/go/internal/agentidentity"
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
@@ -53,6 +54,8 @@ type AgentEnv struct {
 	HomeDir string
 	// Workdir is the in-container checkout.
 	Workdir string
+	// AgentAccountID sets the identity used for jj and git commits.
+	AgentAccountID string
 	// Model is the model selector; empty uses the agent default.
 	Model string
 	// Batching is the Runner-wide idle-batching setting.
@@ -80,6 +83,15 @@ func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 		InDir(e.Workdir)
 	spec.Env["HOME"] = e.HomeDir
 	spec.Env["COMPASS_WORKDIR"] = e.Workdir
+	if e.AgentAccountID != "" {
+		email := agentidentity.AgentCommitEmail(e.AgentAccountID)
+		spec.Env["JJ_USER"] = e.AgentAccountID
+		spec.Env["JJ_EMAIL"] = email
+		spec.Env["GIT_AUTHOR_EMAIL"] = email
+		spec.Env["GIT_COMMITTER_EMAIL"] = email
+		spec.Env["GIT_AUTHOR_NAME"] = e.AgentAccountID
+		spec.Env["GIT_COMMITTER_NAME"] = e.AgentAccountID
+	}
 	if e.Model != "" {
 		spec.Env["COMPASS_MODEL"] = e.Model
 	}

@@ -28,6 +28,8 @@ type Mirror interface {
 	// Rebase replays a line of refs, bottom to top, onto the given commit in one
 	// replay. It returns each moved ref's new head; none move when refs[0] already contains it.
 	Rebase(ctx context.Context, repo string, refs []string, onto string) (heads map[string]string, conflict bool, err error)
+	// CommitIdentities returns the author and committer emails for a branch or commit.
+	CommitIdentities(ctx context.Context, repo, commit string) (authorEmail, committerEmail string, err error)
 	// SeedRef points ref at the fetched remote head of the same branch and returns it, which is also its lease.
 	SeedRef(ctx context.Context, repo, ref string) (string, error)
 }
@@ -71,6 +73,47 @@ func (m *gitMirror) ApplyBundle(ctx context.Context, repo string, bundle []byte,
 	m.capMu.Lock()
 	defer m.capMu.Unlock()
 	return m.applyBundle(ctx, repo, bundle, refs)
+}
+
+// CommitIdentities reads a branch tip or object ID while excluding mirror mutations.
+func (m *gitMirror) CommitIdentities(ctx context.Context, repo, commit string) (string, string, error) {
+	if !strings.HasPrefix(commit, "refs/heads/") && !isHexObjectID(commit) {
+		return "", "", fmt.Errorf("invalid commit reference %q", commit)
+	}
+	lock := m.repoLock(repo)
+	lock.Lock()
+	defer lock.Unlock()
+	path, _, normalized, _, err := m.prepare(ctx, repo)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.HasPrefix(commit, "refs/heads/") {
+		if _, err := m.run(ctx, path, "", "check-ref-format", commit); err != nil {
+			return "", "", fmt.Errorf("invalid commit branch ref %q: %w", commit, err)
+		}
+	}
+	out, err := m.run(ctx, path, "", "log", "-1", "--format=%ae%x00%ce", commit)
+	if err != nil {
+		return "", "", fmt.Errorf("read commit identities for %q in %s: %w", commit, normalized, err)
+	}
+	identities := strings.TrimSuffix(out, "\n")
+	parts := strings.Split(identities, "\x00")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("read commit identities for %q in %s: unexpected git output", commit, normalized)
+	}
+	return parts[0], parts[1], nil
+}
+
+func isHexObjectID(value string) bool {
+	if len(value) < 4 || len(value) > 64 {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') && (char < 'A' || char > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func isReplayConflict(err error) bool {

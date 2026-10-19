@@ -1216,13 +1216,14 @@ func (h *agentHost) requireContainer(ctx context.Context, name string) error {
 // model and batching are Runner-wide config; everything else is per-container.
 func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
 	env := AgentEnv{
-		UID:      handle.WorkspaceUID(),
-		HomeDir:  handle.HomeDir(),
-		Workdir:  handle.CheckoutDir(),
-		Model:    h.model,
-		Batching: h.batching,
-		Persona:  handle.Persona(),
-		Role:     handle.Role(),
+		UID:            handle.WorkspaceUID(),
+		HomeDir:        handle.HomeDir(),
+		Workdir:        handle.CheckoutDir(),
+		AgentAccountID: handle.AgentAccountID(),
+		Model:          h.model,
+		Batching:       h.batching,
+		Persona:        handle.Persona(),
+		Role:           handle.Role(),
 	}
 	// On the host tier the socket and config live in the handle's state dir, not at
 	// the default /run/compass paths (no mounts). Thread those overrides so the agent

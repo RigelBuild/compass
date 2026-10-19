@@ -28,6 +28,29 @@ func TestGitMirrorApplyBundleRejectsMissingCommits(t *testing.T) {
 	}
 }
 
+func TestGitMirrorCommitIdentitiesReadsBundledHead(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	mirrorGit(t, fixture.work, "switch", "-c", "agent")
+	cmd := exec.CommandContext(t.Context(), "git", "commit", "--allow-empty", "-m", "identity")
+	cmd.Dir = fixture.work
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Author", "GIT_AUTHOR_EMAIL=author@example.test", "GIT_COMMITTER_NAME=Committer", "GIT_COMMITTER_EMAIL=committer@example.test")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, output)
+	}
+	bundle := mirrorBundle(t, fixture.work, "refs/heads/agent")
+
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30)
+	if _, err := m.ApplyBundle(t.Context(), "owner/repo", bundle, []string{"refs/heads/agent"}); err != nil {
+		t.Fatalf("ApplyBundle: %v", err)
+	}
+	authorEmail, committerEmail, err := m.CommitIdentities(t.Context(), "owner/repo", "refs/heads/agent")
+	if err != nil {
+		t.Fatalf("CommitIdentities: %v", err)
+	}
+	if authorEmail != "author@example.test" || committerEmail != "committer@example.test" {
+		t.Fatalf("CommitIdentities = (%q, %q), want author@example.test and committer@example.test", authorEmail, committerEmail)
+	}
+}
 func TestGitMirrorApplyBundleDoesNotInstallUnrequestedRefs(t *testing.T) {
 	fixture := newMirrorFixture(t)
 	mainHead := mirrorCommit(t, fixture.work, "main.txt", "main\n")
