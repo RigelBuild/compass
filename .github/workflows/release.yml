@@ -25,7 +25,7 @@
 # needs.release-pr.outputs.releases_created) are T3 (RIG-2915) and are NOT here.
 #
 # See RigelBuild/docs:docs/designs/compass/infra/release/compass-unified-release-lane/design.md (§A1, §A2, §A4, §A5)
-# and docs/architecture/build-and-ci.md.
+# and docs/architecture/release.md.
 
 name: release
 
