@@ -464,6 +464,26 @@ func TestForgeWriteIntentPRRecoveryBase(t *testing.T) {
 	}
 }
 
+// A same-key retry of an omitted-base create replays its PR even after the default branch moved.
+func TestForgeCreatePRDefaultBranchMoveStillReplays(t *testing.T) {
+	ic := intentCases()[1]
+	svc, st, author, creator := newIntentService(t, ic)
+	call := createPRCall("b", "k1")
+	call.GetCreatePullRequest().BaseRef = ""
+	author.DefaultBranchResult = "trunk"
+	if fe := svc.ExecuteForgeCallAsAccountMust(t, call).GetError(); fe != nil {
+		t.Fatalf("first create: %v", fe)
+	}
+	author.DefaultBranchResult = "main"
+	res := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if res.GetError() != nil || res.GetPullRequest().GetNumber() != 55 {
+		t.Fatalf("replay after default moved = %v, want PR #55", res)
+	}
+	if countCalls(creator, ic.method) != 1 || st.intents[0].BaseRef != "trunk" {
+		t.Fatalf("creates=%d base=%q, want one create on the original trunk", countCalls(creator, ic.method), st.intents[0].BaseRef)
+	}
+}
+
 func TestForgeCreatePRDefaultBranchFailureWritesNothing(t *testing.T) {
 	ic := intentCases()[1]
 	svc, st, author, creator := newIntentService(t, ic)

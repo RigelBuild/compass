@@ -35,16 +35,18 @@ const (
 
 // writeTarget names one create made for an agent.
 type writeTarget struct {
-	rf        resolvedForge
-	id        callerIdentity
-	caller    store.AccountID
-	session   string
-	repo      string
-	kind      forge.WriteKind
-	parent    uint64
-	headRef   string
-	baseRef   string
-	issueLink *store.ForgeCoord
+	rf      resolvedForge
+	id      callerIdentity
+	caller  store.AccountID
+	session string
+	repo    string
+	kind    forge.WriteKind
+	parent  uint64
+	headRef string
+	baseRef string
+	// defaultBase marks a base resolved from the repo default, which may move between same-key retries.
+	defaultBase bool
+	issueLink   *store.ForgeCoord
 }
 
 // beginWrite records the create's intent before any forge call. A non-nil ref
@@ -124,7 +126,7 @@ func sameWriteTarget(in store.WriteIntent, t writeTarget) bool {
 		return false
 	}
 	if t.kind == forge.WriteKindPullRequest &&
-		((t.baseRef != "" && in.BaseRef != "" && in.BaseRef != t.baseRef) ||
+		((!t.defaultBase && t.baseRef != "" && in.BaseRef != "" && in.BaseRef != t.baseRef) ||
 			(t.issueLink != nil && in.IssueLink != nil && !sameForgeCoord(in.IssueLink, t.issueLink))) {
 		return false
 	}

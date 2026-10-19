@@ -453,7 +453,7 @@ func (s *forgeService) createPullRequest(ctx context.Context, caller store.Accou
 	}
 	intent, prior, fe := s.beginWrite(ctx, call.GetClientRequestId(), writeTarget{
 		rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), kind: forge.WriteKindPullRequest,
-		headRef: req.GetHeadRef(), baseRef: baseRef, issueLink: link,
+		headRef: req.GetHeadRef(), baseRef: baseRef, defaultBase: req.GetBaseRef() == "", issueLink: link,
 	})
 	if fe != nil {
 		return forgeErrorResult(fe)
