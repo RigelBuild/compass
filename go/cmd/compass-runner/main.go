@@ -302,12 +302,9 @@ func pathContains(parent, child string) bool {
 	return err == nil && (rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
-// newSpecBuilder assembles the config spec builder from the resolved engine and
-// operator inputs. The uid every workspace runs as is resolved per backend by
-// runner.ResolveWorkspaceUID (the host tier names its own euid; the container
-// tiers keep the baked fleet constant); everything else is the operator's
-// flags/env verbatim. The per-backend uid policy lives in internal/runner beside
-// the non-root check that validates the result — this binary stays a thin wrapper.
+// newSpecBuilder resolves per-backend workspace UIDs: host uses its euid, while
+// containers keep the baked fleet constant. Backend policy and non-root checks
+// live in internal/runner; this binary only wires operator inputs.
 func newSpecBuilder(ctx context.Context, engine runtime.WorkloadRuntime, image string, egress runtime.EgressPolicy, checkoutDir, homeDir string, mounts []runtime.Mount) (runner.SpecBuilder, error) {
 	uid, err := runner.ResolveWorkspaceUID(engine)
 	if err != nil {
@@ -378,13 +375,9 @@ type canaryBooter interface {
 	BootCanary(ctx context.Context) (runtime.CanaryReport, error)
 }
 
-// verifyBackendPreflight runs the selected engine's static host-capability
-// preflight. It dispatches on the engine's concrete type, first match wins,
-// probing the microVM backend before podman and apple-container; no engine
-// satisfies two of them today, so dispatch is deterministic. An engine exposing
-// no probe is a fail-closed startup error naming the concrete type — never a
-// silent skip, so a backend added without a preflight surfaces loudly at launch
-// rather than running unchecked.
+// verifyBackendPreflight dispatches by concrete probe interface, checking
+// microVM before Podman and Apple. A backend without a probe fails closed with
+// its type named; startup validation must never be silently skipped.
 func verifyBackendPreflight(ctx context.Context, engine runtime.WorkloadRuntime) error {
 	switch e := engine.(type) {
 	case microVMPreflighter:
@@ -411,12 +404,9 @@ func preflightUnderSignals(parent context.Context, engine runtime.WorkloadRuntim
 	return ctx, stop, nil
 }
 
-// runMicroVMPreflight runs the microVM backend's two-stage startup gate: the
-// static VerifyMicroVMSupport check, then — only once it passes — the dynamic
-// BootCanary, logging the returned CanaryReport at info. A microVM engine that
-// satisfies microVMPreflighter but not canaryBooter is a fail-closed startup
-// error naming the type, never a silent skip (same posture as the neither-probe
-// default). Split out so verifyBackendPreflight stays within funlen.
+// runMicroVMPreflight checks static support before booting a dynamic canary;
+// absence of the canary probe fails closed. Split out to keep
+// verifyBackendPreflight within funlen.
 func runMicroVMPreflight(ctx context.Context, pre microVMPreflighter, engine runtime.WorkloadRuntime) error {
 	if err := pre.VerifyMicroVMSupport(ctx); err != nil {
 		return err
@@ -435,12 +425,9 @@ func runMicroVMPreflight(ctx context.Context, pre microVMPreflighter, engine run
 	return nil
 }
 
-// setupOtel installs the tracer and meter providers off the env-only OTLP
-// endpoint, returning one shutdown that flushes both. When
-// OTEL_EXPORTER_OTLP_ENDPOINT is empty the providers are no-ops and the shutdown
-// is a no-op, so tracing is off with zero overhead. The export gate lives here in
-// the global-provider install — the runner's outbound otelconnect interceptor is
-// mounted unconditionally and is inert against the no-op global.
+// setupOtel installs env-gated tracer and meter providers with one shutdown.
+// With no OTLP endpoint, the global providers are no-ops and the unconditionally
+// mounted outbound interceptor remains inert.
 func setupOtel(ctx context.Context) (shutdown func(), err error) {
 	cfg := otelsetup.Config{
 		ServiceName:    "compass-runner",
@@ -456,12 +443,9 @@ func setupOtel(ctx context.Context) (shutdown func(), err error) {
 		_ = tracerShutdown(ctx) // roll back the tracer provider we just installed; nothing actionable on its error here
 		return nil, fmt.Errorf("otel: meter provider: %w", err)
 	}
-	// The drain ctx is already cancelled by the time this fires (the signal that
-	// ends runner.Run is the same one that cancels ctx), so a raw ctx.Shutdown
-	// would abort its final ForceFlush and drop the last batch. Sever the
-	// cancellation and bound the flush at 2s (design.md: mirror the agent's 2s
-	// shutdown bound), derived at fire time so the deadline is not consumed by the
-	// process lifetime — matching the context.WithoutCancel precedent in run.go.
+	// The drain ctx is canceled when shutdown runs; raw shutdown would drop its
+	// final batch. Detach cancellation and start a 2s flush deadline at shutdown,
+	// not process start.
 	return func() {
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
@@ -539,11 +523,9 @@ func (f backendFlags) selectTracedEngine() (runtime.WorkloadRuntime, error) {
 	return f.selectEngine(guestInterceptor)
 }
 
-// backendConfig resolves every backend knob from its flag with an environment
-// fallback. Split from selectEngine so the resolution is assertable without
-// constructing a real backend: a knob that never reaches the config is dead
-// code an operator cannot set (the QuotaRequired fail-open), and only a test
-// over THIS function catches that.
+// backendConfig resolves each backend knob from flag then env. Keep it separate
+// from selectEngine so tests catch knobs that fail to reach BackendConfig,
+// including the fail-open quota setting.
 func (f backendFlags) backendConfig() (runtime.BackendConfig, error) {
 	cpus, err := intOrEnv(*f.cpus, "COMPASS_MICROVM_CPUS")
 	if err != nil {
@@ -587,11 +569,9 @@ func orEnv(flagVal, envKey string) string {
 	return os.Getenv(envKey)
 }
 
-// intOrEnv returns flagVal when non-zero, else the named environment variable
-// parsed as an int. An empty env var is 0 (unset — the config treats 0 as
-// "leave the VMM default"); a present-but-non-numeric env var is an error
-// naming the offending variable and value so a misconfiguration surfaces at
-// startup rather than as a zero silently swallowing a typo.
+// intOrEnv returns a nonzero flag value or parses env; empty env leaves the VMM
+// default. Invalid values error with the variable and value, so a typo cannot
+// silently become zero.
 func intOrEnv(flagVal int, envKey string) (int, error) {
 	if flagVal != 0 {
 		return flagVal, nil
@@ -607,30 +587,10 @@ func intOrEnv(flagVal int, envKey string) (int, error) {
 	return parsed, nil
 }
 
-// boolOrEnv returns flagVal when it is true, else the named environment
-// variable parsed as a bool. The flag defaults to false, so a set flag always
-// wins and an unset one falls through to the env — the same precedence orEnv
-// and intOrEnv give their zero values. An empty env var is false (unset); a
-// present-but-unparseable one is an error naming the offending variable and
-// value, so `COMPASS_MICROVM_QUOTA_REQUIRED=yes` refuses at startup instead of
-// silently reading as false and fail-opening the D7 gate.
-//
-// PRECEDENCE IS ASYMMETRIC, deliberately, and it is a CONTRACT, not an
-// accident: a false flag is indistinguishable from an unset one here (there is
-// no flag.Visit and no *bool nil sentinel), so `--microvm-quota-required=false`
-// does NOT override `$COMPASS_MICROVM_QUOTA_REQUIRED=true` — the env's true
-// wins. Two reasons to keep it that way rather than honoring an explicit false:
-//
-//   - It matches the zero-value convention of every sibling knob (orEnv,
-//     intOrEnv), so one knob does not read its flags differently from the rest.
-//   - It fails in the SAFE direction for THIS knob: the losing input is the one
-//     that would turn the multi-tenant quota gate OFF, so a conflict leaves the
-//     gate ON.
-//
-// An operator who genuinely needs the gate off on a box whose environment sets
-// it must unset the environment variable; passing the flag is not enough.
-// TestQuotaRequiredEnvTrueBeatsExplicitFlagFalse pins this direction so the
-// asymmetry cannot be silently "fixed" into the fail-open direction.
+// boolOrEnv uses a true flag, else parses env; invalid env values error. A false
+// flag reads as unset, so env true beats an explicit false: a conflict leaves the
+// quota gate ON. To turn it off, unset the env var.
+// TestQuotaRequiredEnvTrueBeatsExplicitFlagFalse pins this direction.
 func boolOrEnv(flagVal bool, envKey string) (bool, error) {
 	if flagVal {
 		return true, nil

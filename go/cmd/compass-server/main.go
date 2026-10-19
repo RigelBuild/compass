@@ -43,11 +43,8 @@ var rev = ""
 // RPC).
 const apiVersion = "compass.v1"
 
-// errUsage marks a CLI usage error (a bad flag) that buildServeConfig's FlagSet
-// has ALREADY reported to stderr (usage + the parse error). run() returns it so
-// main() can exit non-zero without re-logging it through slog — a typo'd flag is
-// a usage mistake, not a server crash, and double-reporting it as a structured
-// error line reads like the latter.
+// errUsage marks a bad flag already reported by buildServeConfig's FlagSet.
+// main exits non-zero without logging it as a server error a second time.
 var errUsage = errors.New("cli usage error")
 
 func main() {
@@ -117,12 +114,9 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("otel: tracer provider: %w", err)
 	}
-	// The drain ctx is already cancelled by the time these defers fire (the signal
-	// that ends Serve is the same one that cancels ctx), so a raw ctx.Shutdown
-	// would abort its final ForceFlush and drop the last batch. Sever the
-	// cancellation and bound the flush at 2s (design.md: mirror the agent's 2s
-	// shutdown bound), derived HERE at fire time so the deadline is not consumed
-	// by the process lifetime.
+	// The drain ctx is canceled when shutdown runs; raw shutdown would drop its
+	// final batch. Detach cancellation and start a 2s flush deadline at shutdown,
+	// not process start.
 	defer func() {
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
@@ -141,14 +135,10 @@ func run(ctx context.Context) error {
 	return server.Serve(ctx, cfg)
 }
 
-// buildServeConfig parses args into the ServeConfig the serve loop consumes,
-// returning showVersion=true when --version was requested (the caller prints the
-// version and exits). Split out of run() so the whole flag→config mapping is
-// unit-testable without binding a socket or serving — a bad flag combination is
-// an error here, not deep in Serve. It uses a private FlagSet (ContinueOnError)
-// rather than the global flag.CommandLine, so a parse error returns up (never
-// os.Exit) and tests never race on global flag state; a -h/--help request comes
-// back as flag.ErrHelp with usage already printed.
+// buildServeConfig maps CLI args to ServeConfig and reports --version separately.
+// A private ContinueOnError FlagSet keeps errors testable without os.Exit or
+// global flag state. Help returns flag.ErrHelp after printing usage; invalid
+// flag combinations fail before Serve.
 func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 	fs := flag.NewFlagSet("compass-server", flag.ContinueOnError)
 	f := registerServeFlags(fs)
@@ -206,11 +196,8 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 			_ = listenListener.Close()
 		}
 	}()
-	// The network door's CORS contract is exactly one explicit origin, never a
-	// wildcard — it is internet-facing, so an any-origin door is exactly the state
-	// the design forbids. rs/cors treats a literal "*" (or a '*' pattern) as
-	// all-origins, so a copy-pasted "*" would silently open the door with no error.
-	// Reject any '*' up front rather than deep in the CORS layer.
+	// Only explicit origins are allowed on this internet-facing door. rs/cors
+	// treats '*' as allow-all, so reject it here before it silently opens access.
 	if strings.Contains(*f.corsAllowedOrigin, "*") {
 		return server.ServeConfig{}, false, fmt.Errorf(
 			"--cors-allowed-origin must be a single explicit origin, not a wildcard: %q", *f.corsAllowedOrigin)
@@ -284,11 +271,9 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 	return config, false, nil
 }
 
-// logOnDrainSignal registers a one-shot handler that logs the first SIGINT/SIGTERM
-// so an operator can tell a graceful drain from a hard death. It returns a stop
-// func the caller defers (unregisters the handler). A dedicated registration
-// rather than ctx.Done() so it fires only on a real signal — not when Serve
-// returns on its own and the caller's stop() then cancels ctx.
+// logOnDrainSignal logs the first actual SIGINT/SIGTERM and returns an unregister
+// function. Use a dedicated registration, not ctx.Done(): Serve may stop normally
+// and caller cancellation must not be mistaken for a signal.
 func logOnDrainSignal(ctx context.Context) func() {
 	drainSig := make(chan os.Signal, 1)
 	signal.Notify(drainSig, os.Interrupt, syscall.SIGTERM)
@@ -640,13 +625,9 @@ type forgeInputs struct {
 	scopeGrants              string
 }
 
-// resolveForge turns the forge inputs (already flag-then-env resolved) into the
-// ServeConfig.Forge surface, mirroring resolveNetworkDoor's shape: pure
-// input->output, no I/O. The repos string is a comma-separated owner/name list;
-// each entry is validated (garbage is a startup error) and lowercased for GITHUB
-// so Owner/Name and owner/name collapse to one target. App ids are parsed as
-// int64 when set (garbage is a startup error); empty leaves them zero. Empty
-// host / secret NAMEs are left zero for server-side defaulting.
+// resolveForge maps flag/env-resolved inputs to ForgeConfig without I/O. It
+// validates and lowercases owner/name entries and parses IDs; empty values stay
+// zero for server-side defaults.
 func resolveForge(in forgeInputs) (server.ForgeConfig, error) {
 	seed, err := parseForgeRepos(in.repos)
 	if err != nil {
@@ -720,11 +701,9 @@ func parseForgeInt(v, flagName string) (int64, error) {
 	return n, nil
 }
 
-// parseForgeRepos splits a comma-separated owner/name list, validating and
-// lowercasing each entry (GITHUB owner/name is case-insensitive-but-preserving,
-// so Owner/Name and owner/name must collapse to one PK row). Blank entries are
-// skipped; a malformed entry is a startup error. An empty input yields a nil
-// slice (no seed).
+// parseForgeRepos validates comma-separated owner/name entries and lowercases
+// them so case variants share one database key. Blank entries are skipped;
+// empty input returns nil and malformed entries error.
 func parseForgeRepos(repos string) ([]string, error) {
 	if strings.TrimSpace(repos) == "" {
 		return nil, nil

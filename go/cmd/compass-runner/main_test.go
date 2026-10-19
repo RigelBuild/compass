@@ -68,12 +68,9 @@ func TestServerNameFlagAndEnvironmentFallback(t *testing.T) {
 	}
 }
 
-// Compile-time regression guard: the real backend types must satisfy their
-// probe interfaces, so a future change that drops a probe method fails to
-// compile here rather than silently falling through to verifyBackendPreflight's
-// fail-closed default at runtime. Routing of the default *PodmanCLI to the
-// podman branch also depends on it NOT satisfying microVMPreflighter; that
-// precedence is exercised by TestVerifyBackendPreflight, not asserted here.
+// Compile-time guards ensure backend probe methods remain present. They also
+// keep Podman out of microVMPreflighter, preserving preflight dispatch order;
+// TestVerifyBackendPreflight exercises that routing.
 var (
 	_ microVMPreflighter        = (*runtime.MicroVMRuntime)(nil)
 	_ podmanPreflighter         = (*runtime.PodmanCLI)(nil)
