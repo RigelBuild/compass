@@ -4215,8 +4215,8 @@ type ProvisionAgentWorkspaceRequest struct {
 	// the same container_name rather than provisioning a second container: the
 	// Server threads it as the RunnerHub request id so the retry joins the
 	// in-flight/completed call instead of re-dispatching. Empty = no dedup (each
-	// call provisions). compass.md §"A retried provision creates no duplicate
-	// container".
+	// call provisions). compass/agent-sessions.md §"A retried provision creates
+	// no duplicate container".
 	ClientRequestId string `protobuf:"bytes,2,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
 	// The agent's persona, baked into the container's system prompt at provision
 	// so it survives compaction (a system-prompt config block is not part of the
