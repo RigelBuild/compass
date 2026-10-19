@@ -114,7 +114,7 @@ func Dial(ctx context.Context, cfg RunnerConfig) (*ServerLink, error) {
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = http.DefaultClient //nolint:forbidigo // the Connect interceptor carries the trace
 	}
 	otelInterceptor, err := otelconnect.NewClientInterceptor()
 	if err != nil {
