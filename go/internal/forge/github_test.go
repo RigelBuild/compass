@@ -2121,6 +2121,18 @@ func TestUpdatePullRequestRequestAndDecode(t *testing.T) {
 	}
 }
 
+func TestUpdatePullRequestBodyOnlySendsOnlyBody(t *testing.T) {
+	const response = `{"number":13,"title":"theirs","body":"new","state":"open","head":{"ref":"feature"},"base":{"ref":"release","repo":{"full_name":"org/repo"}}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 200, body: response}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	if _, err := g.UpdatePullRequest(t.Context(), "org/repo", 13, UpdatePR{Title: "stale", Body: "new", BaseRef: "main", BodyOnly: true}); err != nil {
+		t.Fatalf("UpdatePullRequest: %v", err)
+	}
+	if gotBody, want := readReqBody(t, rt.requests[0]), `{"body":"new"}`; gotBody != want {
+		t.Errorf("PATCH body = %q, want %q", gotBody, want)
+	}
+}
+
 func TestUpdatePullRequestReady(t *testing.T) {
 	const response = `{"number":13,"title":"updated","body":"body","state":"open","draft":true,"node_id":"PR_node","head":{"ref":"feature"},"base":{"ref":"main","repo":{"full_name":"org/repo"}}}`
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{

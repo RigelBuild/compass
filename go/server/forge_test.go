@@ -862,9 +862,9 @@ func TestForgeCreatePullRequestStampsAndRecordsPRKind(t *testing.T) {
 	}
 }
 
-// Retrying create_pull_request with a create_issue request ID returns the stored
-// Issue coordinate and makes no provider call; dedup keys on agent and request ID.
-func TestForgeCreateRetryMismatchedArmReturnsStoredKind(t *testing.T) {
+// Retrying with a create_issue request ID on create_pull_request is a different
+// target, so it is refused with no provider call rather than replaying the issue.
+func TestForgeCreateRetryMismatchedArmIsRefused(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
 	reviewer := forge.NewFakeProvider("gh-reviewer")
 	svc, st := newForgeServiceForTest(t, author, reviewer)
@@ -876,17 +876,11 @@ func TestForgeCreateRetryMismatchedArmReturnsStoredKind(t *testing.T) {
 	}
 
 	second := svc.ExecuteForgeCallAsAccountMust(t, createPRCall("different", "req-x"))
-	if second.GetError() != nil {
-		t.Fatalf("mismatched-arm retry errored: %v", second.GetError())
-	}
-	if second.GetPullRequest() != nil {
-		t.Fatalf("mismatched-arm retry returned a PR arm, want the stored ISSUE arm")
-	}
-	if second.GetIssue().GetNumber() != 42 {
-		t.Fatalf("mismatched-arm retry issue number = %d, want 42 (stored coordinate)", second.GetIssue().GetNumber())
+	if fe := second.GetError(); fe == nil || fe.GetCode() != "failed_precondition" || !strings.Contains(fe.GetMessage(), "another target") {
+		t.Fatalf("mismatched-arm retry = %v, want failed_precondition naming another target", second)
 	}
 	if len(author.Calls()) != 1 {
-		t.Fatalf("provider calls total = %d, want 1 (PR retry deduped, zero provider calls)", len(author.Calls()))
+		t.Fatalf("provider calls total = %d, want 1 (the refused retry makes none)", len(author.Calls()))
 	}
 	if len(st.recorded) != 1 {
 		t.Fatalf("recorded rows = %d, want 1 (no second row)", len(st.recorded))

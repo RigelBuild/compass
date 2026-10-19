@@ -21,15 +21,19 @@ type stackProvider struct {
 	prs       map[string]*forge.PullRequest
 	next      uint64
 	createErr map[string]error
+	findErr   map[string]error
 	events    *[]string
 }
 
 func newStackProvider(events *[]string) *stackProvider {
-	return &stackProvider{FakeProvider: forge.NewFakeProvider("gh-author"), prs: map[string]*forge.PullRequest{}, next: 100, createErr: map[string]error{}, events: events}
+	return &stackProvider{FakeProvider: forge.NewFakeProvider("gh-author"), prs: map[string]*forge.PullRequest{}, next: 100, createErr: map[string]error{}, findErr: map[string]error{}, events: events}
 }
 
 func (p *stackProvider) FindPullRequestByHead(_ context.Context, _ string, head string) (forge.PullRequest, bool, error) {
 	p.log("find " + head)
+	if err := p.findErr[head]; err != nil {
+		return forge.PullRequest{}, false, err
+	}
 	pr, ok := p.prs[head]
 	if !ok {
 		return forge.PullRequest{}, false, nil
@@ -51,6 +55,10 @@ func (p *stackProvider) CreatePullRequest(_ context.Context, _ string, in forge.
 func (p *stackProvider) UpdatePullRequest(_ context.Context, _ string, n uint64, u forge.UpdatePR) (forge.PullRequest, error) {
 	pr := p.byNumber(n)
 	p.log("update " + pr.HeadRef)
+	if u.BodyOnly {
+		pr.Body = u.Body
+		return *pr, nil
+	}
 	pr.Title, pr.Body, pr.BaseRef = u.Title, u.Body, u.BaseRef
 	if u.Ready {
 		pr.Draft = false
@@ -91,27 +99,36 @@ func (p *stackProvider) count(prefix string) int {
 	return n
 }
 
-// fakeMirror records applies and pushes into the shared event log.
+// fakeMirror records applies and pushes into the shared event log. remote holds
+// forge branch heads; a push is checked against its leases like a real lease.
 type fakeMirror struct {
 	events  *[]string
 	applied [][]string
 	pushes  []map[string]string
+	leases  []forge.Leases
 	pushErr error
+	remote  map[string]string
 	// rebases records each Rebase line and its onto; conflict scripts the result.
 	rebases  [][]string
 	ontos    []string
 	conflict bool
 	// unmoved makes Rebase report that onto is already in the line.
 	unmoved bool
+	// afterRebase runs once the replay has moved refs, to race the remote before the push.
+	afterRebase func()
 }
 
-func (m *fakeMirror) ApplyBundle(_ context.Context, _ string, _ []byte, refs []string) error {
+func (m *fakeMirror) ApplyBundle(_ context.Context, _ string, _ []byte, refs []string) (forge.Leases, error) {
 	*m.events = append(*m.events, "apply")
 	m.applied = append(m.applied, refs)
-	return nil
+	leases := forge.Leases{}
+	for _, ref := range refs {
+		leases[ref] = m.remote[ref]
+	}
+	return leases, nil
 }
 
-func (m *fakeMirror) Push(_ context.Context, _ string, refs map[string]string) error {
+func (m *fakeMirror) Push(_ context.Context, _ string, refs map[string]string, expected forge.Leases) error {
 	for ref := range refs {
 		*m.events = append(*m.events, "push "+ref)
 	}
@@ -120,7 +137,30 @@ func (m *fakeMirror) Push(_ context.Context, _ string, refs map[string]string) e
 		m.pushErr = nil
 		return err
 	}
+	for ref, commit := range refs {
+		lease, ok := expected[ref]
+		if !ok {
+			return errors.New("push without a lease for " + ref)
+		}
+		if lease != m.remote[ref] {
+			return errors.New("stale lease for " + ref)
+		}
+		if commit == "" && lease == "" {
+			delete(refs, ref)
+		}
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	for ref, commit := range refs {
+		if commit == "" {
+			delete(m.remote, ref)
+		} else {
+			m.remote[ref] = commit
+		}
+	}
 	m.pushes = append(m.pushes, refs)
+	m.leases = append(m.leases, expected)
 	return nil
 }
 
@@ -138,12 +178,18 @@ func (m *fakeMirror) Rebase(_ context.Context, _ string, refs []string, onto str
 	for _, ref := range refs {
 		heads[ref] = strings.TrimPrefix(ref, "refs/heads/") + "-new"
 	}
+	if m.afterRebase != nil {
+		m.afterRebase()
+	}
 	return heads, false, nil
 }
 
 func (m *fakeMirror) SeedRef(_ context.Context, _ string, ref string) (string, error) {
 	*m.events = append(*m.events, "seed "+ref)
-	return strings.TrimPrefix(ref, "refs/heads/") + "-old", nil
+	if _, ok := m.remote[ref]; !ok {
+		m.remote[ref] = strings.TrimPrefix(ref, "refs/heads/") + "-old"
+	}
+	return m.remote[ref], nil
 }
 
 func newStackServiceForTest(t *testing.T) (*forgeService, *fakeForgeStore, *stackProvider, *fakeMirror) {
@@ -157,7 +203,7 @@ func newStackServiceForTest(t *testing.T) (*forgeService, *fakeForgeStore, *stac
 		t.Fatalf("register: %v", err)
 	}
 	svc.providers = reg
-	m := &fakeMirror{events: events}
+	m := &fakeMirror{events: events, remote: map[string]string{}}
 	svc.mirror = m
 	return svc, st, p, m
 }
@@ -324,9 +370,10 @@ func TestSubmitStackMidStackRateLimitSkipsRest(t *testing.T) {
 	if got[1].GetError().GetCode() != "resource_exhausted" {
 		t.Fatalf("b error = %v, want resource_exhausted", got[1].GetError())
 	}
+	// Preflight reads every head; the skipped entry gets no write.
 	for _, ev := range *p.events {
-		if strings.HasSuffix(ev, " c") {
-			t.Fatalf("event %q touched the skipped entry", ev)
+		if strings.HasSuffix(ev, " c") && !strings.HasPrefix(ev, "find ") {
+			t.Fatalf("event %q wrote the skipped entry", ev)
 		}
 	}
 	if p.count("update") != 0 {
@@ -513,18 +560,23 @@ func retireCall(head string) *compassv1internal.ForgeCallRequest {
 func TestRetireHeadClosesOwnPRAndDeletesOnlyItsBranch(t *testing.T) {
 	svc, st, p, m := newStackServiceForTest(t)
 	seedPR(st, p, "open", testAgentID, testOwnerID)
+	m.remote["refs/heads/a"], m.remote["refs/heads/main"] = "a-sha", "main-sha"
 	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, retireCall("a")))
 	if got[0].GetStatus() != doneStatus || p.prs["a"].State != "closed" {
 		t.Fatalf("result = %v state=%s, want done and closed", got, p.prs["a"].State)
 	}
-	if len(m.pushes) != 1 || len(m.pushes[0]) != 1 || m.pushes[0]["refs/heads/a"] != "" {
-		t.Fatalf("pushes = %v, want one delete of refs/heads/a", m.pushes)
+	if len(m.pushes) != 1 || len(m.pushes[0]) != 1 || m.pushes[0]["refs/heads/a"] != "" || m.leases[0]["refs/heads/a"] != "a-sha" {
+		t.Fatalf("pushes = %v leases = %v, want one delete of refs/heads/a leased on a-sha", m.pushes, m.leases)
+	}
+	if _, ok := m.remote["refs/heads/main"]; !ok {
+		t.Fatal("main was deleted, want only the retired branch gone")
 	}
 }
 
 func TestRetireHeadRetryAfterEitherStepSendsNoSecondClose(t *testing.T) {
 	svc, st, p, m := newStackServiceForTest(t)
 	seedPR(st, p, "open", testAgentID, testOwnerID)
+	m.remote["refs/heads/a"] = "a-sha"
 	m.pushErr = errors.New("network")
 	if res := svc.ExecuteForgeCallAsAccountMust(t, retireCall("a")); res.GetError() == nil {
 		t.Fatalf("first retire = %v, want the delete error", res)
@@ -532,8 +584,18 @@ func TestRetireHeadRetryAfterEitherStepSendsNoSecondClose(t *testing.T) {
 	for range 2 {
 		stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, retireCall("a")))
 	}
-	if p.count("close") != 1 || len(m.pushes) != 2 {
-		t.Fatalf("closes=%d deletes=%d, want 1 and 2", p.count("close"), len(m.pushes))
+	if p.count("close") != 1 || len(m.pushes) != 1 {
+		t.Fatalf("closes=%d deletes=%d, want 1 and 1", p.count("close"), len(m.pushes))
+	}
+}
+
+// The delete landed but its answer was lost: the retry sees no branch and succeeds without pushing.
+func TestRetireHeadRetryAfterLostDeleteResponseSucceeds(t *testing.T) {
+	svc, st, p, m := newStackServiceForTest(t)
+	seedPR(st, p, "closed", testAgentID, testOwnerID)
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, retireCall("a")))
+	if got[0].GetStatus() != doneStatus || p.count("close") != 0 || len(m.pushes) != 0 {
+		t.Fatalf("result = %v closes=%d pushes=%v, want done with no close and no push", got, p.count("close"), m.pushes)
 	}
 }
 

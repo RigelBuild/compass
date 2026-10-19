@@ -29,6 +29,7 @@ const (
 
 	writePendingMessage = "pending: the Server is still checking the forge; retry later"
 	writeLostMessage    = "the create's outcome is unknown; check the forge before creating it again"
+	writeOtherTarget    = "forge: client_request_id was used for another target"
 )
 
 // writeTarget names one create made for an agent.
@@ -67,6 +68,10 @@ func (s *forgeService) beginWrite(ctx context.Context, key string, t writeTarget
 	if in.ID == fresh {
 		return in, nil, nil
 	}
+	// The store keys an intent on agent and request key only, so a reused key must not replay another target's object.
+	if !sameWriteTarget(in, t) {
+		return in, nil, forgeErr(connect.CodeFailedPrecondition, writeOtherTarget)
+	}
 	switch in.State {
 	case store.WriteStateDone:
 		ref, fe := intentRef(in)
@@ -89,6 +94,14 @@ func (s *forgeService) beginWrite(ctx context.Context, key string, t writeTarget
 	default:
 		return in, nil, forgeErr(connect.CodeInternal, fmt.Sprintf("forge: write intent in unknown state %q", in.State))
 	}
+}
+
+// sameWriteTarget compares a replayed intent with this call's target; repo case folds as the store does.
+func sameWriteTarget(in store.WriteIntent, t writeTarget) bool {
+	provider := store.ForgeProvider(t.rf.provider)
+	fold := func(repo string) string { return store.ForgeCoord{Provider: provider, Repo: repo}.Normalized().Repo }
+	return in.Provider == provider && in.Host == t.rf.host && fold(in.Repo) == fold(t.repo) &&
+		in.Kind == t.kind && in.Parent == t.parent && in.HeadRef == t.headRef && in.AgentAccountID == t.caller
 }
 
 // requireWriteKey refuses a create with no idempotency key: the intent cannot exist without one.
