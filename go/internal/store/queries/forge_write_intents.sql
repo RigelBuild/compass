@@ -46,6 +46,15 @@ SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
 FROM forge_write_intents
 WHERE id = sqlc.arg(id);
 
+-- name: LiveWriteIntentByKey :one
+SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+       agent_account_id, owner_user_id, session_id, client_request_id,
+       forge_key, state, created_at, tenant_id
+FROM forge_write_intents
+WHERE agent_account_id = sqlc.arg(agent_account_id)
+  AND client_request_id = sqlc.arg(client_request_id)
+  AND state <> 'failed';
+
 -- name: LockWriteIntent :one
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
        agent_account_id, owner_user_id, session_id, client_request_id,

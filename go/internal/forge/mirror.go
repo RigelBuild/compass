@@ -70,20 +70,7 @@ func (m *gitMirror) ApplyBundle(ctx context.Context, repo string, bundle []byte,
 	defer lock.Unlock()
 	m.capMu.Lock()
 	defer m.capMu.Unlock()
-	path, err := m.applyBundle(ctx, repo, bundle, refs)
-	if err != nil {
-		return nil, err
-	}
-	// The leases come from this call's fetch, so a later fetch cannot widen what the push overwrites.
-	leases := make(Leases, len(refs))
-	for _, ref := range refs {
-		lease, err := m.trackingHead(ctx, path, ref)
-		if err != nil {
-			return nil, err
-		}
-		leases[ref] = lease
-	}
-	return leases, nil
+	return m.applyBundle(ctx, repo, bundle, refs)
 }
 
 func isReplayConflict(err error) bool {
@@ -303,8 +290,9 @@ func (m *gitMirror) trackingHead(ctx context.Context, path, ref string) (string,
 	return "", fmt.Errorf("read fetched lease for %s: %w", ref, err)
 }
 
-// applyBundle fetches and installs the bundle's refs; the caller holds the repo and cap locks.
-func (m *gitMirror) applyBundle(ctx context.Context, repo string, bundle []byte, refs []string) (_ string, err error) {
+// applyBundle fetches, reads the leases, and installs the bundle's refs; the
+// caller holds the repo and cap locks.
+func (m *gitMirror) applyBundle(ctx context.Context, repo string, bundle []byte, refs []string) (_ Leases, err error) {
 	path, remote, normalized, created, err := m.prepare(ctx, repo)
 	defer func() {
 		if created && err != nil && path != "" {
@@ -314,27 +302,36 @@ func (m *gitMirror) applyBundle(ctx context.Context, repo string, bundle []byte,
 		}
 	}()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := m.removeIncomingRefs(ctx, path); err != nil {
-		return "", err
+		return nil, err
 	}
 	refsBeforeFetch, err := m.rollbackSnapshotRefs(ctx, path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := m.fetch(ctx, path, remote); err != nil {
-		return "", fmt.Errorf("fetch forge refs for %s: %w", normalized, err)
+		return nil, fmt.Errorf("fetch forge refs for %s: %w", normalized, err)
 	}
 	if err := m.checkCaps(path); err != nil {
-		return "", errors.Join(err, m.rollbackRefs(ctx, path, refsBeforeFetch))
+		return nil, errors.Join(err, m.rollbackRefs(ctx, path, refsBeforeFetch))
+	}
+	// The leases come from this call's fetch, so a later fetch cannot widen what the push overwrites.
+	leases := make(Leases, len(refs))
+	for _, ref := range refs {
+		lease, err := m.trackingHead(ctx, path, ref)
+		if err != nil {
+			return nil, errors.Join(err, m.rollbackRefs(context.WithoutCancel(ctx), path, refsBeforeFetch))
+		}
+		leases[ref] = lease
 	}
 	if len(bundle) == 0 {
-		return path, nil
+		return leases, nil
 	}
 	bundlePath, err := writeMirrorBundle(bundle)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer func() {
 		if removeErr := os.Remove(bundlePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -342,27 +339,27 @@ func (m *gitMirror) applyBundle(ctx context.Context, repo string, bundle []byte,
 		}
 	}()
 	if len(refs) == 0 {
-		return path, nil
+		return leases, nil
 	}
 	refsBeforeBundle, err := m.rollbackSnapshotRefs(ctx, path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	orderedRefs := append([]string(nil), refs...)
 	sort.Strings(orderedRefs)
 	args := []string{"fetch", "--no-tags", "--force", bundlePath}
 	for _, ref := range orderedRefs {
 		if !strings.HasPrefix(ref, "refs/heads/") {
-			return "", fmt.Errorf("bundle ref %q is not a branch ref", ref)
+			return nil, fmt.Errorf("bundle ref %q is not a branch ref", ref)
 		}
 		if _, err := m.run(ctx, path, "", "check-ref-format", ref); err != nil {
-			return "", fmt.Errorf("invalid bundle ref %q: %w", ref, err)
+			return nil, fmt.Errorf("invalid bundle ref %q: %w", ref, err)
 		}
 		stageRef := "refs/compass-incoming/" + strings.TrimPrefix(ref, "refs/heads/")
 		args = append(args, "+"+ref+":"+stageRef)
 	}
 	if _, err := m.run(ctx, path, "", args...); err != nil {
-		return "", errors.Join(
+		return nil, errors.Join(
 			fmt.Errorf("apply git bundle for %s (bundle prerequisite may be missing): %w", normalized, err),
 			m.rollbackRefs(ctx, path, refsBeforeBundle),
 		)
@@ -371,19 +368,19 @@ func (m *gitMirror) applyBundle(ctx context.Context, repo string, bundle []byte,
 		stageRef := "refs/compass-incoming/" + strings.TrimPrefix(ref, "refs/heads/")
 		out, err := m.run(ctx, path, "", "rev-parse", "--verify", stageRef+"^{commit}")
 		if err != nil {
-			return "", errors.Join(fmt.Errorf("read staged bundle ref %s: %w", ref, err), m.rollbackRefs(ctx, path, refsBeforeBundle))
+			return nil, errors.Join(fmt.Errorf("read staged bundle ref %s: %w", ref, err), m.rollbackRefs(ctx, path, refsBeforeBundle))
 		}
 		if _, err := m.runInput(ctx, path, "", "", "update-ref", ref, strings.TrimSpace(out)); err != nil {
-			return "", errors.Join(fmt.Errorf("install bundle ref %s: %w", ref, err), m.rollbackRefs(ctx, path, refsBeforeBundle))
+			return nil, errors.Join(fmt.Errorf("install bundle ref %s: %w", ref, err), m.rollbackRefs(ctx, path, refsBeforeBundle))
 		}
 	}
 	if err := m.removeIncomingRefs(ctx, path); err != nil {
-		return "", errors.Join(err, m.rollbackRefs(ctx, path, refsBeforeBundle))
+		return nil, errors.Join(err, m.rollbackRefs(ctx, path, refsBeforeBundle))
 	}
 	if err := m.checkCaps(path); err != nil {
-		return "", errors.Join(err, m.rollbackRefs(ctx, path, refsBeforeBundle))
+		return nil, errors.Join(err, m.rollbackRefs(ctx, path, refsBeforeBundle))
 	}
-	return path, nil
+	return leases, nil
 }
 
 func (m *gitMirror) repoLock(repo string) *sync.Mutex {

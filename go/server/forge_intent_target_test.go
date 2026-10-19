@@ -8,6 +8,7 @@ import (
 
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 const otherRepo = "owner/other"
@@ -96,5 +97,26 @@ func TestSubmitStackKeyReusedInAnotherRepoWritesNothing(t *testing.T) {
 	}
 	if len(st.recorded) != 1 {
 		t.Fatalf("rows = %d, want only the first repo's", len(st.recorded))
+	}
+}
+
+// The caller already authored repo B's PR on the head, so requireOwn would pass
+// without beginWrite; the derived key's repo A target still refuses it first.
+func TestSubmitStackKeyReusedOnOwnPRInAnotherRepoIsRefusedFirst(t *testing.T) {
+	svc, st, p, m := newStackServiceForTest(t)
+	stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall("k", "", []byte("bundle"), stackEntry("a", "owner/repo#7"))))
+
+	p.prs["a"] = &forge.PullRequest{Number: 900, Title: "mine in B", State: "open", HeadRef: "a", BaseRef: "main"}
+	st.recordArtifact(store.AuthoredArtifact{Provider: store.ForgeProviderGitHub, Host: testHost, Repo: otherRepo, Kind: store.ForgeArtifactKindPullRequest, Number: 900, AgentAccountID: testAgentID, OwnerUserID: testOwnerID})
+	applied, pushes, events := len(m.applied), len(m.pushes), len(*p.events)
+
+	second := stackCall("k", "", []byte("bundle"), stackEntry("a", ""))
+	second.GetSubmitStack().Repo = otherRepo
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, second))
+	if got[0].GetStatus() != failedStatus || got[0].GetError().GetCode() != "failed_precondition" || !strings.Contains(got[0].GetError().GetMessage(), "another target") {
+		t.Fatalf("repo B = %v, want failed_precondition naming another target", got)
+	}
+	if len(m.applied) != applied || len(m.pushes) != pushes || len(*p.events) != events {
+		t.Fatalf("applied %d->%d pushes %d->%d events %v, want no mirror or provider work", applied, len(m.applied), pushes, len(m.pushes), (*p.events)[events:])
 	}
 }

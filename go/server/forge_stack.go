@@ -193,6 +193,12 @@ func stackBase(entries []*compassv1internal.StackEntry, i int) string {
 // or this call's own unrecorded create, before the mirror moves a ref.
 func (r *stackRun) preflight(ctx context.Context, entries []*compassv1internal.StackEntry, prs []forge.PullRequest) ([]bool, int, *compassv1internal.ForgeCallError) {
 	found := make([]bool, len(entries))
+	// The key's target is checked first: an own PR found below would otherwise skip beginWrite.
+	for i, e := range entries {
+		if fe := r.checkIntentTarget(ctx, e.GetHeadRef()); fe != nil {
+			return found, i, fe
+		}
+	}
 	for i, e := range entries {
 		head := e.GetHeadRef()
 		pr, ok, err := r.rf.author.FindPullRequestByHead(ctx, r.repo, head)
@@ -214,6 +220,21 @@ func (r *stackRun) preflight(ctx context.Context, entries []*compassv1internal.S
 		prs[i], found[i] = pr, true
 	}
 	return found, -1, nil
+}
+
+// checkIntentTarget refuses an entry whose derived key already names another target.
+func (r *stackRun) checkIntentTarget(ctx context.Context, head string) *compassv1internal.ForgeCallError {
+	in, err := r.s.store.LiveWriteIntentByKey(ctx, r.caller, r.intentKey(head))
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return storeForgeError(err)
+	}
+	if !sameWriteTarget(in, r.target(head)) {
+		return forgeErr(connect.CodeFailedPrecondition, writeOtherTarget)
+	}
+	return nil
 }
 
 // applyBundle installs the entries' refs from the agent's bundle and keeps the

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -950,4 +951,76 @@ func mirrorGit(t *testing.T, dir string, args ...string) string {
 func mirrorRefExists(t *testing.T, repo, ref string) bool {
 	t.Helper()
 	return exec.CommandContext(t.Context(), "git", "--git-dir", repo, "rev-parse", "--verify", "--quiet", ref).Run() == nil
+}
+
+// The fetch fits under the cap but the seeded branch ref crosses it: SeedRef
+// refuses and the mirror's refs are back to their state before the call.
+func TestGitMirrorSeedRefRefusesPostUpdateCapAndRestoresRefs(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	mirrorCommit(t, fixture.work, "main.txt", "main\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
+	if _, err := m.ApplyBundle(t.Context(), "owner/repo", nil, nil); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	path := filepath.Join(m.dir, "owner", "repo.git")
+	mirrorGit(t, fixture.root, "--git-dir", path, "gc", "--prune=now")
+	before, err := m.refHeads(t.Context(), path)
+	if err != nil {
+		t.Fatalf("refs before: %v", err)
+	}
+	size, err := directoryBytes(path)
+	if err != nil {
+		t.Fatalf("measure mirror: %v", err)
+	}
+	// The refetch brings nothing new; the new loose branch ref is what crosses the cap.
+	m.perRepoCapBytes = size + 8
+
+	if _, err := m.SeedRef(t.Context(), "owner/repo", "refs/heads/main"); err == nil || !strings.Contains(err.Error(), "per-repository") {
+		t.Fatalf("SeedRef over cap = %v, want per-repository cap refusal", err)
+	}
+	after, err := m.refHeads(t.Context(), path)
+	if err != nil {
+		t.Fatalf("refs after: %v", err)
+	}
+	if !maps.Equal(before, after) {
+		t.Fatalf("refs after refused seed = %v, want restored %v", after, before)
+	}
+}
+
+// A failed lease read after the fetch rolls the fetched tracking refs back.
+func TestGitMirrorApplyBundleRestoresRefsWhenLeaseReadFails(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	oldHead := mirrorCommit(t, fixture.work, "main.txt", "old\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
+	if _, err := m.ApplyBundle(t.Context(), "owner/repo", nil, nil); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	mirrorCommit(t, fixture.work, "main.txt", "new\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find Git executable: %v", err)
+	}
+	binDir := t.TempDir()
+	wrapper := "#!/bin/sh\nprevious=\nfor arg do\n  if [ \"$previous\" = --verify ] && [ \"$arg\" = refs/remotes/origin/main ]; then\n    echo 'fatal: lease read refused' >&2\n    exit 128\n  fi\n  previous=\"$arg\"\ndone\nexec \"$MIRROR_TEST_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(wrapper), 0o700); err != nil {
+		t.Fatalf("write Git wrapper: %v", err)
+	}
+	t.Setenv("MIRROR_TEST_REAL_GIT", realGit)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if _, err := m.ApplyBundle(t.Context(), "owner/repo", nil, []string{"refs/heads/main"}); err == nil || !strings.Contains(err.Error(), "read fetched lease") {
+		t.Fatalf("ApplyBundle with failing lease read = %v, want the lease error", err)
+	}
+	path := filepath.Join(m.dir, "owner", "repo.git")
+	out, err := exec.CommandContext(t.Context(), realGit, "--git-dir", path, "rev-parse", "refs/remotes/origin/main").Output()
+	if err != nil {
+		t.Fatalf("read tracking main: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != oldHead {
+		t.Fatalf("tracking main after failed lease read = %s, want restored %s", got, oldHead)
+	}
 }

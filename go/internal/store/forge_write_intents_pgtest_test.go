@@ -75,6 +75,31 @@ func TestRecordWriteIntentFailedAttemptAndLostReplay(t *testing.T) {
 	}
 }
 
+func TestLiveWriteIntentByKeyReadsWithoutClaiming(t *testing.T) {
+	s := newTestStore(t)
+	in := writeIntentFixture(t, s, "intent-by-key", "key-read", "feature/read")
+	if _, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("read before record = %v, want ErrNotFound", err)
+	}
+	if _, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second read = %v, want ErrNotFound (a read claims nothing)", err)
+	}
+	rec, err := s.RecordWriteIntent(t.Context(), in)
+	if err != nil {
+		t.Fatalf("RecordWriteIntent: %v", err)
+	}
+	got, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey)
+	if err != nil || got != rec {
+		t.Fatalf("read = %+v, %v; want %+v", got, err, rec)
+	}
+	if err := s.EndWriteIntent(t.Context(), rec.ID, WriteStateFailed); err != nil {
+		t.Fatalf("EndWriteIntent(failed): %v", err)
+	}
+	if _, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("read after failure = %v, want ErrNotFound", err)
+	}
+}
+
 func TestRecordWriteIntentRejectsEmptyRequestKey(t *testing.T) {
 	s := newTestStore(t)
 	in := writeIntentFixture(t, s, "intent-empty-key", "", "feature/empty-key")

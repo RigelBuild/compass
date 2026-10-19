@@ -198,6 +198,15 @@ func (f *fakeForgeStore) RecordWriteIntent(_ context.Context, in store.WriteInte
 	return in, nil
 }
 
+func (f *fakeForgeStore) LiveWriteIntentByKey(_ context.Context, agent store.AccountID, key string) (store.WriteIntent, error) {
+	for _, w := range f.intents {
+		if w.AgentAccountID == agent && w.RequestKey == key && w.State != store.WriteStateFailed {
+			return w, nil
+		}
+	}
+	return store.WriteIntent{}, fmt.Errorf("%w: write intent for key %q", store.ErrNotFound, key)
+}
+
 // CompleteWriteIntent writes the ownership row (issue, PR) or keeps the forge
 // key (comment, review) and marks the pending attempt done.
 func (f *fakeForgeStore) CompleteWriteIntent(_ context.Context, id string, artifact *store.AuthoredArtifact, forgeKey string) error {
