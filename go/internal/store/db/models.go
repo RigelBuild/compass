@@ -351,6 +351,18 @@ type ForgeMirrorSetting struct {
 	TenantID      string
 }
 
+type ForgeNotice struct {
+	ID            pgtype.UUID
+	TenantID      string
+	FromAccountID string
+	ToAccountID   string
+	RequestKey    string
+	Text          string
+	CreatedAt     pgtype.Timestamptz
+	DeliveredAt   pgtype.Timestamptz
+	Attempts      int32
+}
+
 type ForgeRepoSubscription struct {
 	ForgeProvider    int16
 	ForgeHost        string

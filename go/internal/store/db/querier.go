@@ -96,6 +96,7 @@ type Querier interface {
 	BindLifetime(ctx context.Context, arg BindLifetimeParams) (int64, error)
 	BumpAskForgeMirror(ctx context.Context, askID string) error
 	BumpForgeMirrorSourceRevision(ctx context.Context, arg BumpForgeMirrorSourceRevisionParams) (int64, error)
+	BumpForgeNoticeAttempt(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Keep handle joins optional so missing handle rows do not hide @everyone members.
 	// reach: the author may reach agent aa
 	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]ChannelAgentMembersRow, error)
@@ -227,6 +228,7 @@ type Querier interface {
 	ForgeMirrorByRequest(ctx context.Context, arg ForgeMirrorByRequestParams) (ForgeMirrorByRequestRow, error)
 	// Ask mirroring settings and outbox persistence.
 	ForgeMirrorMode(ctx context.Context, arg ForgeMirrorModeParams) (int16, error)
+	ForgeNoticeByRequestKey(ctx context.Context, arg ForgeNoticeByRequestKeyParams) (ForgeNoticeByRequestKeyRow, error)
 	ForgeScopeUserExists(ctx context.Context, accountID string) (bool, error)
 	// Collects the coordinate's cursor IFF no subscription for it remains (the NOT
 	// EXISTS guard leaves it in place if any other agent still subscribes).
@@ -565,6 +567,7 @@ type Querier interface {
 	LockTokenUsage(ctx context.Context) error
 	LockWriteIntent(ctx context.Context, id string) (ForgeWriteIntent, error)
 	MarkForgeMirror(ctx context.Context, arg MarkForgeMirrorParams) (int64, error)
+	MarkForgeNoticeDelivered(ctx context.Context, id pgtype.UUID) (int64, error)
 	MarkMentionsRouted(ctx context.Context, arg MarkMentionsRoutedParams) error
 	MarkPRsBackfilled(ctx context.Context, arg MarkPRsBackfilledParams) (int64, error)
 	MergeTopicLastSeq(ctx context.Context, arg MergeTopicLastSeqParams) error
@@ -626,6 +629,8 @@ type Querier interface {
 	// owner_user_id, so a re-land never rewrites who authored the artifact.
 	RecordAuthoredArtifact(ctx context.Context, arg RecordAuthoredArtifactParams) error
 	RecordForgeMirrorRequest(ctx context.Context, arg RecordForgeMirrorRequestParams) (int64, error)
+	// Durable foreign-rebase notices. The request key identifies one moved foreign head.
+	RecordForgeNotice(ctx context.Context, arg RecordForgeNoticeParams) (RecordForgeNoticeRow, error)
 	// Durable create attempts. Failed attempts may reuse a request key; pending,
 	// done, and lost attempts retain it as the idempotency result.
 	RecordForgeWriteIntent(ctx context.Context, arg RecordForgeWriteIntentParams) (ForgeWriteIntent, error)
@@ -793,6 +798,8 @@ type Querier interface {
 	// Feeds IsTopicChannelMember: ChannelParticipant on the channel that owns the
 	// topic. UNION stops the agent-parent walk on a cycle, as there.
 	TopicChannelParticipant(ctx context.Context, arg TopicChannelParticipantParams) (pgtype.Bool, error)
+	// Runs under the system role so one pass can enumerate notices across tenants.
+	UndeliveredForgeNotices(ctx context.Context, queryLimit int32) ([]UndeliveredForgeNoticesRow, error)
 	// reach: the author may reach agent aa
 	UndeliveredMessages(ctx context.Context, accountID string) ([]UndeliveredMessagesRow, error)
 	UnroutedMentionMessages(ctx context.Context, arg UnroutedMentionMessagesParams) ([]UnroutedMentionMessagesRow, error)
