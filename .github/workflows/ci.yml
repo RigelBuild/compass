@@ -2769,6 +2769,7 @@ jobs:
           darwin='${{ needs.darwin.result }}'
           guest_arm64='${{ needs.guest-arm64.result }}'
           agent_fod='${{ needs.agent-fod-arm64.result }}'
+          e2e_flag='${{ needs.setup.outputs.e2e_affected }}'
           pgtest_flag='${{ needs.setup.outputs.pgtest_affected }}'
           microvm_flag='${{ needs.setup.outputs.microvm_affected }}'
           forge_flag='${{ needs.setup.outputs.forge_affected }}'
