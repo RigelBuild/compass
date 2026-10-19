@@ -1,310 +1,175 @@
 ---
 name: jj
-description: "Jujutsu (jj) for Compass agents: the working-copy-is-a-commit model, the per-agent colocated clone, bookmark-per-PR stacking through jj-vine submit, per-worker workspaces for parallel subagents, the rebase-before-submit and additive-review-fix invariants, and the never-push-main / never-merge human gate."
+description: "Jujutsu (jj) for Compass agents: the working-copy-is-a-commit model, the per-agent colocated clone, the vcs_* tools that commit, sync, and submit one PR per bookmark, per-worker workspaces for parallel subagents, the issue-per-PR and additive-review-fix invariants, and the never-push-main / never-merge human gate."
 ---
 
 # Jujutsu (`jj`) + stacked PRs on Compass
 
-Use this for every version-control operation in your clone. You drive commits and
-branches with **`jj`** (a commit + bookmark model, no staging area) and open/update
-PRs with **`jj-vine submit`** — one PR per bookmark, with correct stacked bases and
-a navigable stack diagram. The remote is your repo's forge (GitHub), reached under
-your agent's own forge identity.
+Use this for every version-control operation in your clone. Your clone is a
+**jj** repo (a commit + bookmark model, no staging area). You drive it through
+the **`vcs_*` tools**: they commit, rebase, push, and open or update one PR per
+bookmark. Raw `jj` stays available for reads and for local history edits the
+tools do not cover.
 
-You may commit, create bookmarks, and push/submit your own feature branches, then
-run the review loop (`skill://review`) to merge-ready. Hard limits: **never push or
-force-push `main`, never merge** — the human operator holds the merge gate.
+You never push. `vcs_submit` sends a git bundle of your commits to the Compass
+Server, and the Server pushes them and writes the PRs. Your forge token is
+read-only, so a raw `git push` or PR write is refused. Hard limits: **never push
+or force-push `main`, never merge** — the human operator holds the merge gate.
 
 ## Mental model
 
 - **Your clone is yours.** Each agent works in its own container with its own
-  colocated clone: its own `.jj/` beside its own `.git/`. There is no shared
-  op-store across agents — no cross-agent rebase, no divergent change IDs. You
-  coordinate with other agents at PR/merge time, not on a shared working copy.
-- **The working copy is a commit.** jj has no staging area and no "unstaged
-  changes." The working copy is a live commit, `@`; every edit you make is
-  *already* in `@`. You do not `add` — you `describe` (give `@` a message) and,
-  when done, seal it by starting a fresh `@` on top with `jj new` / `jj commit`.
-- **jj is colocated over git.** `.jj/` and `.git/` share one object store, so
-  `git` tooling, the forge, and CI see your commits normally. git sits in
-  detached-HEAD state (jj drives, git follows) — expected, not a problem.
+  colocated clone: its own `.jj/` beside its own `.git/`. You coordinate with
+  other agents at PR/merge time, not on a shared working copy.
+- **The working copy is a commit.** jj has no staging area. The working copy is
+  a live commit, `@`; every edit you make is *already* in `@`. `vcs_commit`
+  describes `@`, sets its bookmark, and starts a fresh `@` on top.
+- **jj is colocated over git.** `.jj/` and `.git/` share one object store. git
+  sits in detached-HEAD state (jj drives, git follows) — expected.
 - **Change ID vs commit ID.** Every commit has a stable **change ID** (survives
-  rewrites — the left column of `jj log`) and a git **commit ID** (changes when
-  you amend). Address commits by change ID or by revset (`@`, `@-`,
-  `main@origin`), never by pasting a commit hash a later edit invalidates.
-- **A bookmark is a branch.** A **bookmark** is a named pointer at a commit — the
-  branch that becomes one PR. jj does **not** advance a bookmark automatically when
-  you commit on top; you move it yourself with `jj bookmark move`.
-- **One bookmark = one PR.** A stack is a chain of bookmarked commits, each based
-  on the one below; `jj-vine submit` submits them with correct stacked bases.
-- **The core verbs:** `jj new` (start a fresh commit), `jj describe -m` (set the
-  message), `jj commit -m` (describe `@` and start a new commit on top),
-  `jj bookmark create/move` (name/advance the branch), `jj-vine submit`
-  (open/update the PR + render the stack diagram).
+  rewrites) and a git **commit ID** (changes when the commit is rewritten).
+  Address commits by change ID or by revset (`@`, `@-`, `main@origin`).
+- **A bookmark is a branch, and one bookmark is one PR.** A stack is a chain of
+  bookmarked commits, each based on the one below. It must be one linear line:
+  `vcs_submit` refuses a fork.
+
+## The tools
+
+| Tool | Does |
+| --- | --- |
+| `vcs_status` | Your stack from the base to the tip: change, commit, bookmark, subject, conflict, empty. |
+| `vcs_commit` | Describes `@` (or `<workspace>@`) from `subject` and `sections`, sets `bookmark`, then starts a new `@` on it. |
+| `vcs_workspace` | `add`, `forget`, or `update-stale` one subagent working copy. |
+| `vcs_sync` | Fetches `origin`, then rebases your own commits onto trunk or the foreign base they sit on. Reports conflicts. |
+| `vcs_submit` | Sync, checks, the repo's pre-push hook, then pushes through the Server and creates or updates one draft PR per bookmark. |
+| `vcs_pr_status` | PR, state, draft, checks, and authorship for each bookmark, bottom to top. |
+| `vcs_retire` | Closes your PR for one bookmark, deletes its branch through the Server, then deletes the local bookmark. |
+
+Issues, comments, reviews, and full PR reads stay on the `forge_*` tools
+(`forge_list_issues`, `forge_create_issue`, `forge_get_pull_request`,
+`forge_submit_review`, …).
 
 ## Invariants
 
 These hold on every change, no exceptions.
 
-- **Never push/force-push `main`; never merge.** Merge is the human operator's
-  gate. You open PRs and drive them to merge-ready; the operator merges from the
-  Compass PR panel. Work only on feature branches.
-- **Always non-interactive.** Pass `-m` to `jj describe` / `jj commit` — a bare
-  invocation opens `$EDITOR` and hangs a headless agent. Never use interactive
-  flags (`jj split -i`, `jj squash -i`, `jj resolve` without a tool): they open a
-  TUI. jj paginates by default, so run read commands with `--no-pager` (e.g.
-  `jj --no-pager log`) or expect a pager.
-- **Review fixes are a NEW commit, never an amend.** jj's native idiom is
-  amend + force-push; do **not** adopt it. Amending a pushed commit rewrites
-  history, drops the correspondence between a review thread and its code, and
-  shows no interdiff on the PR. Land each fix as a new commit and advance the
-  bookmark (see the review-fix loop). This matches the Compass convention: add a
-  new commit per round of feedback rather than rewriting pushed history.
-- **The auto-amend footgun: `jj new <bookmark>` before you edit.** Editing files
-  while `@` sits on a bookmark commit silently **amends** that commit. Always
-  start work on a fresh commit — `jj new 'main@origin'` for a new change, or
-  `jj new <bookmark>` for a fix on top of an in-review head — before touching any
-  file.
-- **Rebase onto latest `main` before every submit.** `jj git fetch` then rebase
-  your work onto `main@origin` before you submit, so the PR is against current
-  trunk and CI runs on a live base. Compass CI checks out full history; a stale
-  base can green locally and fail the merge gate.
-- **Rebase without waiting for permission.** Rebasing onto the current target is
-  maintenance, even if the previous head was approved. After pushing a changed
-  head, obtain a fresh review of that head before handoff.
+- **Never push/force-push `main`; never merge.** You open PRs and drive them to
+  merge-ready; the operator merges.
+- **Every PR needs an issue.** `vcs_submit` takes `issues`, a map from bookmark
+  to issue (`#12`, `owner/repo#12`, or a Linear key). It is required for every
+  bookmark that has no PR yet. Find an issue that fits with
+  `forge_list_issues`, or create one with `forge_create_issue` when none does.
+  The Server checks that the issue exists and is open.
+- **The first commit of a bookmark is the PR text.** `vcs_commit` on a new
+  bookmark needs `sections`, one per heading of the repo's
+  `.github/PULL_REQUEST_TEMPLATE.md`. That commit's subject becomes the PR
+  title, with the issue appended, and its sections become the PR body. Later
+  commits on the bookmark take `text` instead. The PR text is written once; to
+  change it, call `vcs_submit` with `text`.
+- **Review fixes are a NEW commit, never an amend.** Land each fix as a new
+  commit on the bookmark with `vcs_commit` and submit again. An amend loses the
+  link between a review thread and its code and shows no interdiff.
+- **Always non-interactive.** When you run raw `jj`, pass `-m` to `describe` and
+  `commit`, never use interactive flags (`split -i`, `squash -i`, a bare
+  `resolve`), and pass `--no-pager` to read commands.
+- **Do not edit a bookmark commit by hand.** Editing files while `@` sits on a
+  bookmark commit silently amends it. `vcs_commit` always leaves a fresh `@`
+  on top; after any raw `jj edit`, run `jj new <bookmark>` before you edit.
 - **Stack changes with overlapping edits.** If two PRs edit the same lines of a
-  file, base the later change on the tip of the first PR's line. A known conflict
-  counts even when their concerns differ; tell that line's owner and keep the
-  stack linear, with each PR focused.
-- **Stack aggressively, but re-verify each head after a rebase.** Chain dependent
-  work into a stack instead of one fat PR. After you rebase a stack onto new
-  `main`, a lower commit can shift what an upper commit sees — re-inspect each
-  head's diff (`jj --no-pager diff -r <bookmark> --stat`) and re-run the affected
-  checks on it before you re-submit. A stack is only as merge-ready as its
-  weakest re-verified head.
-- **The commit message IS the PR.** `jj-vine` derives the PR **title from the
-  commit subject** and the **body from the commit body** — no separate authoring
-  step. Write the message like a good PR: a Conventional Commits subject
-  (`feat(scope):`, `fix(scope):`, …), then a GitHub-Flavored-Markdown body that is
-  **not** hard-wrapped (one line per paragraph, blank line between — a 72-col wrap
-  becomes a wall of forced breaks on the PR). Reference the tracked issue in the
-  body. Get it right *before* the first submit; the body is written once.
-
-## Clone setup
-
-Each agent clones its own colocated copy of the repo in one step:
-
-```sh
-jj git clone --colocate <repo-url> <dest>
-cd <dest>
-```
-
-- **`--colocate` makes `.jj/` and `.git/` share one store**, so `git`, the forge,
-  and CI see your commits. Pass it explicitly — it is self-documenting and immune
-  to a config change.
-- **`jj git clone` imports the default remote bookmark** (`main`) and sets it as
-  `trunk()`; your local `main` tracks `main@origin` with no extra step. Start work
-  off `main@origin`.
-- Auth flows through the git credential helper for your agent's forge account on
-  the HTTPS remote, so pushes need no extra setup.
+  file, put the later bookmark on top of the first PR's line.
 
 ## Everyday workflow
 
-```sh
-jj git fetch                                  # pull latest main@origin
-jj new 'main@origin'                          # fresh commit off latest main (sidesteps auto-amend)
-# ... edit files ...
-jj describe -m "type(scope): summary" \
-  -m "what changed and why — GFM, length tracks the change; reference the issue"
-jj bookmark create <issue>-<slug> -r @        # name the branch on your commit
-jj-vine submit <issue>-<slug>                 # push (through the CI gate) + open the PR
+```text
+vcs_sync                                    # fetch and rebase your commits onto trunk
+# ... you or a subagent edit files ...
+vcs_commit  { bookmark, subject, sections } # first commit: sections per template heading
+vcs_submit  { issues: { <bookmark>: "#12" } }   # push through the Server, open a draft PR
+vcs_pr_status                               # PR, checks, and authorship per bookmark
+vcs_submit  { ready: true }                 # when review and CI are clean: tip leaves draft
 ```
 
-- **Start every change with `jj new 'main@origin'`.** It bases you on the latest
-  fetched `main` and it sidesteps the auto-amend hazard. Verify with
-  `jj --no-pager diff --stat` before you submit — it must list only your files.
-- **Every push runs the local gate first, through `jj-hp`.** `jj-vine submit` is
-  your push path, and Compass routes its push through **`jj-hp`** (which runs the
-  hooks before pushing) — so every submit runs the `hk` gate (`moon ci` over the
-  affected subset) before the push completes, the same task graph CI runs on the
-  PR. Never bypass it with a bare `jj git push`, which skips the gate. A red gate
-  blocks the push; get it green first.
-- **`@` accumulates all your edits into one commit** — right for a single-purpose
-  PR. To split a change into multiple commits, seal each step with
-  `jj commit -m "…"` (describes `@`, starts a fresh `@` on top) rather than
-  editing one fat `@`; to carve an already-too-big commit by file,
-  `jj split <file>...` (passing filesets keeps it non-interactive — a bare
-  `jj split` opens a diff editor).
-- **Run a jj sequence in one shell.** jj snapshots the working copy on each
-  command; splitting `describe` / `bookmark` / `submit` across separate subshells
-  can strand a stale working copy. Chain them.
-- **Branch naming: one bookmark per PR, named for its slice.** Lead with the
-  issue reference and a short kebab-case description (`sea-1732-jj-skill`); no
-  `user/` prefix. In multi-agent work, keep the name descriptive of the lane so
-  peers can tell stacks apart. Keep each PR single-purpose.
-
-`[TODO RIG-1882]` Distinct from the `jj-hp` CI gate above, the
-push-*authorization* guard that enforces the never-push-`main` and
-owner-allowlist invariant is a bundled OMP extension that intercepts your
-push/merge commands in-container and hard-blocks a violation — load-bearing,
-because Compass cannot rely on a user's own repo branch protection (recommended
-as a server-side backstop, never guaranteed). Until that extension ships, the
-invariant is **behavioral**: you enforce it; nothing blocks you. Do not invent
-or run a push-*authorization* guard wrapper that is not provisioned in your
-clone.
-`jj-vine submit` (gated through `jj-hp`) remains the push path.
-
-`[TODO RIG-1734]` Reading PR and review state (checks, threads, merge status) uses
-the Compass forge tools, which land pre-Dogfood as an operator-provisioned
-surface. Name and use the concrete tools once they land; until then, drive the
-review loop through `skill://review`.
+- **Start a new line on trunk.** `vcs_sync` rebases your own commits onto the
+  latest trunk. For a fresh change, run `jj --no-pager new 'main@origin'` first.
+- **A stack is several bookmarks in one line.** Commit the first slice to
+  bookmark `a`, then the next slice to bookmark `b`; `vcs_submit` with the top
+  bookmark submits the whole line, bottom first, each PR based on the one below.
+- **Your commits are pushed as you made them.** Nothing is squashed. Each PR
+  shows each of its commits.
+- **The pre-push hook runs inside `vcs_submit`.** It is the repo's own hook
+  runner, with the same arguments and stdin a real push gives it. A failing hook
+  stops the submit. A hook still running after 120 s is stopped and the submit
+  goes on; the result says "pre-push hook timed out after 120 s". Then find out
+  why the hook is slow and fix it in a change of its own. CI on the PR is the
+  main gate.
+- **Read before you submit.** `vcs_status` lists your stack; it must show only
+  your commits. `vcs_submit` refuses conflicts, merge commits, empty
+  descriptions, two bookmarks on one commit, commits above the tip that no
+  bookmark publishes, and a forked stack.
 
 ## The review-fix loop
 
-Never amend a pushed commit. Land each review fix as a NEW commit and advance the
-bookmark:
-
-```sh
-jj new <bookmark>                             # start the fix ON the PR head (avoids auto-amend)
-# ... edit files to address a finding ...
-jj describe -m "fix(scope): address review"
-jj bookmark move <bookmark> --to @            # advance the bookmark to the fix commit
-jj-vine submit <bookmark>                     # push + refresh the PR on the new head
+```text
+vcs_commit { bookmark: <bookmark>, subject: "fix(scope): address review", text: "…" }
+vcs_submit { bookmark: <top bookmark> }
 ```
 
-The new commit re-triggers CI and the review bots on the new head SHA (an amend
-would not, and would break thread anchoring). Full loop — spawn the reviewer,
-auto-fix the mechanical, surface the judgment calls, iterate to merge-ready:
-`skill://review`.
+The new commit re-triggers CI and the review bots on the new head. Full loop —
+spawn the reviewer, fix the mechanical findings, surface the judgment calls,
+iterate to merge-ready: `skill://review`.
 
 ## Workspaces — one per parallel subagent
 
-`jj workspace` attaches **additional working copies to the same clone** — each with
-its own `@` working-copy commit, all sharing one op-store, bookmark set, and
-`.git`. This is how you run implementation in **parallel subagents** (the `task`
-mechanism) without colliding on the single working copy: give each subagent its
-**own workspace** so they edit different slices concurrently, each on an isolated
-`@`, with no cross-workspace auto-amend.
+A jj workspace is another working copy of the same clone, with its own `@`. Give
+each parallel subagent its own workspace so they edit different slices without
+colliding.
 
-```sh
-jj workspace add ../ws-router -r 'main@origin'   # subagent A works in ../ws-router
-jj workspace add ../ws-query  -r 'main@origin'   # subagent B works in ../ws-query, concurrently
-# ... each subagent edits + describes + bookmarks IN ITS OWN workspace dir ...
-jj --no-pager diff -r 'ws-router@' --stat        # review each by <name>@ , from the default workspace
-jj --no-pager diff -r 'ws-query@'  --stat
-jj-vine submit <router-bookmark>                 # submit each slice as its own PR / stack entry
-jj workspace forget ws-router && rm -rf ../ws-router   # teardown: forget, then delete on disk
+```text
+vcs_workspace { action: "add", name: "ws-router", base: "main@origin" }
+# ... the subagent edits files only, in ws-router ...
+vcs_commit    { workspace: "ws-router", bookmark: "router", subject: "…", sections: {…} }
+vcs_workspace { action: "forget", name: "ws-router" }   # then delete the directory
 ```
 
-- **Base with `-r <rev>`.** `jj workspace add <path> -r 'main@origin'` puts the new
-  `@` on latest main (or a stack base). With no `-r`, the new workspace shares the
-  *current* workspace's parents — rarely what you want for an independent slice.
-- **Address a workspace by `<name>@`.** The default workspace is `@`; each added
-  one is `<name>@` (the destination's basename, or `--name`). Inspect a subagent's
-  work with `jj --no-pager diff -r '<name>@'` without leaving your own workspace.
-  `<name>@` reflects that workspace's *last jj snapshot*, and jj snapshots a
-  working copy only when a jj command runs **in that workspace** — so review after
-  the subagent has described/bookmarked; a peek before any jj command ran there
-  shows a stale or empty `@`.
-- **Each `@` is isolated; bookmarks are not.** An edit in one workspace lands in
-  *its* `@` only. But all workspaces in the clone **share one bookmark set** — give
-  each subagent a distinct bookmark name and never `jj bookmark move` a bookmark
-  another workspace owns.
-- **Teardown is two steps.** `jj workspace forget <name>` stops tracking that
-  working-copy commit; the directory on disk is **not** deleted — `rm -rf` it
-  separately. Forgetting a workspace never touches your bookmarks.
-  `jj workspace list` shows every attached working copy; `jj workspace update-stale`
-  repairs one whose working copy fell behind a concurrent op.
+- **Subagents edit files only.** You commit their work with
+  `vcs_commit { workspace }`, which runs in that workspace's root.
+- **Bookmarks are shared across workspaces.** Give each subagent a distinct
+  bookmark name.
+- **A stale workspace** (it fell behind a concurrent operation) is repaired with
+  `vcs_workspace { action: "update-stale" }`.
+
+## Another agent's PR in your line
+
+If your line sits on a PR another agent of the same owner authored, the Server
+manages it: on submit it rebases and pushes that bookmark and tells the owning
+agent. On a conflict it pushes nothing and asks that agent to resolve. You never
+rebase, track, or push another agent's bookmark yourself.
+
+## Retiring a PR
+
+`vcs_retire { bookmark }` closes your PR and deletes its branch through the
+Server, then deletes the local bookmark. It only works on a PR you authored, and
+a retry after a partial run is safe. To replace a mixed or superseded PR, first
+open its replacement and check that every hunk of the old PR is in it (or dropped
+on purpose), then retire the old one with a comment on it that links the
+replacement (`forge_comment_on_pull_request`).
 
 ## Command reference
 
-| Task | Command |
+| Task | Tool or command |
 | --- | --- |
-| Clone (colocated, first time) | `jj git clone --colocate <url> <dest>` |
-| Fetch latest main | `jj git fetch` |
-| Start a change off latest main | `jj new 'main@origin'` |
-| Set the commit message (= PR title+body) | `jj describe -m "subject" -m "body"` |
-| Seal `@` and start a new commit on top | `jj commit -m "…"` |
-| Name the branch | `jj bookmark create <name> -r @` |
-| Advance a bookmark to a new commit | `jj bookmark move <name> --to @` |
-| Local gate (runs inside `jj-vine submit`, not run directly) | `jj-hp push` *(automatic)* |
-| Open/update the PR (+ stack diagram) | `jj-vine submit <name>` |
-| Submit the whole stack | `jj-vine submit --tracked` |
-| Preview a submit (no side effects) | `jj-vine submit <name> --dry-run` |
-| Inspect your PRs / stack state | `jj-vine status --tracked` |
-| Show your commits + bookmarks | `jj --no-pager log` |
+| Show your stack | `vcs_status` |
+| Commit (first commit of a bookmark) | `vcs_commit { bookmark, subject, sections }` |
+| Commit (later commit) | `vcs_commit { bookmark, subject, text }` |
+| Rebase onto latest trunk | `vcs_sync` |
+| Push and open or update the PRs | `vcs_submit { issues }` |
+| Take the tip PR out of draft | `vcs_submit { ready: true }` |
+| Replace one PR's title and body | `vcs_submit { text: { bookmark, subject, sections } }` |
+| PR, checks, authorship | `vcs_pr_status` |
+| Close a PR and delete its branch | `vcs_retire { bookmark }` |
+| Add or remove a subagent workspace | `vcs_workspace` |
+| Start a change off latest main | `jj --no-pager new 'main@origin'` |
 | Review a change's diff | `jj --no-pager diff --stat` |
-| Rebase your work onto latest main | `jj git fetch && jj rebase -b @ -d 'main@origin'` |
 | Split an over-large commit by file | `jj split <file>...` |
-| Add a workspace for a subagent (own `@`) | `jj workspace add <path> -r 'main@origin'` |
-| Review a workspace's working copy | `jj --no-pager diff -r '<name>@' --stat` |
-| Tear down a workspace (then `rm -rf` it) | `jj workspace forget <name>` |
 | Undo the last jj operation | `jj undo` |
 | Rewind the repo to an earlier state | `jj --no-pager op log` then `jj op restore <op-id>` |
-
-## Submission and handoff
-
-Fetch and rebase onto current `main@origin` before every submit. Re-check each
-affected head and its relevant checks after rebasing. A stack is one linear line;
-submit its top so dependencies travel together, and describe each PR's base when
-handing off a stack. The operator owns the final merge. An approval covers only
-the head it reviewed: after a rebase or any other update, submit the new head and
-obtain a fresh review before you hand it off again.
-
-Before submitting a bookmark, check for commits in its line that no bookmark
-will publish:
-
-```sh
-B='<bookmark>'
-jj log --no-pager --no-graph -r "(descendants($B) ~ $B ~ empty()) ~ ::trunk() ~ ::(bookmarks() & descendants($B) ~ $B) ~ (working_copies() ~ @)"
-```
-
-The command must print nothing. It excludes commits already reachable from the
-trunk, commits included in a bookmark above this one, and other workspaces'
-working copies. If it prints a commit, place a bookmark on the nearest unpushed
-commit below it and submit that bookmark. Do not check only `<bookmark>..@`,
-which can include unrelated working-copy history.
-
-The detailed version-control invariants follow DL-142. Do not bypass the
-`jj-vine submit` path with direct pushes.
-
-## Recovering a mixed or superseded PR
-
-A PR that carries two concerns, or that a newer PR replaces, is retired only
-after its replacement is proven. Keep the old PR open until then; closing it
-first can lose work that exists only on its head.
-
-1. Leave the published old bookmark untouched. After `jj git fetch`, copy its
-   commits onto the base they need with
-   `jj duplicate '<old-base>..<old-bookmark>' --onto <new-base>`.
-   The new base is `main@origin`, or the surviving PR it depends on. The copies
-   are new, unpublished commits. If there are several (review fixes count),
-   fold them into the first copy with
-   `jj squash --from '<first>+::<last>' --into <first> -m '<subject>'`.
-   For two independent concerns, run
-   `jj split --parallel -r <copy> -m '<first subject>' <file>...`, then
-   `jj describe -r <remainder> -m '<second subject>'`; `-m` keeps every step
-   off the editor. If one concern needs the other, drop `--parallel` and select
-   the prerequisite's files; the selected part becomes the parent. File sets
-   cannot divide one file between concerns; move the other concern's hunks
-   from that file into its replacement by hand. Give each replacement its own
-   bookmark and submit.
-2. Compare cumulative diffs: every hunk in
-   `jj --no-pager diff --from <old-base> --to <old-bookmark>` must appear in
-   exactly one replacement's
-   `jj --no-pager diff --from <new-base> --to <replacement>`, or be dropped on
-   purpose with a stated reason. Carry over the title, body, and issue
-   references.
-3. Find PRs stacked on the old one. Move only each dependent's own commits:
-   `jj rebase -s 'roots(<old-bookmark>..<dependent>)' -o <replacement> --ignore-immutable`.
-   `-b` would drag the old commits along. This rewrites the dependent's
-   published head on purpose; re-submit it, and re-request review if it was
-   approved. A dependent that needs both concerns needs a linear line: split
-   without `--parallel`, stack it on the top, and check its cumulative diff.
-4. Close the old PR with a comment that links each replacement.
-5. Delete its branch. `jj-vine submit` cannot delete one, so run
-   `jj bookmark delete <old-bookmark>`, then `jj-hp push --deleted --dry-run`.
-   `--deleted` pushes every locally deleted bookmark, so confirm the set is
-   exactly that one, then run it without `--dry-run`.
-
-Retire only PRs you own. Route a PR owned by another agent to its owner.

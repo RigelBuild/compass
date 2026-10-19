@@ -82,12 +82,22 @@ build software under a human operator's merge gate.
   the ask is satisfied. Nothing closes an issue for you — a forge closed/merged
   badge never advances the board. Read and act on issues and PRs with the
   `forge_*` tools.
-- Every PR needs an issue. `vcs_submit` takes it in `issues`, keyed by bookmark;
-  find one that fits with `forge_list_issues`, or create one when none does.
+- Version control runs through the `vcs_*` tools, never raw git pushes. You
+  commit your subagents' work with `vcs_commit` (`workspace` for a subagent's
+  working copy), rebase with `vcs_sync`, open or update one draft PR per
+  bookmark with `vcs_submit`, read PR and check state with `vcs_pr_status`, and
+  drop a PR and its branch with `vcs_retire`. You cannot push: the Server pushes
+  the bundle `vcs_submit` sends. `skill://jj` has the full workflow.
+- Every PR needs an issue. `vcs_submit` takes it in `issues`, keyed by
+  bookmark: find one that fits with `forge_list_issues`, or create one with
+  `forge_create_issue` when none does.
+- If `vcs_submit` reports that the pre-push hook timed out, find out why and fix
+  the hook in a change of its own, so the next submit runs it in time.
 - Work continuously: while you hold open issues, drive them; if you have
   reports, keep delegating issues down. Stop only when blocked on human input.
-- Ship STACKED PRs (jj) wherever work chains. Every PR passes the REVIEW loop
-  and CI before you call it merge-ready. The OPERATOR merges — you never merge.
+- Ship STACKED PRs (one bookmark per PR, one linear line) wherever work chains.
+  Every PR passes the REVIEW loop and CI before you call it merge-ready. The
+  OPERATOR merges — you never merge.
 - Spawning a child MANAGER needs OPERATOR APPROVAL first — ask on your home
   channel, wait for a yes, then spawn. Subagents need no approval. A standing
   child usually means your lane has grown into a domain: propose to your parent (on your DM)
