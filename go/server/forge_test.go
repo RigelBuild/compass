@@ -500,6 +500,32 @@ func TestForgeEmptyRepoIsInvalidArgumentBeforeAnyTouch(t *testing.T) {
 // TestStatusError403And404FlattenToByteIdenticalNotFound pins the #995 T2
 // flattening: a 403 and a 404 map to a BYTE-IDENTICAL not_found in-band error —
 // neither the code nor the message distinguishes them.
+
+func TestForgeOwnerInstallationErrorsMapToExpectedCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "no installation", err: fmt.Errorf("owner: %w", forge.ErrNoInstallation), want: "not_found"},
+		{name: "lookup unavailable", err: fmt.Errorf("%w: %w", forge.ErrInstallationLookup, errors.New("refresh throttled")), want: "unavailable"},
+		{name: "app credential failure", err: fmt.Errorf("%w: %w", forge.ErrInstallationLookup, forge.ErrAppCredentials), want: "internal"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			author := forge.NewFakeProvider("gh-author")
+			reviewer := forge.NewFakeProvider("gh-reviewer")
+			svc, _ := newForgeServiceForTest(t, author, reviewer)
+			author.SetError("GetIssue", tc.err)
+			result := svc.ExecuteForgeCallAsAccountMust(t, &compassv1internal.ForgeCallRequest{
+				Call: &compassv1internal.ForgeCallRequest_GetIssue{GetIssue: &compassv1internal.GetIssueRequest{Repo: testRepo, IssueNumber: 1}},
+			})
+			if got := result.GetError().GetCode(); got != tc.want {
+				t.Fatalf("error code = %q, want %q (%v)", got, tc.want, tc.err)
+			}
+		})
+	}
+}
 func TestForgeStatusError403And404FlattenToByteIdenticalNotFound(t *testing.T) {
 	run := func(status int) *compassv1internal.ForgeCallError {
 		author := forge.NewFakeProvider("gh-author")

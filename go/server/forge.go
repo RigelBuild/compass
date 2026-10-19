@@ -860,19 +860,13 @@ type forgeOp struct {
 // mapForgeError maps provider faults to Connect codes; 422 preserves its
 // message, and rate-limit errors carry a clamped RetryAfterMs hint.
 func mapForgeError(err error, op forgeOp) *compassv1internal.ForgeCallError {
-	switch {
-	case errors.Is(err, forge.ErrBodyTooLarge):
-		return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf(
-			"forge: body of %d bytes exceeds the %s limit of %d bytes once the owner header is reserved",
-			op.bodyLen, op.provider, op.bodyLimit))
-	case errors.Is(err, forge.ErrUnsupported):
-		return forgeErr(connect.CodeUnimplemented, fmt.Sprintf("forge: operation %q is unsupported by provider %q", op.op, op.provider))
-	case errors.Is(err, forge.ErrBudgetExhausted):
+	if errors.Is(err, forge.ErrNoInstallation) {
+		return artifactNotFound()
+	}
+	if errors.Is(err, forge.ErrBudgetExhausted) {
 		fe := &compassv1internal.ForgeCallError{Code: connect.CodeResourceExhausted.String(), Message: err.Error()}
 		if rle, ok := errors.AsType[*forge.RateLimitError](err); ok {
-			// Clamp to [0, math.MaxUint32] BEFORE the uint32 cast: a negative
-			// hint (clock skew / stale gate) becomes 0 ("no hint") and an
-			// oversized one saturates rather than silently wrapping.
+			// Clamp before the uint32 cast so clock skew reads as "no hint" and a huge hint saturates.
 			ms := rle.RetryAfter.Milliseconds()
 			switch {
 			case ms < 0:
@@ -883,6 +877,15 @@ func mapForgeError(err error, op forgeOp) *compassv1internal.ForgeCallError {
 			fe.RetryAfterMs = uint32(ms)
 		}
 		return fe
+	}
+	if errors.Is(err, forge.ErrInstallationLookup) {
+		return forgeErr(installationErrorCode(err), "forge: GitHub App installation lookup failed")
+	}
+	switch {
+	case errors.Is(err, forge.ErrBodyTooLarge):
+		return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf("forge: body of %d bytes exceeds the %s limit of %d bytes once the owner header is reserved", op.bodyLen, op.provider, op.bodyLimit))
+	case errors.Is(err, forge.ErrUnsupported):
+		return forgeErr(connect.CodeUnimplemented, fmt.Sprintf("forge: operation %q is unsupported by provider %q", op.op, op.provider))
 	}
 	if se, ok := errors.AsType[*forge.StatusError](err); ok {
 		switch se.Status {

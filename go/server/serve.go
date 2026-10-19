@@ -966,7 +966,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// configured (the 2-App cutover). The author leg REUSES the shared primary App
 	// client so it rides the one budget gate; the reviewer leg gets its own; the
 	// Linear coordinate rides the shared forgeWiring.linearTokens instance.
-	forgeMirrorService, err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, serverResolver, hub, commsSvc, hubLog, forgeWiring.primaryClient, forgeWiring.linearTokens, udsListener, listeners)
+	forgeMirrorService, err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, serverResolver, hub, commsSvc, hubLog, forgeWiring.primaryRouter, forgeWiring.linearTokens, udsListener, listeners)
 	if err != nil {
 		return err
 	}
@@ -1407,7 +1407,7 @@ type forgeReadWiring struct {
 	notifyLane    *forgeNotifyLane
 	webhookSink   ForgeEventSink
 	webhookSecret func(ctx context.Context) ([]byte, error)
-	primaryClient *forge.GitHub
+	primaryRouter *forge.OwnerRoutedGitHub
 	linearTokens  *linearagent.TokenSource
 }
 
@@ -1426,7 +1426,7 @@ func buildForgeReadWiring(
 	resolver secrets.Resolver,
 	log *slog.Logger,
 ) (forgeReadWiring, error) {
-	boardLane, notifyLane, webhookSink, webhookSecret, primaryClient, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, hub, resolver, log)
+	boardLane, notifyLane, webhookSink, webhookSecret, _, primaryRouter, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, hub, resolver, log)
 	if err != nil {
 		return forgeReadWiring{}, err
 	}
@@ -1439,7 +1439,7 @@ func buildForgeReadWiring(
 		notifyLane:    notifyLane,
 		webhookSink:   webhookSink,
 		webhookSecret: webhookSecret,
-		primaryClient: primaryClient,
+		primaryRouter: primaryRouter,
 		linearTokens:  linearTokens,
 	}, nil
 }
@@ -1459,10 +1459,8 @@ func buildForgeReadWiring(
 // each lane's arm + reconciler on the same errgroup.
 //
 // This is the single site that gates on the App, validates the two App secrets,
-// and builds the App token source + GitHub client — the ONE client both lanes
-// ride, so the client-side rate-budget/resetAt gate is a single gate across
-// board ingestion and agent notification (RIG-2991), not two independent gates
-// against the same installation.
+// and builds the shared primary client and owner router. Existing board and
+// notify lanes retain the primary client until their owner-routing cutover.
 func buildBoardWebhookWiring(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -1471,57 +1469,55 @@ func buildBoardWebhookWiring(
 	hub *runnerhub.Hub,
 	resolver secrets.Resolver,
 	log *slog.Logger,
-) (*boardIngestLane, *forgeNotifyLane, ForgeEventSink, func(ctx context.Context) ([]byte, error), *forge.GitHub, error) {
+) (*boardIngestLane, *forgeNotifyLane, ForgeEventSink, func(ctx context.Context) ([]byte, error), *forge.GitHub, *forge.OwnerRoutedGitHub, error) {
 	rc := cfg.Forge.resolved()
 	// App absent -> both forge lanes hard-off. Warn once here (the single
 	// diagnostic site) when enabled subscription rows exist, and mount nothing.
 	if !cfg.Forge.boardIngestionEnabled() {
 		warnDisabledBoardIngestion(ctx, st, store.ForgeProviderGitHub, rc.Host, log)
-		return nil, nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil, nil
 	}
 	// Validate both App secrets ONCE at this shared site (distinct fail-fast
 	// texts via validateForgeSecret) so a configured App with a missing secret
 	// fails startup and BOTH lanes inherit a validated App — the notify lane no
 	// longer relies on the board lane validating first.
 	if err := validateForgeSecret(ctx, resolver, "board webhook app key", rc.App.AppPrivateKeySecret); err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	if err := validateForgeSecret(ctx, resolver, "board webhook secret", rc.App.AppWebhookSecretName); err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
-	// Build the ONE shared App token source + GitHub client both lanes ride.
-	// appTokenSource is safe for concurrent use (mint singleflighted), so the
-	// read lanes and the poll driver sharing one client is sound.
 	httpClient, err := forgeHTTPClient(rc.ForgeCAPath)
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
-	tok, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
+	appConfig := forge.GitHubAppConfig{
 		AppID:          rc.App.AppID,
 		InstallationID: rc.App.InstallationID,
 		PrivateKey:     newDeclaredSecretResolver(resolver, rc.App.AppPrivateKeySecret),
 		Host:           rc.Host,
 		Client:         httpClient,
-	})
+	}
+	tok, err := forge.NewAppTokenSource(appConfig)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("board webhook app token source: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("board webhook app token source: %w", err)
 	}
 	client := forge.NewGitHub(forge.GitHubConfig{Host: rc.Host, Token: tok, Client: httpClient})
-
+	installationResolver, err := forge.NewInstallationResolver(appConfig)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("board webhook installation resolver: %w", err)
+	}
+	router := forge.NewOwnerRoutedGitHub(client, installationResolver, appConfig, httpClient)
 	// The board lane reuses the notify lane's head-SHA cache: every check_suite
 	// reaches both lanes, so one cache keeps it to one lookup.
 	notifyLane := buildForgeNotifyLane(cfg, st, hub, client, log)
 	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, client, notifyLane.pulls, log)
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	sink := &fanoutSink{sinks: []ForgeEventSink{lane.sink, notifyLane.sink}}
 	secret := newCachedWebhookSecret(resolver, rc.App.AppWebhookSecretName)
-	// client is returned as the shared primary App client the author write leg
-	// REUSES (RIG-2991 + the App cutover): the SAME *forge.GitHub object board
-	// reads, notify reads, AND author writes ride, so one client-side
-	// rate-budget/resetAt gate spans all three against the single installation.
-	return lane, notifyLane, sink, secret, client, nil
+	return lane, notifyLane, sink, secret, client, router, nil
 }
 
 // buildLinearWebhookWiring builds the shared Linear POST /webhooks/linear
@@ -2182,7 +2178,7 @@ func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, reason,
 // (udsListener + listeners) before returning, the same teardown path the poll
 // driver and Rehydrate faults use. It returns the wired service so Serve can
 // bound mirror drives to its lifetime; nil means writes are off.
-func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store, issueBrd *board.IssueProjection, resolver secrets.Resolver, hub *runnerhub.Hub, commsSvc *comms.Comms, log *slog.Logger, primaryClient *forge.GitHub, linearTokens *linearagent.TokenSource, udsListener net.Listener, listeners boundListeners) (*forgeService, error) {
+func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store, issueBrd *board.IssueProjection, resolver secrets.Resolver, hub *runnerhub.Hub, commsSvc *comms.Comms, log *slog.Logger, primaryRouter *forge.OwnerRoutedGitHub, linearTokens *linearagent.TokenSource, udsListener net.Listener, listeners boundListeners) (*forgeService, error) {
 	declaredSecrets, err := resolver.Resolve(ctx, "forge write")
 	if err != nil {
 		return nil, failStartup(udsListener, listeners, fmt.Errorf("forge secret resolve failed at startup: %w", err))
@@ -2191,7 +2187,7 @@ func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store,
 		warnPartialForgeWriteSecrets(ctx, cfg.Forge, declaredSecrets, log)
 		return nil, nil //nolint:nilnil // nil service is the explicit disabled state.
 	}
-	forgeSvc, err := buildForgeWriteService(ctx, cfg, st, issueBrd, resolver, primaryClient, linearTokens, log)
+	forgeSvc, err := buildForgeWriteService(ctx, cfg, st, issueBrd, resolver, primaryRouter, linearTokens, log)
 	if err != nil {
 		return nil, failStartup(udsListener, listeners, err)
 	}
@@ -2202,41 +2198,26 @@ func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store,
 }
 
 // buildForgeWriteService assembles the agent forge-WRITE chokepoint (the
-// runnerhub.ForgeCaller) for the 2-App cutover: enabled iff BOTH the primary and
-// reviewer Apps are configured. In order it: (1) validates the reviewer App key
-// secret ONCE at startup (the primary App key was already validated when the
-// board wiring built primaryClient) via validateForgeSecret so a misconfig fails
-// fast; (2) builds the reviewer App token source + client; (3) builds the
-// provider registry, registering the GitHub coordinate (author = the shared
-// primary App client, reviewer = the reviewer App client, F1) and — when the
-// shared Linear token source is present — a Linear coordinate; and (4) returns
-// the forgeService the caller mounts with hub.SetForgeCaller.
+// runnerhub.ForgeCaller) for the two-App setup: enabled iff BOTH the primary and
+// reviewer Apps are configured. It validates the reviewer App key, builds its
+// owner router, registers that router beside the primary owner router, adds a
+// Linear coordinate when configured, and returns the service for Serve to mount.
 //
-// The author write leg REUSES primaryClient (NOT a fresh client over the same
-// token source): the client-side rate-budget/resetAt gate is per-*forge.GitHub
-// client (mu-guarded), so threading only the token source into a new client would
-// give the author writes a SEPARATE budget gate from the board/notify reads.
-// Reusing the one client keeps author writes and reads on ONE shared budget gate
-// against the single installation (RIG-2991). primaryClient is non-nil here: the
-// caller only reaches this when writes are enabled, which requires the primary
-// App configured, which is exactly when buildBoardWebhookWiring built the client.
+// The primary owner router reuses the shared GitHub client for the default
+// installation and caches clients for other installations. Board and notify
+// lanes keep the primary client until their own owner-routing cutover.
 func buildForgeWriteService(
 	ctx context.Context,
 	cfg ServeConfig,
 	st *store.Store,
 	issueBrd *board.IssueProjection,
 	resolver secrets.Resolver,
-	primaryClient *forge.GitHub,
+	primaryRouter *forge.OwnerRoutedGitHub,
 	linearTokens *linearagent.TokenSource,
 	log *slog.Logger,
 ) (*forgeService, error) {
 	fc := cfg.Forge.resolved()
-
-	// (1) The author write leg rides the shared primary App client. Defensive
-	// guard: the caller only reaches here when writes are enabled, so a nil here
-	// would register a nil author client — fail fast with a clear error rather
-	// than panic on first write.
-	if primaryClient == nil {
+	if primaryRouter == nil {
 		return nil, errors.New("forge write: primary App client is nil (writes enabled without a configured primary App)")
 	}
 
@@ -2250,22 +2231,28 @@ func buildForgeWriteService(
 	if err != nil {
 		return nil, err
 	}
-	reviewerTok, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
+	reviewerConfig := forge.GitHubAppConfig{
 		AppID:          fc.ReviewerApp.AppID,
 		InstallationID: fc.ReviewerApp.InstallationID,
 		PrivateKey:     newDeclaredSecretResolver(resolver, fc.ReviewerApp.AppPrivateKeySecret),
 		Host:           fc.Host,
 		Client:         reviewerHTTP,
-	})
+	}
+	reviewerTok, err := forge.NewAppTokenSource(reviewerConfig)
 	if err != nil {
 		return nil, fmt.Errorf("forge reviewer app token source: %w", err)
 	}
 	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: reviewerTok, Client: reviewerHTTP})
+	reviewerResolver, err := forge.NewInstallationResolver(reviewerConfig)
+	if err != nil {
+		return nil, fmt.Errorf("forge reviewer installation resolver: %w", err)
+	}
+	reviewerRouter := forge.NewOwnerRoutedGitHub(reviewerClient, reviewerResolver, reviewerConfig, reviewerHTTP)
 	// (3) The provider registry: the GitHub coordinate (author = shared primary
 	// client, reviewer = reviewer App client, F1) plus a Linear coordinate when
 	// the shared Linear token source is configured.
 	registry := newForgeProviderRegistry()
-	if err := registerGitHubForgeCoordinate(registry, fc, primaryClient, reviewerClient); err != nil {
+	if err := registerGitHubForgeCoordinate(registry, fc, primaryRouter, reviewerRouter); err != nil {
 		return nil, err
 	}
 
@@ -2307,14 +2294,22 @@ func reconcileForgeScopeGrants(ctx context.Context, st forgeScopeGranter, fc For
 }
 
 // registerGitHubForgeCoordinate registers the production GitHub write coordinate
-// — the AUTHOR client (the shared primary App client) and the REVIEWER client
-// (the reviewer App client, F1) — as the default coordinate a nil/unset ForgeRef
-// resolves to. The two roles are distinct GitHub App identities so an agent
-// approving a PR it authored dispatches submit_review on a different account than
-// it authored with, dissolving the author-approving-own-PR rejection at the
-// credential layer.
-func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, author, reviewer *forge.GitHub) error {
+// as the default for a nil or unset ForgeRef. The author and reviewer providers
+// use distinct GitHub App identities so the reviewing App cannot be the author.
+func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, author, reviewer forge.Provider) error {
 	return reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: fc.Host}, author, reviewer, true)
+}
+
+func installationErrorCode(err error) connect.Code {
+	if errors.Is(err, forge.ErrAppCredentials) {
+		return connect.CodeInternal
+	}
+	if statusErr, ok := errors.AsType[*forge.StatusError](err); ok {
+		if statusErr.Status == http.StatusUnauthorized || statusErr.Status == http.StatusForbidden {
+			return connect.CodeInternal
+		}
+	}
+	return connect.CodeUnavailable
 }
 
 // registerLinearForgeCoordinate registers the Linear write coordinate. It must

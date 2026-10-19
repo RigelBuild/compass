@@ -158,7 +158,7 @@ func TestBuildBoardWebhookWiringArmedWithRealResolver(t *testing.T) {
 	t.Cleanup(bus.Close)
 	issueBrd := board.NewIssueProjection(bus, st)
 
-	lane, notifyLane, sink, webhookSecret, client, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, nil, resolver, slog.New(slog.DiscardHandler))
+	lane, notifyLane, sink, webhookSecret, client, router, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, nil, resolver, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("buildBoardWebhookWiring armed with the real resolver = %v, want nil", err)
 	}
@@ -176,6 +176,9 @@ func TestBuildBoardWebhookWiringArmedWithRealResolver(t *testing.T) {
 	}
 	if client == nil {
 		t.Error("shared GitHub client is nil; the armed path must build it")
+	}
+	if router == nil {
+		t.Error("owner router is nil; the armed path must build it")
 	}
 	if webhookSecret == nil {
 		t.Fatal("webhook-secret closure is nil; the armed path must build it")
