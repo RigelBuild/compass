@@ -235,7 +235,7 @@ A new agent image reaches deployments in four steps:
 
 1. **Publish the agent image.** A closure-affecting push to `main` publishes
    `ghcr.io/rigelbuild/compass-agent:git-<sha12>` and moves `:latest`. See
-   [Publishing the agent image](architecture/build-and-ci.md#publishing-the-agent-image).
+   [Publishing the agent image](architecture/agent-image-publishing.md#publishing-the-agent-image).
 2. **Renovate opens the pin PR.** The `compass-agent-guest` manager tracks the
    `:latest` OCI index digest. Its post-upgrade task runs
    `bun tools/guest-image/pin-agent-image.ts --relock`. That rewrites
