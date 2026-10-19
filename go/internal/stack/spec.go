@@ -43,6 +43,9 @@ func serverSpec(cfg Config, cert CertResult, listen *os.File, secretProviderEnv 
 	if provider := serverSecretProvider(cfg, secretProviderEnv); provider != "" {
 		args = append(args, "--secret-provider", provider)
 	}
+	if cfg.CORSAllowedOrigin != "" {
+		args = append(args, "--cors-allowed-origin", cfg.CORSAllowedOrigin)
+	}
 	env := []string{}
 	if cfg.S3Endpoint != "" {
 		env = append(env, "COMPASS_S3_ENDPOINT="+cfg.S3Endpoint, "COMPASS_S3_BUCKET="+cfg.S3Bucket,

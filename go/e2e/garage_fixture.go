@@ -22,7 +22,7 @@ type garageFixture struct{ name, endpoint, bucket, accessKey, secretKey string }
 
 func startGarageFixture(ctx context.Context, t *testing.T) *garageFixture {
 	t.Helper()
-	port := freePorts(t, ctx, 1)[0]
+	port := freePort(t, ctx)
 	root := t.TempDir()
 	// The image has no writable /var/lib, so metadata and data live under /tmp.
 	config := fmt.Sprintf(`metadata_dir = "/tmp/meta"

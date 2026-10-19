@@ -13,3 +13,5 @@
 # documents the required keys by existing.
 .env*
 !.env.development
+
+/e2e-live/.output/
