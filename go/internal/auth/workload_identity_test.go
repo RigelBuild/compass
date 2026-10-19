@@ -22,6 +22,11 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
+
 	jose "github.com/go-jose/go-jose/v4"
 
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -779,5 +784,40 @@ func TestWorkloadRunnerIDAndShape(t *testing.T) {
 		if got := LooksLikeJWT(tok); got != want {
 			t.Fatalf("LooksLikeJWT(%q) = %v, want %v", tok, got, want)
 		}
+	}
+}
+
+func TestNewRunnerVerifierFetchRecordsClientSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		if err := provider.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("tracer provider shutdown: %v", err)
+		}
+	})
+
+	issuer := newFakeIssuer(t, newECKey(t, "trace-key").public())
+	cluster := testCluster("trace", issuer.srv.URL)
+	cluster.JWKSURI = issuer.srv.URL + "/keys"
+	verifier, err := NewRunnerVerifier([]RunnerCluster{cluster}, testTenant, trustingClient(issuer), nil)
+	if err != nil {
+		t.Fatalf("NewRunnerVerifier: %v", err)
+	}
+	verifier.refresh(t.Context(), verifier.clusters[0])
+	if _, requests := issuer.hits(); requests != 1 {
+		t.Fatalf("issuer requests = %d, want 1", requests)
+	}
+
+	var clientSpans int
+	for _, span := range recorder.Ended() {
+		if span.SpanKind() == trace.SpanKindClient {
+			clientSpans++
+		}
+	}
+	if clientSpans != 1 {
+		t.Fatalf("client spans = %d, want 1", clientSpans)
 	}
 }
