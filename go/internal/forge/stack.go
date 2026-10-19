@@ -37,14 +37,14 @@ func RenderStack(lines []StackLine, self uint64) string {
 		rendered.WriteString(". ")
 		if line.Number == self {
 			rendered.WriteString("**\"")
-			rendered.WriteString(line.Title)
+			rendered.WriteString(escapeStackTitle(line.Title))
 			rendered.WriteString("\" (this PR)**")
 			continue
 		}
 		rendered.WriteByte('#')
 		rendered.WriteString(strconv.FormatUint(line.Number, 10))
 		rendered.WriteString(" \"")
-		rendered.WriteString(line.Title)
+		rendered.WriteString(escapeStackTitle(line.Title))
 		rendered.WriteByte('"')
 	}
 	rendered.WriteByte('\n')
@@ -71,16 +71,37 @@ func StripStack(body string) string {
 	return strings.TrimSpace(body)
 }
 
+// escapeStackTitle keeps a title from forming an HTML comment or a stack marker.
+func escapeStackTitle(title string) string {
+	return strings.ReplaceAll(title, "<", "&lt;")
+}
+
+// stripStackPair removes the first end-marker line and the nearest start-marker line above it.
+// Markers count only as whole lines; an unmatched start marker stays as text.
 func stripStackPair(body, startMarker, endMarker string) (string, bool) {
-	start := strings.Index(body, startMarker)
-	if start < 0 {
-		return body, false
+	start, end := -1, -1
+	for offset := 0; offset < len(body); {
+		lineEnd := strings.IndexByte(body[offset:], '\n')
+		next := len(body)
+		if lineEnd >= 0 {
+			next = offset + lineEnd + 1
+		}
+		switch strings.TrimSpace(body[offset:next]) {
+		case startMarker:
+			start = offset
+		case endMarker:
+			if start >= 0 {
+				end = offset + len(strings.TrimRight(body[offset:next], " \t\r\n"))
+			}
+		}
+		if end >= 0 {
+			break
+		}
+		offset = next
 	}
-	end := strings.Index(body[start+len(startMarker):], endMarker)
 	if end < 0 {
 		return body, false
 	}
-	end += start + len(startMarker) + len(endMarker)
 
 	before := body[:start]
 	after := strings.TrimLeft(body[end:], "\r\n")

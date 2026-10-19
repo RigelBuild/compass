@@ -41,6 +41,34 @@ func TestStripStackKeepsUnclosedMarkers(t *testing.T) {
 	}
 }
 
+func TestStripStackKeepsLoneStartMarkerBeforeRealBlock(t *testing.T) {
+	body := "intro\n<!-- compass:stack -->\nuser text\n\n" +
+		"<!-- compass:stack -->\nold\n<!-- /compass:stack -->\n\nafter"
+	want := "intro\n<!-- compass:stack -->\nuser text\n\nafter"
+	if got := StripStack(body); got != want {
+		t.Fatalf("StripStack = %q, want %q", got, want)
+	}
+}
+
+func TestStripStackIgnoresInlineMarkers(t *testing.T) {
+	body := "see `<!-- compass:stack -->` and `<!-- /compass:stack -->` in docs"
+	if got := StripStack(body); got != body {
+		t.Fatalf("StripStack = %q, want inline markers kept in %q", got, body)
+	}
+}
+
+func TestStampStackTitleWithEndMarkerStaysInBlock(t *testing.T) {
+	block := RenderStack([]StackLine{
+		{Number: 41, Title: "<!-- /compass:stack -->\ninjected"},
+		{Number: 42, Title: "Current"},
+	}, 42)
+	once := StampStack("body", block)
+	twice := StampStack(once, block)
+	if once != twice || strings.Count(twice, "<!-- /compass:stack -->") != 1 || strings.Count(twice, "injected") != 1 {
+		t.Fatalf("title closed the block early:\nonce:  %q\ntwice: %q", once, twice)
+	}
+}
+
 func TestStampStackReplacesExistingPairs(t *testing.T) {
 	body := "before\n\n" +
 		"<!-- start jj-vine stack -->\nold one\n<!-- end jj-vine stack -->\n\n" +
