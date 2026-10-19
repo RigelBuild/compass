@@ -53,35 +53,25 @@ func tracedIngress(h http.Handler, operation string) http.Handler {
 // is never logged.
 const adminTokenFile = "admin-token"
 
-// compassServiceMaxReadBytes caps a single inbound message on the CompassService
-// network door (M1). It clears the largest legitimate message the mount carries
-// — a PutAgentConfig bundle up to the store's 64 MiB decompressed cap — with
-// headroom for wire framing, while bounding an operator's PutModelRegistry /
-// PutAgentConfig against an unbounded in-memory buffer.
+// compassServiceMaxReadBytes caps inbound CompassService messages at 128 MiB,
+// enough for the store's 64 MiB decompressed config bundles plus framing while
+// bounding the in-memory request buffer.
 const compassServiceMaxReadBytes = 128 << 20 // 128 MiB
 
-// siblingServiceMaxReadBytes caps a single inbound message on the CommsService
-// and SecretsService mounts, which ride the same network door as CompassService
-// but carry only small unary messages (a chat turn, a secret value) — none of
-// the 64 MiB config-bundle scale CompassService's PutAgentConfig reaches (M2).
-// connect-go imposes NO default read cap, and CommsService is authenticatedOpen
-// (any member reaches PostMessage), so an uncapped sibling mount is STRICTLY
-// more exposed than the admin-gated CompassService the round-1 fix already
-// capped: an ordinary account could stream an arbitrarily large PostMessage the
-// server buffers whole in memory. 16 MiB is generous over any legitimate
-// message here while closing that hole — the guestd vsock.go:94 posture.
+// siblingServiceMaxReadBytes caps CommsService and SecretsService requests, which
+// carry small unary messages and need no 64 MiB config-bundle allowance.
+// CommsService is authenticatedOpen, so without a cap any member could force
+// an arbitrarily large PostMessage to be buffered in memory.
 const siblingServiceMaxReadBytes = 16 << 20 // 16 MiB
 
 // gatewayAuthMaxReadBytes caps VerifyAgentToken bodies, which are decoded before
 // the bearer check runs; a minted token is 43 bytes.
 const gatewayAuthMaxReadBytes = 4 << 10
 
-// boundListeners holds the TCP listeners eagerly bound before any on-disk
-// state, plus the network door's validated TLS config. Binding up front means a
-// bad address, an in-use port, or a bad keypair fails Serve before it creates a
-// socket, directory, or admin-token file — so a startup failure leaves nothing
-// behind. A nil listener means that door is off (dev unless --dev-http, network
-// unless --listen or an inherited listener).
+// boundListeners holds eagerly bound TCP listeners and the validated TLS config.
+// Binding before touching disk makes invalid addresses, occupied ports, or bad
+// keypairs fail startup without leaving sockets, directories, or token files.
+// A nil listener disables that door.
 type boundListeners struct {
 	dev     net.Listener
 	network net.Listener
@@ -96,11 +86,10 @@ func (b boundListeners) close() {
 	closeListener(b.network)
 }
 
-// bindListeners eagerly binds the optional dev and network-door TCP listeners
-// (and loads the network door's TLS keypair) before Serve touches disk; an
-// inherited network listener arrives already bound. On any error it closes
-// every listener it holds, so the caller never sees a half-bound value. The dev
-// endpoint must be loopback and the network door requires TLS.
+// bindListeners binds optional dev and network-door listeners, loading network
+// TLS before Serve touches disk; inherited network listeners arrive pre-bound.
+// It closes all listeners on error, so callers never receive a half-bound value.
+// The dev endpoint must be loopback, and the network door must use TLS.
 func bindListeners(ctx context.Context, cfg ServeConfig) (boundListeners, error) {
 	var b boundListeners
 	if cfg.DevHTTP != nil {
@@ -143,12 +132,10 @@ func bindListeners(ctx context.Context, cfg ServeConfig) (boundListeners, error)
 	return b, nil
 }
 
-// loadNetworkTLS validates the operator-provisioned PEM paths and loads them
-// into a *tls.Config for the network door. It is called EARLY in Serve (before
-// any on-disk state) so a missing/unreadable/invalid cert fails Serve up front,
-// leaving nothing behind. NextProtos is left to http.Server, which advertises
-// ALPN h2 from the server's Protocols (see networkProtocols) so the door is
-// HTTP/2-native and gRPC-Web negotiates h2 over the same port.
+// loadNetworkTLS validates operator-provisioned PEM paths and loads network TLS
+// before Serve touches disk, so invalid credentials fail startup without leaving
+// state behind. http.Server advertises ALPN h2 through networkProtocols, allowing
+// gRPC-Web to negotiate HTTP/2 on the same port.
 func loadNetworkTLS(cfg *TLSConfig) (*tls.Config, error) {
 	if cfg == nil || cfg.CertPath == "" || cfg.KeyPath == "" {
 		// A bearer token over cleartext is credential disclosure, so TLS is
@@ -170,11 +157,9 @@ func loadNetworkTLS(cfg *TLSConfig) (*tls.Config, error) {
 	}, nil
 }
 
-// networkProtocols enables HTTP/1.1 and encrypted HTTP/2 (ALPN h2) on the
-// network door. Unlike the socket/dev doors (cleartext h2c), the network door
-// terminates TLS, so HTTP/2 is negotiated via ALPN: http.Server advertises "h2"
-// in the TLS handshake from these protocols, and gRPC-Web browser clients
-// negotiate h2 over the same port.
+// networkProtocols enables HTTP/1.1 and TLS-negotiated HTTP/2 (ALPN h2) on the
+// network door. Unlike the cleartext socket/dev doors, TLS advertises "h2" so
+// gRPC-Web clients can negotiate HTTP/2 on the same port.
 func networkProtocols() *http.Protocols {
 	p := new(http.Protocols)
 	p.SetHTTP1(true)
@@ -182,13 +167,10 @@ func networkProtocols() *http.Protocols {
 	return p
 }
 
-// networkCORS is the single-origin gRPC-Web CORS policy for the network door.
-// Unlike devCORS (any origin, a loopback dev convenience), the network door is
-// internet-facing, so it exposes exactly the one operator-configured origin. It
-// additionally allows the Authorization request header — the network door
-// authenticates with a bearer token, so a cross-origin browser client must be
-// permitted to send it — and exposes the gRPC-Web status trailers so the client
-// can read grpc-status.
+// networkCORS allows only the configured origin because the internet-facing
+// network door must not allow arbitrary origins like devCORS. It permits
+// Authorization for bearer-authenticated browser clients and exposes grpc-status
+// so gRPC-Web clients can read the RPC status.
 func networkCORS(origin string) *cors.Cors {
 	return cors.New(cors.Options{
 		AllowedOrigins: []string{origin},
@@ -239,20 +221,10 @@ func withBodyReadDeadline(next http.Handler, timeout time.Duration) http.Handler
 	})
 }
 
-// buildNetworkServer ensures the bootstrap admin token (reused or minted, 0600 under the
-// state dir, so a socket-only start leaves none behind), then constructs the
-// authenticated network door: the compass.v1 CompassService and CommsService
-// handlers behind the bearer interceptors (outer, they authenticate and inject
-// the caller) and the admin gate (inner, it rejects a non-admin on the
-// privileged session RPCs), plus the internal RunnerService door a Runner
-// enrolls over — behind its own Runner-subject bearer interceptor, sharing the
-// same auth.ResolveToken resolver but Kind-gated to a Runner token (an account
-// token is Unauthenticated there, and a Runner token is Unauthenticated on the
-// account/comms doors: the OQ7 cross-door rule). The credential and registry
-// gateway services mount independently behind their service-bearer allowlist.
-// Optionally wrapped in the single-origin network CORS policy. It does not bind
-// or serve — the listener is already bound (boundListeners) — so on a token error
-// the caller owns listener cleanup.
+// buildNetworkServer mounts account/comms behind bearer auth, then the admin gate,
+// which checks the injected caller on privileged RPCs only. Runner and account
+// tokens cannot cross doors; gateway services use a service-token allowlist. It
+// never binds or serves, so the caller owns listener cleanup on error.
 func buildNetworkServer(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -331,11 +303,10 @@ func buildNetworkServer(
 	connecthttp.Mount(netMux, agentRepositoryServer, connecthttp.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	health.mount(netMux)
 
-	// The internal RunnerService door: the surface a Runner dials out to, mounted
-	// only here on the authenticated network door (a Runner is remote, over TLS).
-	// Its bearer interceptor Kind-gates to a Runner-subject token (cross-door
-	// rejection, OQ7); the admin gate is not applied, the Kind gate is the authz.
-	// Converted only when set: a nil pointer in the interface would not compare nil.
+	// RunnerService is mounted only on the TLS network door because Runners dial
+	// remotely. Its bearer interceptor requires a Runner-subject token; the admin
+	// gate is omitted because this token-kind gate provides authorization.
+	// Convert only nonnil verifier pointers; a typed nil interface is nonnil.
 	var verifier runnerTokenVerifier
 	if runnerVerifier != nil {
 		verifier = runnerVerifier
@@ -608,12 +579,9 @@ func warnIfSharedTokenDir(ctx context.Context, log *slog.Logger, dir string) {
 	}
 }
 
-// writeTokenFile writes token to a 0600 file named adminTokenFile under dir,
-// atomically: a temp file in the same directory (born 0600) is written, synced,
-// and renamed over the final path, so a reader never observes a partial token
-// and a crash mid-write leaves either the old file or the new one, never a
-// truncated credential. Returns the final path. A failed write removes the temp
-// file so no partial credential is left behind.
+// writeTokenFile atomically replaces adminTokenFile with a synced 0600 token in a
+// same-directory temp file, so readers never see a partial credential and crashes
+// leave either the old or new token. Failed writes remove the temp file.
 func writeTokenFile(dir, token string) (string, error) {
 	if err := ensurePrivateDir(dir); err != nil {
 		return "", fmt.Errorf("ensuring state dir %q for admin token: %w", dir, err)
