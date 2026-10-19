@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
@@ -507,6 +508,46 @@ func TestSubmitStackRetriesForeignRebaseNoticeInSweep(t *testing.T) {
 	}
 	if len(n.posts) != 1 || len(m.pushes) != 1 {
 		t.Fatalf("posts=%v pushes=%v, want one successful notice post and no repeated rebase", n.posts, m.pushes)
+	}
+}
+
+func TestSweepRetriesNoticeUntilADayThenStops(t *testing.T) {
+	svc, _, _, n := seedForeignBase(t, testOwnerID)
+	st := svc.store.(*fakeForgeStore)
+	created := nowStub()
+	st.notices = []store.Notice{{ID: "notice-1", TenantID: "tenant-test", FromAccountID: testAgentID, ToAccountID: "acct-sibling", RequestKey: "k", Text: "moved", CreatedAt: created}}
+
+	n.postErr = errors.New("temporary notifier failure")
+	svc.now = func() time.Time { return created.Add(writeLostAfter - time.Second) }
+	if err := svc.sweepWriteIntents(t.Context()); err == nil {
+		t.Fatal("sweep before the cutoff: want the post failure reported")
+	}
+	if st.notices[0].DeliveredAt != nil || st.notices[0].Attempts != 1 || len(n.keys) != 1 {
+		t.Fatalf("before cutoff: notice=%+v keys=%v, want one retried, undelivered attempt", st.notices[0], n.keys)
+	}
+
+	svc.now = func() time.Time { return created.Add(writeLostAfter) }
+	if err := svc.sweepWriteIntents(t.Context()); err != nil {
+		t.Fatalf("sweep at cutoff: %v", err)
+	}
+	if st.notices[0].DeliveredAt == nil || len(n.keys) != 1 || len(n.posts) != 0 {
+		t.Fatalf("at cutoff: notice=%+v keys=%v posts=%v, want retries stopped without a post", st.notices[0], n.keys, n.posts)
+	}
+}
+
+func TestNoticeKeyIsScopedBySender(t *testing.T) {
+	svc, _, _, n := seedForeignBase(t, testOwnerID)
+	st := svc.store.(*fakeForgeStore)
+	f := &foreignBase{pr: forge.PullRequest{Number: 9, HeadRef: "base"}, agent: "acct-sibling"}
+	for _, caller := range []store.AccountID{testAgentID, "acct-other"} {
+		r := &stackRun{s: svc, caller: caller, key: "shared-request"}
+		r.notify(t.Context(), f, "moved", "base-new")
+	}
+	if len(st.notices) != 2 || st.notices[0].RequestKey == st.notices[1].RequestKey {
+		t.Fatalf("notices = %+v, want one per sender for the same request id and head", st.notices)
+	}
+	if len(n.keys) != 2 {
+		t.Fatalf("posted keys = %v, want one post per sender", n.keys)
 	}
 }
 

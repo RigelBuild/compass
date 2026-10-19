@@ -336,7 +336,8 @@ func (r *stackRun) rebaseForeign(ctx context.Context, f *foreignBase, entries []
 
 // notify records before delivery; failure cannot fail a completed rebase.
 func (r *stackRun) notify(ctx context.Context, f *foreignBase, text, foreignHead string) {
-	key := r.key + ":notice:" + f.pr.HeadRef + ":" + foreignHead
+	// Client request ids are unique per agent, so the sender scopes the tenant-wide notice key.
+	key := string(r.caller) + ":" + r.key + ":notice:" + f.pr.HeadRef + ":" + foreignHead
 	notice, err := r.s.store.RecordNotice(ctx, store.Notice{
 		FromAccountID: r.caller,
 		ToAccountID:   f.agent,
