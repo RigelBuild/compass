@@ -501,11 +501,9 @@ func TestServerSecretNameInvariant(t *testing.T) {
 			ReviewerApp: ForgeAppConfig{AppID: 3, InstallationID: 4, AppPrivateKeySecret: "REVIEWER_KEY"},
 		}
 
-		// This is failure mode (c): the UNPREFIXED resolved set is what a
-		// half-done re-point leaves behind. Both predicates must read false,
-		// and — the dangerous part — warnPartialForgeWriteSecrets stays SILENT
-		// because both-absent looks like "writes deliberately off", so nothing
-		// in the logs would reveal that forge writes died fleet-wide.
+		// An unprefixed set makes both predicates false, and the partial-config
+		// warning stays silent because both absent looks intentional. This can
+		// disable forge writes fleet-wide without a log explaining why.
 		unprefixed := []secrets.ResolvedSecret{{Name: "PRIMARY_KEY"}, {Name: "REVIEWER_KEY"}}
 		if havePrimary, haveReviewer := cfg.forgeWriteAppsConfigured(unprefixed); havePrimary || haveReviewer {
 			t.Fatalf("unprefixed resolved set matched the write-Apps gate (primary=%v reviewer=%v); the comparison is not wrapped",
