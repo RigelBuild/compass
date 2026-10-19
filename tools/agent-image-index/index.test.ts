@@ -1,12 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import {
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { publishImageIndex } from "./index.ts";
@@ -16,7 +10,6 @@ const SHA12 = SHA.slice(0, 12);
 const AUTH = "/tmp/auth.json";
 const TEMP = mkdtempSync(join(tmpdir(), "agent-image-index-"));
 const REPO = "ghcr.io/rigelbuild/compass-agent";
-const LOCAL_INDEX_DIR = join(TEMP, "local-index");
 function imageRef(repo: string): string {
 	return `docker://${repo}`;
 }
@@ -132,7 +125,6 @@ type FakeOptions = {
 	repo?: string;
 	emptyMemberConfig?: boolean;
 	localIndex?: string;
-	localIndexDir?: string;
 	rejectArtifactInspection?: boolean;
 };
 
@@ -150,31 +142,6 @@ function handleGitCommand(
 	if (command[1] === "merge-base") return fakeResult();
 	if (command[1] === "rev-list") return fakeResult(newerCommits.join("\n"));
 	return undefined;
-}
-
-function writeLocalIndex(raw: string, localIndexDir: string): void {
-	const descriptorDigest = localDigest(raw);
-	const hex = descriptorDigest.slice("sha256:".length);
-	mkdirSync(join(localIndexDir, "blobs", "sha256"), { recursive: true });
-	writeFileSync(
-		join(localIndexDir, "oci-layout"),
-		JSON.stringify({ imageLayoutVersion: "1.0.0" }),
-	);
-	writeFileSync(
-		join(localIndexDir, "index.json"),
-		JSON.stringify({
-			schemaVersion: 2,
-			manifests: [
-				{
-					mediaType: "application/vnd.oci.image.index.v1+json",
-					digest: descriptorDigest,
-					size: Buffer.byteLength(raw),
-					annotations: { "org.opencontainers.image.ref.name": "index" },
-				},
-			],
-		}),
-	);
-	writeFileSync(join(localIndexDir, "blobs", "sha256", hex), raw);
 }
 
 function getCopiedIndex(command: string[]): string {
@@ -407,7 +374,6 @@ function makeRunner(options: FakeOptions = {}): {
 	commands: string[][];
 	latestPushes: number;
 	immutablePushes: number;
-	localIndexDir: string;
 } {
 	const commands: string[][] = [];
 	const immutable = options.immutable ?? "unknown";
@@ -422,14 +388,11 @@ function makeRunner(options: FakeOptions = {}): {
 		latestPushes: 0,
 		immutablePushes: 0,
 	};
-	const localIndexDir = join(TEMP, "local-index");
-	writeLocalIndex(options.localIndex ?? LOCAL_RAW, localIndexDir);
-	const runnerOptions = { ...options, localIndexDir };
 	const run: (command: string[]) => Promise<FakeCommandResult> = async (
 		command,
 	) => {
 		commands.push(command);
-		return fakeCommandResult(command, runnerOptions, state);
+		return fakeCommandResult(command, options, state);
 	};
 	return {
 		commands,
@@ -439,7 +402,6 @@ function makeRunner(options: FakeOptions = {}): {
 		get immutablePushes() {
 			return state.immutablePushes;
 		},
-		localIndexDir,
 		run,
 	};
 }
@@ -643,7 +605,7 @@ test("resolves and verifies OCI artifact members through raw manifests", async (
 		expect(command).toContain("--multi-arch");
 		expect(command).toContain("index-only");
 		expect(command).toContain("--preserve-digests");
-		expect(command.at(-2)).toBe(`oci:${LOCAL_INDEX_DIR}:index`);
+		expect(command.at(-2)).toBe(`oci:${join(TEMP, "local-index")}:index`);
 	}
 	expect(copies.map((command) => command.at(-1))).toEqual([
 		`${imageRef(repo)}:git-${SHA12}`,
@@ -735,17 +697,23 @@ describe("immutable tag guard", () => {
 });
 
 describe("index and member verification", () => {
-	test("wrong member count fails", async () => {
-		const fake = makeRunner({ localIndex: DIFFERENT_RAW });
+	test("remote index with wrong member count fails digest verification", async () => {
+		const wrongCount = JSON.stringify({
+			mediaType: "application/vnd.oci.image.index.v1+json",
+			manifests: [],
+		});
+		const fake = makeRunner({ localIndex: wrongCount });
 		await expect(
 			publishImageIndex(
 				{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
-		).rejects.toThrow("pushed :git-abcdef012345 index changed");
+		).rejects.toThrow(
+			`pushed :git-${SHA12} index changed: local=${localDigest(LOCAL_RAW)} remote=${localDigest(wrongCount)}`,
+		);
 	});
 
-	test("wrong platform set fails", async () => {
+	test("remote index with wrong platform set fails digest verification", async () => {
 		const wrongPlatforms = JSON.stringify({
 			mediaType: "application/vnd.oci.image.index.v1+json",
 			manifests: [
@@ -759,7 +727,9 @@ describe("index and member verification", () => {
 				{ repo: REPO, sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
-		).rejects.toThrow("pushed :git-abcdef012345 index changed");
+		).rejects.toThrow(
+			`pushed :git-${SHA12} index changed: local=${localDigest(LOCAL_RAW)} remote=${localDigest(wrongPlatforms)}`,
+		);
 	});
 
 	test("member config architecture mismatch fails", async () => {
