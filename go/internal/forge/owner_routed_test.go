@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 type routedIdentityTokenSource struct {
@@ -357,4 +359,67 @@ func TestOwnerRoutedGitHubBoardReadUsesOwnerInstallation(t *testing.T) {
 	if len(owners) != 4 || owners[0] != "owner-a" || owners[1] != "owner-a" || owners[2] != "owner-b" || owners[3] != "owner-b" {
 		t.Fatalf("board read owners = %v, want owner-a list/detail then owner-b list/detail", owners)
 	}
+}
+
+func TestOwnerRoutedGitHubPRReadsUseOwnerInstallation(t *testing.T) {
+	const repo = "owner-b/repo"
+	var reads []string
+	router := newOwnerRoutedReadFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		reads = append(reads, r.Method+" "+r.URL.Path)
+		if got := r.Header.Get("Authorization"); got != "Bearer owner-b-installation-token" {
+			t.Errorf("%s %s Authorization = %q, want owner B installation token", r.Method, r.URL.Path, got)
+		}
+		key := r.Method + " " + r.URL.Path
+		if key == "GET /repos/owner-b/repo/pulls" && r.URL.Query().Get("state") == "open" {
+			key += "?open"
+		}
+		response, ok := ownerBPullReadResponses[key]
+		if !ok {
+			t.Errorf("unexpected request: %s", key)
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := fmt.Fprint(w, response); err != nil {
+			t.Errorf("write %s response: %v", key, err)
+		}
+	})
+
+	tests := []struct {
+		name string
+		read func() error
+	}{
+		{name: "GetPullRequestConditional", read: func() error { _, err := router.GetPullRequestConditional(t.Context(), repo, 7, ""); return err }},
+		{name: "ChecksConditional", read: func() error { _, err := router.ChecksConditional(t.Context(), repo, 7, "head-sha", ""); return err }},
+		{name: "ListNewArtifacts", read: func() error {
+			_, err := router.ListNewArtifacts(t.Context(), repo, compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_PULL_REQUEST, 0, "")
+			return err
+		}},
+		{name: "ListUpdatedIssues", read: func() error { _, err := router.ListUpdatedIssues(t.Context(), repo, time.Time{}, ""); return err }},
+		{name: "PullRequestForSHA", read: func() error { _, err := router.PullRequestForSHA(t.Context(), repo, "head-sha"); return err }},
+		{name: "GetPullRequest", read: func() error { _, err := router.GetPullRequest(t.Context(), repo, 7); return err }},
+		{name: "ListOpenPullRequests", read: func() error { _, err := router.ListOpenPullRequests(t.Context(), repo); return err }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(reads)
+			if err := tc.read(); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if len(reads) == before {
+				t.Fatalf("%s sent no owner-B read", tc.name)
+			}
+		})
+	}
+}
+
+var ownerBPullReadResponses = map[string]string{
+	"GET /repos/owner-b/repo/pulls/7":                     `{"number":7,"state":"open","html_url":"https://github.com/owner-b/repo/pull/7","head":{"sha":"head-sha"},"base":{"ref":"main"},"user":{"login":"octocat"}}`,
+	"GET /repos/owner-b/repo/pulls/7/reviews":             `[]`,
+	"GET /repos/owner-b/repo/commits/head-sha/check-runs": `{"check_runs":[]}`,
+	"GET /repos/owner-b/repo/commits/head-sha/status":     `{"statuses":[]}`,
+	"POST /graphql": emptyPullGraphQL("head-sha"),
+	"GET /repos/owner-b/repo/commits/head-sha/pulls": `[{"number":7,"state":"open"}]`,
+	"GET /repos/owner-b/repo/issues":                 `[]`,
+	"GET /repos/owner-b/repo/pulls":                  `[]`,
+	"GET /repos/owner-b/repo/pulls?open":             `[{"number":7,"state":"open","updated_at":"2026-01-01T00:00:00Z"}]`,
 }
