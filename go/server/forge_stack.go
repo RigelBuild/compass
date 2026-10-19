@@ -1,0 +1,520 @@
+//go:build unix
+
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+
+	"connectrpc.com/connect/v2"
+
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/forge"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/refs"
+	"github.com/RigelBuild/compass/go/internal/store"
+)
+
+const (
+	foreignRebaseMessage = "forge: foreign PR rebase not yet supported"
+	noIssueMessage       = "forge: a new pull request needs issue_ref; find an issue that fits with forge_list_issues, or create one with forge_create_issue, then submit again"
+	mirrorOffMessage     = "forge: the Server git mirror is not configured"
+)
+
+// stackRun carries one submit_stack call's resolved context across its entries.
+type stackRun struct {
+	s       *forgeService
+	rf      resolvedForge
+	id      callerIdentity
+	caller  store.AccountID
+	session string
+	repo    string
+	key     string
+	bundled bool
+}
+
+// submitStack pushes the agent's bundle and writes one PR per entry, bottom to
+// top. The first failed entry stops the call; later entries are skipped.
+func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.SubmitStackRequest) *compassv1internal.ForgeCallResult {
+	rf, fe := s.resolveTarget(call, req.GetRepo())
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := requireWriteKey(call); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := validateStack(req); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	id, fe := s.resolveIdentity(ctx, caller, sessionID)
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	entries := req.GetEntries()
+	if len(entries) == 0 {
+		return forgeErrorResult(forgeErr(connect.CodeInvalidArgument, "forge: submit_stack needs at least one entry"))
+	}
+	if fe := s.applyStackBundle(ctx, req.GetRepo(), req.GetBundle(), entries); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	r := &stackRun{s: s, rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), key: call.GetClientRequestId(), bundled: len(req.GetBundle()) > 0}
+
+	out := make([]*compassv1internal.StackEntryResult, len(entries))
+	prs := make([]forge.PullRequest, len(entries))
+	failed := -1
+	if fe := r.checkForeignBase(ctx, entries[0].GetBaseRef()); fe != nil {
+		out[0], failed = failedEntry(entries[0].GetHeadRef(), fe), 0
+	}
+	for i := 0; failed < 0 && i < len(entries); i++ {
+		pr, created, fe := r.ensure(ctx, entries[i], stackBase(entries, i))
+		if fe != nil {
+			out[i], failed = failedEntry(entries[i].GetHeadRef(), fe), i
+			break
+		}
+		prs[i] = pr
+		out[i] = &compassv1internal.StackEntryResult{
+			HeadRef: entries[i].GetHeadRef(), PullRequest: translatePR(pr, rf, r.repo),
+			Created: created, Authored: true, Status: compassv1internal.StackEntryStatus_STACK_ENTRY_STATUS_DONE,
+		}
+	}
+	// The restamp runs only when every entry has its PR, so each block names the whole line.
+	if failed < 0 {
+		lines := make([]forge.StackLine, 0, len(entries))
+		for i, e := range entries {
+			title := prs[i].Title
+			if e.GetReplaceText() {
+				title = e.GetTitle()
+			}
+			lines = append(lines, forge.StackLine{Number: prs[i].Number, Title: title})
+		}
+		if len(lines) < 2 {
+			lines = nil
+		}
+		for i, e := range entries {
+			pr, fe := r.restamp(ctx, e, prs[i], stackBase(entries, i), lines, e.GetHeadRef() == req.GetReadyHeadRef())
+			if fe != nil {
+				out[i], failed = failedEntry(e.GetHeadRef(), fe), i
+				break
+			}
+			out[i].PullRequest = translatePR(pr, rf, r.repo)
+		}
+	}
+	if failed >= 0 {
+		for j := failed + 1; j < len(entries); j++ {
+			out[j] = &compassv1internal.StackEntryResult{HeadRef: entries[j].GetHeadRef(), Status: compassv1internal.StackEntryStatus_STACK_ENTRY_STATUS_SKIPPED}
+		}
+	}
+	return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_Stack{Stack: &compassv1internal.StackResult{Entries: out}}}
+}
+
+// validateStack refuses a malformed line before any store or forge touch.
+func validateStack(req *compassv1internal.SubmitStackRequest) *compassv1internal.ForgeCallError {
+	entries := req.GetEntries()
+	if len(entries) == 0 {
+		return forgeErr(connect.CodeInvalidArgument, "forge: submit_stack needs at least one entry")
+	}
+	if entries[0].GetBaseRef() == "" {
+		return forgeErr(connect.CodeInvalidArgument, "forge: the bottom entry needs base_ref")
+	}
+	seen := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		head := e.GetHeadRef()
+		if head == "" {
+			return forgeErr(connect.CodeInvalidArgument, "forge: every entry needs head_ref")
+		}
+		if seen[head] {
+			return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf("forge: head %q appears twice", head))
+		}
+		seen[head] = true
+	}
+	if ready := req.GetReadyHeadRef(); ready != "" && !seen[ready] {
+		return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf("forge: ready_head_ref %q is not an entry", ready))
+	}
+	return nil
+}
+
+// stackBase chains each entry on the one below; the bottom takes its own base.
+func stackBase(entries []*compassv1internal.StackEntry, i int) string {
+	if i == 0 {
+		return entries[0].GetBaseRef()
+	}
+	return entries[i-1].GetHeadRef()
+}
+
+// applyStackBundle installs the entries' refs from the agent's bundle in the
+// mirror. Each ref is pushed later, once its PR is known to be the caller's.
+func (s *forgeService) applyStackBundle(ctx context.Context, repo string, bundle []byte, entries []*compassv1internal.StackEntry) *compassv1internal.ForgeCallError {
+	if len(bundle) == 0 {
+		return nil
+	}
+	if s.mirror == nil {
+		return forgeErr(connect.CodeFailedPrecondition, mirrorOffMessage)
+	}
+	heads := make([]string, len(entries))
+	for i, e := range entries {
+		heads[i] = "refs/heads/" + e.GetHeadRef()
+	}
+	if err := s.mirror.ApplyBundle(ctx, repo, bundle, heads); err != nil {
+		return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: apply bundle: %v", err))
+	}
+	return nil
+}
+
+// checkForeignBase refuses a base that is another agent's open PR.
+func (r *stackRun) checkForeignBase(ctx context.Context, base string) *compassv1internal.ForgeCallError {
+	pr, found, err := r.rf.author.FindPullRequestByHead(ctx, r.repo, base)
+	if err != nil {
+		return mapForgeError(err, r.op(0))
+	}
+	if !found || pr.State != store.TransitionStateOpen {
+		return nil
+	}
+	row, ok, fe := r.s.prAuthor(ctx, r.rf, r.repo, pr.Number)
+	switch {
+	case fe != nil:
+		return fe
+	case ok && row.AgentAccountID == r.caller:
+		return nil
+	case ok && row.OwnerUserID == r.id.ownerID:
+		return forgeErr(connect.CodeFailedPrecondition, foreignRebaseMessage)
+	default:
+		return forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: base %q is pull request #%d, which this agent's owner did not create", base, pr.Number))
+	}
+}
+
+// ensure finds or creates the entry's PR and pushes its head. It writes no
+// existing PR; restamp does that once the whole line is known.
+func (r *stackRun) ensure(ctx context.Context, e *compassv1internal.StackEntry, base string) (forge.PullRequest, bool, *compassv1internal.ForgeCallError) {
+	head := e.GetHeadRef()
+	pr, found, err := r.rf.author.FindPullRequestByHead(ctx, r.repo, head)
+	if err != nil {
+		return forge.PullRequest{}, false, mapForgeError(err, r.op(0))
+	}
+	if !found {
+		return r.create(ctx, e, base)
+	}
+	if pr.State != store.TransitionStateOpen {
+		return forge.PullRequest{}, false, forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: head %q has %s pull request #%d; sync first", head, pr.State, pr.Number))
+	}
+	if fe := r.requireOwn(ctx, pr, head); fe != nil {
+		return forge.PullRequest{}, false, fe
+	}
+	if fe := r.push(ctx, head); fe != nil {
+		return forge.PullRequest{}, false, fe
+	}
+	return pr, false, nil
+}
+
+// requireOwn accepts the caller's PR, and adopts an unrecorded one only when
+// this call's pending intent names its head.
+func (r *stackRun) requireOwn(ctx context.Context, pr forge.PullRequest, head string) *compassv1internal.ForgeCallError {
+	row, ok, fe := r.s.prAuthor(ctx, r.rf, r.repo, pr.Number)
+	switch {
+	case fe != nil:
+		return fe
+	case !ok:
+		return r.adopt(ctx, pr, head)
+	case row.AgentAccountID == r.caller:
+		return nil
+	case row.OwnerUserID == r.id.ownerID:
+		return forgeErr(connect.CodeFailedPrecondition, foreignRebaseMessage)
+	default:
+		return forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: head %q is pull request #%d, which this agent's owner did not create", head, pr.Number))
+	}
+}
+
+// adopt records an unrecorded PR an earlier attempt of this call created.
+func (r *stackRun) adopt(ctx context.Context, pr forge.PullRequest, head string) *compassv1internal.ForgeCallError {
+	in, ref, fe := r.s.beginWrite(ctx, r.intentKey(head), r.target(head))
+	if fe != nil {
+		return fe
+	}
+	if ref != nil && ref.Number == pr.Number {
+		return nil
+	}
+	if ref == nil {
+		// No earlier attempt names this head; the fresh intent sends nothing, so end it.
+		if err := r.s.store.EndWriteIntent(ctx, in.ID, store.WriteStateFailed); err != nil && !errors.Is(err, store.ErrConflict) {
+			slog.WarnContext(ctx, "forge: end unused write intent", slog.String("intent", in.ID), slog.Any("error", err))
+		}
+	}
+	return forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: head %q is pull request #%d, which this agent did not create", head, pr.Number))
+}
+
+// create opens a draft PR for a new entry under a write intent, after checking its issue.
+func (r *stackRun) create(ctx context.Context, e *compassv1internal.StackEntry, base string) (forge.PullRequest, bool, *compassv1internal.ForgeCallError) {
+	head := e.GetHeadRef()
+	if strings.TrimSpace(e.GetIssueRef()) == "" {
+		return forge.PullRequest{}, false, forgeErr(connect.CodeInvalidArgument, noIssueMessage)
+	}
+	link, fe := r.checkIssue(ctx, e.GetIssueRef())
+	if fe != nil {
+		return forge.PullRequest{}, false, fe
+	}
+	if fe := r.push(ctx, head); fe != nil {
+		return forge.PullRequest{}, false, fe
+	}
+	intent, prior, fe := r.s.beginWrite(ctx, r.intentKey(head), r.target(head))
+	if fe != nil {
+		return forge.PullRequest{}, false, fe
+	}
+	if prior != nil {
+		pr, err := r.rf.author.GetPullRequest(ctx, r.repo, prior.Number)
+		if err != nil {
+			return forge.PullRequest{}, false, mapForgeError(err, r.op(0))
+		}
+		return pr, false, nil
+	}
+	op := r.op(len(e.GetBody()))
+	body, err := r.body(e.GetBody(), "")
+	if err != nil {
+		return forge.PullRequest{}, false, r.s.failWrite(ctx, intent.ID, err, op).GetError()
+	}
+	pr, err := r.rf.author.CreatePullRequest(ctx, r.repo, forge.CreatePR{Title: e.GetTitle(), Body: body, HeadRef: head, BaseRef: base, Draft: true})
+	if err != nil {
+		return forge.PullRequest{}, false, r.s.failWrite(ctx, intent.ID, err, op).GetError()
+	}
+	a := r.s.authoredArtifact(r.rf, r.id, r.caller, r.session, r.repo, store.ForgeArtifactKindPullRequest, pr.Number)
+	if fe := r.s.recordPullRequest(ctx, a, pr, translatePR(pr, r.rf, r.repo), link); fe != nil {
+		return forge.PullRequest{}, false, fe
+	}
+	if fe := r.s.completeWrite(ctx, intent.ID, &a, ""); fe != nil {
+		return forge.PullRequest{}, false, fe
+	}
+	return pr, true, nil
+}
+
+// checkIssue parses the user's issue ref and reads it: only an open issue
+// passes. A tracker outage is retryable, so no PR is made against an unchecked issue.
+func (r *stackRun) checkIssue(ctx context.Context, raw string) (*store.ForgeCoord, *compassv1internal.ForgeCallError) {
+	ref, err := refs.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, forgeErr(connect.CodeInvalidArgument, fmt.Sprintf("forge: issue_ref %q is not owner/repo#N or TEAM-N", raw))
+	}
+	in := &compassv1internal.PullRequestIssueLink{Number: ref.Number}
+	if ref.Kind == refs.KindTracker {
+		in.Forge = &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}
+		in.Repo = ref.Key
+	} else {
+		in.Repo = ref.Owner + "/" + ref.Repo
+	}
+	link, fe := r.s.resolveIssueLink(r.rf, r.repo, in)
+	if fe != nil {
+		return nil, fe
+	}
+	// A non-nil input always resolves to a link; a nil one here is a Server bug.
+	if link == nil {
+		return nil, forgeErr(connect.CodeInternal, "forge: issue link did not resolve")
+	}
+	tracker, ok := r.s.providers.resolve(&compassv1.ForgeRef{Provider: compassv1.ForgeProvider(link.Provider), Host: link.Host})
+	if !ok {
+		return nil, forgeErr(connect.CodeNotFound, "forge: no provider configured for the issue's coordinate")
+	}
+	iss, err := tracker.author.GetIssue(ctx, link.Repo, link.Number)
+	if err != nil {
+		if se, ok := errors.AsType[*forge.StatusError](err); ok && (se.Status == 403 || se.Status == 404 || se.Status == 410) {
+			return nil, forgeErr(connect.CodeNotFound, fmt.Sprintf("forge: issue %s not found", raw))
+		}
+		return nil, forgeErr(connect.CodeUnavailable, fmt.Sprintf("forge: could not check issue %s; retry later: %v", raw, err))
+	}
+	switch {
+	case iss.IsPullRequest:
+		return nil, forgeErr(connect.CodeInvalidArgument, fmt.Sprintf("forge: %s is a pull request, not an issue", raw))
+	case iss.State != store.TransitionStateOpen:
+		return nil, forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: issue %s is %s", raw, iss.State))
+	}
+	return link, nil
+}
+
+// restamp PATCHes only what differs: base, block, header, draft, and the text
+// only on replace_text.
+func (r *stackRun) restamp(ctx context.Context, e *compassv1internal.StackEntry, pr forge.PullRequest, base string, lines []forge.StackLine, ready bool) (forge.PullRequest, *compassv1internal.ForgeCallError) {
+	title, text := pr.Title, existingText(pr.Body)
+	if e.GetReplaceText() {
+		title, text = e.GetTitle(), e.GetBody()
+	}
+	block := ""
+	if len(lines) > 0 {
+		block = forge.RenderStack(lines, pr.Number)
+	}
+	op := r.op(len(text))
+	body, err := r.body(text, block)
+	if err != nil {
+		return forge.PullRequest{}, mapForgeError(err, op)
+	}
+	leaveDraft := ready && pr.Draft
+	if title == pr.Title && body == pr.Body && base == pr.BaseRef && !leaveDraft {
+		return pr, nil
+	}
+	updated, err := r.rf.author.UpdatePullRequest(ctx, r.repo, pr.Number, forge.UpdatePR{Title: title, Body: body, BaseRef: base, Ready: leaveDraft})
+	if err != nil {
+		return forge.PullRequest{}, mapForgeError(err, op)
+	}
+	return updated, nil
+}
+
+// existingText is a PR body without the Server's owner header and stack block.
+func existingText(body string) string {
+	clean, _, _ := forge.StripOwner(body)
+	return forge.StripStack(clean)
+}
+
+// body stamps the owner header and the stack block onto agent text.
+func (r *stackRun) body(text, block string) (string, error) {
+	stamped, err := writeBody(r.rf, r.id.author, forge.StripStack(text), "", false)
+	if err != nil {
+		return "", err
+	}
+	out := forge.StampStack(stamped, block)
+	if r.rf.bodyLimit > 0 && len(out) > r.rf.bodyLimit {
+		return "", forge.ErrBodyTooLarge
+	}
+	return out, nil
+}
+
+// push sends the bundle's commit for head, leased on the forge's current head.
+func (r *stackRun) push(ctx context.Context, head string) *compassv1internal.ForgeCallError {
+	if !r.bundled {
+		return nil
+	}
+	ref := "refs/heads/" + head
+	if err := r.s.mirror.Push(ctx, r.repo, map[string]string{ref: ref}); err != nil {
+		return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: push %s: %v; sync and submit again", head, err))
+	}
+	return nil
+}
+
+func (r *stackRun) intentKey(head string) string { return r.key + ":" + head }
+
+// op names this arm for error mapping; bodyLen feeds the oversized-body message.
+func (r *stackRun) op(bodyLen int) forgeOp {
+	return forgeOp{provider: r.rf.author.Name(), op: "submit_stack", bodyLen: bodyLen, bodyLimit: r.rf.bodyLimit}
+}
+
+func (r *stackRun) target(head string) writeTarget {
+	return writeTarget{rf: r.rf, id: r.id, caller: r.caller, session: r.session, repo: r.repo, kind: forge.WriteKindPullRequest, headRef: head}
+}
+
+func failedEntry(head string, fe *compassv1internal.ForgeCallError) *compassv1internal.StackEntryResult {
+	return &compassv1internal.StackEntryResult{HeadRef: head, Error: fe, Status: compassv1internal.StackEntryStatus_STACK_ENTRY_STATUS_FAILED}
+}
+
+// prAuthor reads a PR's ownership row; ok=false means no row.
+func (s *forgeService) prAuthor(ctx context.Context, rf resolvedForge, repo string, number uint64) (store.AuthoredArtifact, bool, *compassv1internal.ForgeCallError) {
+	row, err := s.store.AuthoredArtifactByCoordinateFold(ctx, store.ForgeProvider(rf.provider), rf.host, repo, store.ForgeArtifactKindPullRequest, number)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.AuthoredArtifact{}, false, nil
+	}
+	if err != nil {
+		return store.AuthoredArtifact{}, false, storeForgeError(err)
+	}
+	return row, true, nil
+}
+
+// requirePRAuthor refuses a PR state change unless the caller created the PR.
+func (s *forgeService) requirePRAuthor(ctx context.Context, caller store.AccountID, rf resolvedForge, repo string, number uint64) *compassv1internal.ForgeCallError {
+	row, ok, fe := s.prAuthor(ctx, rf, repo, number)
+	if fe != nil {
+		return fe
+	}
+	if !ok || row.AgentAccountID != caller {
+		return forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: pull request #%d was not created by this agent", number))
+	}
+	return nil
+}
+
+// stackStatus reads each head's PR, its checks, and whether the caller authored it.
+func (s *forgeService) stackStatus(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.StackStatusRequest) *compassv1internal.ForgeCallResult {
+	rf, fe := s.resolveTarget(call, req.GetRepo())
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	op := forgeOp{provider: rf.author.Name(), op: "stack_status"}
+	out := make([]*compassv1internal.StackEntryResult, 0, len(req.GetHeadRefs()))
+	for _, head := range req.GetHeadRefs() {
+		pr, found, err := rf.author.FindPullRequestByHead(ctx, req.GetRepo(), head)
+		if err != nil {
+			out = append(out, failedEntry(head, mapForgeError(err, op)))
+			continue
+		}
+		res := &compassv1internal.StackEntryResult{HeadRef: head, Status: compassv1internal.StackEntryStatus_STACK_ENTRY_STATUS_DONE}
+		if found {
+			if pr.State == store.TransitionStateOpen {
+				checks, err := rf.author.Checks(ctx, req.GetRepo(), pr.Number)
+				if err != nil {
+					out = append(out, failedEntry(head, mapForgeError(err, op)))
+					continue
+				}
+				pr.Checks = checks
+			}
+			row, ok, fe := s.prAuthor(ctx, rf, req.GetRepo(), pr.Number)
+			if fe != nil {
+				out = append(out, failedEntry(head, fe))
+				continue
+			}
+			res.Authored = ok && row.AgentAccountID == caller
+			res.PullRequest = translatePR(pr, rf, req.GetRepo())
+		}
+		out = append(out, res)
+	}
+	return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_Stack{Stack: &compassv1internal.StackResult{Entries: out}}}
+}
+
+// retireHead closes the caller's PR for head, then deletes only that branch.
+// A retry skips a close that already landed.
+func (s *forgeService) retireHead(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.RetireHeadRequest) *compassv1internal.ForgeCallResult {
+	rf, fe := s.resolveTarget(call, req.GetRepo())
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	head := req.GetHeadRef()
+	if head == "" {
+		return forgeErrorResult(forgeErr(connect.CodeInvalidArgument, "forge: head_ref is required"))
+	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if s.mirror == nil {
+		return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, mirrorOffMessage))
+	}
+	op := forgeOp{provider: rf.author.Name(), op: "retire_head"}
+	pr, found, err := rf.author.FindPullRequestByHead(ctx, req.GetRepo(), head)
+	if err != nil {
+		return forgeErrorResult(mapForgeError(err, op))
+	}
+	if !found {
+		return forgeErrorResult(forgeErr(connect.CodeNotFound, fmt.Sprintf("forge: no pull request for head %q", head)))
+	}
+	if fe := s.requirePRAuthor(ctx, caller, rf, req.GetRepo(), pr.Number); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if pr.State == store.TransitionStateOpen {
+		closed, err := rf.author.TransitionPullRequestState(ctx, req.GetRepo(), pr.Number, forge.TransitionState{State: store.TransitionStateClosed})
+		if err != nil {
+			return forgeErrorResult(mapForgeError(err, op))
+		}
+		if fe := s.rememberTransition(ctx, rf, caller, req.GetRepo(), store.ForgeArtifactKindPullRequest, pr.Number, store.TransitionStateClosed); fe != nil {
+			return forgeErrorResult(fe)
+		}
+		pr = closed
+	}
+	// The fetch sets the lease the delete pushes against.
+	if err := s.mirror.ApplyBundle(ctx, req.GetRepo(), nil, nil); err != nil {
+		return forgeErrorResult(forgeErr(connect.CodeUnavailable, fmt.Sprintf("forge: fetch %s: %v", req.GetRepo(), err)))
+	}
+	if err := s.mirror.Push(ctx, req.GetRepo(), map[string]string{"refs/heads/" + head: ""}); err != nil {
+		return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: delete branch %s: %v", head, err)))
+	}
+	return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_Stack{Stack: &compassv1internal.StackResult{
+		Entries: []*compassv1internal.StackEntryResult{{
+			HeadRef: head, PullRequest: translatePR(pr, rf, req.GetRepo()), Authored: true,
+			Status: compassv1internal.StackEntryStatus_STACK_ENTRY_STATUS_DONE,
+		}},
+	}}}
+}
