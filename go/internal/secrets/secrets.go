@@ -151,6 +151,8 @@ type ResolvedSecret struct {
 	Kind SecretKind
 	// Host is the forge host, set only for SecretGH (else "").
 	Host string
+	// Owner is the lowercase account login for a brokered SecretGH (else "").
+	Owner string
 	// Provider is the SDK provider id, set only for SecretProvider (else "").
 	Provider string
 }
@@ -160,8 +162,8 @@ type ResolvedSecret struct {
 // it would be a confirmation oracle for a low-entropy secret. Only the routing
 // metadata (safe to show) is kept for diagnosis.
 func (s ResolvedSecret) String() string {
-	return fmt.Sprintf("ResolvedSecret{name: %q, kind: %d, delivery: %d, value: <redacted>}",
-		s.Name, s.Kind, s.Delivery)
+	return fmt.Sprintf("ResolvedSecret{name: %q, kind: %d, delivery: %d, owner: %q, value: <redacted>}",
+		s.Name, s.Kind, s.Delivery, s.Owner)
 }
 
 // GoString redacts Value under %#v as well, so a struct dump can't leak it.

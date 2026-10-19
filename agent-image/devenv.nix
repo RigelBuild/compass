@@ -8,9 +8,13 @@ let
   # The Runner execs a bare `compass-agent` argv and cli.ts has a real import
   # graph, so it is bundled rather than store-copied; entrypoint.nix carries why.
   compassAgent = import ./entrypoint.nix { inherit pkgs lib; };
+  compassForgeCredential = import ../tools/toolchain/compass-forge-credential.nix {
+    inherit pkgs;
+    src = builtins.path { path = ../go; name = "compass-go-src"; };
+  };
 
   toolchain = import ./toolchain.nix {
-    inherit pkgs lib compassAgent;
+    inherit pkgs lib compassAgent compassForgeCredential;
     jjVineSrc = inputs.jj-vine-src;
     sourceFingerprint = import ./source-fingerprint.nix { inherit pkgs lib; };
   };

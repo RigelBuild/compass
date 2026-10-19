@@ -6,6 +6,7 @@
   pkgs,
   lib,
   compassAgent,
+  compassForgeCredential,
   jjVineSrc,
   sourceFingerprint,
 }:
@@ -68,6 +69,7 @@ pkgs.buildEnv {
     # The entrypoint and its interpreter.
     bun
     compassAgent
+    compassForgeCredential
 
     # The agent clones and drives its own repos.
     pkgs.git
@@ -80,7 +82,6 @@ pkgs.buildEnv {
     pkgs.nftables
     pkgs.getent
     pkgs.gawk
-
 
     # The resume path expands a streamed archive into the private blob directory.
     pkgs.gnutar
@@ -99,10 +100,12 @@ pkgs.buildEnv {
       host = "https://api.github.com"
       tokenCommand = ["${pkgs.gh}/bin/gh", "auth", "token", "--hostname", "{host}"]
     '')
-    # Git asks gh for any host's token; gh answers only for hosts it holds.
+    # Owner-aware credential lookup runs before gh, the default-installation fallback.
     (pkgs.writeTextDir "etc/gitconfig" ''
       [credential]
+          useHttpPath = true
           helper =
+          helper = !${compassForgeCredential}/bin/compass-forge-credential git-credential
           helper = !${pkgs.gh}/bin/gh auth git-credential
     '')
     caCertificates

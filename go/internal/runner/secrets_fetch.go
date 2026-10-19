@@ -54,7 +54,7 @@ func (l *ServerLink) fetchSecrets(ctx context.Context, req *compassv1internal.Fe
 
 // resolvedSecretFromProto maps a wire ResolvedSecret to the resolve-surface type,
 // translating the public proto delivery/kind enums to the secrets-package enums —
-// the reverse of runnerhub.resolvedSecretToProto. Value/version/host/provider
+// the reverse of runnerhub.resolvedSecretToProto. Value/version/host/provider/owner
 // ride through verbatim.
 func resolvedSecretFromProto(s *compassv1internal.ResolvedSecret) secrets.ResolvedSecret {
 	return secrets.ResolvedSecret{
@@ -64,6 +64,7 @@ func resolvedSecretFromProto(s *compassv1internal.ResolvedSecret) secrets.Resolv
 		Delivery: deliveryFromProto(s.GetDelivery()),
 		Kind:     kindFromProto(s.GetKind()),
 		Host:     s.GetHost(),
+		Owner:    s.GetOwner(),
 		Provider: s.GetProvider(),
 	}
 }

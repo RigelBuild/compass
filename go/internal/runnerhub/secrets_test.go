@@ -95,7 +95,7 @@ func TestFetchSecretsBoundSessionReturnsResolvedSet(t *testing.T) {
 	bindSession(hub, "sess-1")
 	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{
 		{Name: "DB_URL", Value: "postgres://secret", Version: "v1", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
-		{Name: "GH_TOKEN", Value: "ghp_x", Version: "v2", Delivery: secrets.DeliveryFile, Kind: secrets.SecretGH, Host: "github.com"},
+		{Name: "GH_TOKEN", Value: "ghp_x", Version: "v2", Delivery: secrets.DeliveryFile, Kind: secrets.SecretGH, Host: "github.com", Owner: "owner-a"},
 	}}
 	url := newFetchSecretsServer(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
@@ -120,6 +120,9 @@ func TestFetchSecretsBoundSessionReturnsResolvedSet(t *testing.T) {
 	}
 	if got[1].GetKind() != 3 || got[1].GetHost() != "github.com" { // SECRET_KIND_GH
 		t.Fatalf("GH_TOKEN kind/host = %v/%q, want GH (3)/github.com", got[1].GetKind(), got[1].GetHost())
+	}
+	if got[1].GetOwner() != "owner-a" {
+		t.Fatalf("GH_TOKEN owner = %q, want owner-a", got[1].GetOwner())
 	}
 }
 

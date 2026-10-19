@@ -457,6 +457,7 @@ func resolvedSecretToProto(s secrets.ResolvedSecret) *compassv1internal.Resolved
 		Kind:     kindToProto(s.Kind),
 		Host:     s.Host,
 		Provider: s.Provider,
+		Owner:    s.Owner,
 	}
 }
 

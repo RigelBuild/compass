@@ -43,7 +43,7 @@ func (f *fakeFetchServer) FetchAgentConfig(_ context.Context, _ *compassv1intern
 
 // TestFetchSecretsMapsWireToResolveSurface pins the reverse edge mapping: each
 // wire ResolvedSecret's delivery/kind enums are translated to the secrets-package
-// enums, and value/version/host/provider ride through, so the materializer routes
+// enums, and value/version/host/provider/owner ride through, so the materializer routes
 // on the resolve-surface types it expects.
 func TestFetchSecretsMapsWireToResolveSurface(t *testing.T) {
 	server := &fakeFetchServer{secrets: []*compassv1internal.ResolvedSecret{
@@ -58,6 +58,7 @@ func TestFetchSecretsMapsWireToResolveSurface(t *testing.T) {
 			Delivery: compassv1.SecretDelivery_SECRET_DELIVERY_FILE,
 			Kind:     compassv1.SecretKind_SECRET_KIND_GH,
 			Host:     "github.com",
+			Owner:    "owner-a",
 		},
 		{
 			Name: "ENV_VAR", Value: "env-val", Version: "v3",
@@ -81,7 +82,7 @@ func TestFetchSecretsMapsWireToResolveSurface(t *testing.T) {
 
 	want := []secrets.ResolvedSecret{
 		{Name: "OPENAI", Value: "sk-openai", Version: "v1", Delivery: secrets.DeliveryFile, Kind: secrets.SecretProvider, Provider: "openai"},
-		{Name: "GH", Value: "gho_tok", Version: "v2", Delivery: secrets.DeliveryFile, Kind: secrets.SecretGH, Host: "github.com"},
+		{Name: "GH", Value: "gho_tok", Version: "v2", Delivery: secrets.DeliveryFile, Kind: secrets.SecretGH, Host: "github.com", Owner: "owner-a"},
 		{Name: "ENV_VAR", Value: "env-val", Version: "v3", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
 	}
 	for i, w := range want {

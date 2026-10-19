@@ -136,6 +136,9 @@ func TestResolvedSecretRedaction(t *testing.T) {
 			t.Errorf("%s missing the <redacted> marker: %q", path, out)
 		}
 	}
+	if got := fmt.Sprintf("%v", ResolvedSecret{Name: "GH", Owner: "owner-a", Kind: SecretGH}); !strings.Contains(got, "owner-a") {
+		t.Fatalf("String() omitted safe owner metadata: %q", got)
+	}
 }
 
 func TestEnumMappingFromStore(t *testing.T) {
