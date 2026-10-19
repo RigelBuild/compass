@@ -22,7 +22,7 @@ export {
 	type BoardCallResult,
 	BoardCallResultSchema,
 	// The agent-initiated forge call envelopes (internal-only AgentGateway gen). Request
-	// carries `call_id`, a oneof over thirteen forge arms, an optional `ForgeRef`, and a
+	// carries `call_id`, a oneof over fourteen forge arms, an optional `ForgeRef`, and a
 	// `client_request_id` (create and mirror arms); Result retypes to canonical Issue/PullRequest/etc
 	// plus an in-band `error` arm carrying `retry_after_ms`. Reused as RelayForgeCall payloads.
 	CommentOnIssueRequestSchema,
@@ -45,6 +45,7 @@ export {
 	DespawnPeerRequestSchema,
 	type DespawnPeerResponse,
 	DespawnPeerResponseSchema,
+	EditIssueRequestSchema,
 	type ForgeCallError,
 	ForgeCallErrorSchema,
 	type ForgeCallRequest,

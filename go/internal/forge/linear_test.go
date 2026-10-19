@@ -426,6 +426,51 @@ func TestLinearEditComment(t *testing.T) {
 	}
 }
 
+func TestLinearEditIssueUpdatesOnlySetFields(t *testing.T) {
+	const updated = `{"data":{"issueUpdate":{"issue":{"number":42,"title":"edited title","description":"edited body","url":"https://linear.app/x/issue/RIG-42","state":{"type":"started"},"labels":{"nodes":[]},"creator":null}}}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: http.StatusOK, body: `{"data":{"issues":{"nodes":[{"id":"issue-uuid-1"}]}}}`},
+		{status: http.StatusOK, body: updated},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	title, body := "edited title", "edited body"
+	got, err := l.EditIssue(context.Background(), "RIG", 42, EditIssue{Title: &title, Body: &body})
+	if err != nil {
+		t.Fatalf("EditIssue: %v", err)
+	}
+	query, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[1]))
+	if !strings.Contains(query, "issueUpdate(id: $id, input: $input)") {
+		t.Fatalf("query = %q, want issueUpdate mutation", query)
+	}
+	if vars["id"] != "issue-uuid-1" {
+		t.Fatalf("vars.id = %v, want issue UUID", vars["id"])
+	}
+	input := vars["input"].(map[string]any)
+	if len(input) != 2 || input["title"] != title || input["description"] != body {
+		t.Fatalf("input = %#v, want title and description only", input)
+	}
+	if got.Number != 42 || got.Title != title || got.Body != body {
+		t.Fatalf("updated issue = %+v", got)
+	}
+}
+
+func TestLinearEditIssueTitleOnlyOmitsDescription(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: http.StatusOK, body: `{"data":{"issues":{"nodes":[{"id":"issue-uuid-1"}]}}}`},
+		{status: http.StatusOK, body: `{"data":{"issueUpdate":{"issue":{"number":42,"title":"renamed","state":{"type":"started"},"labels":{"nodes":[]},"creator":null}}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	title := "renamed"
+	if _, err := l.EditIssue(context.Background(), "RIG", 42, EditIssue{Title: &title}); err != nil {
+		t.Fatalf("EditIssue: %v", err)
+	}
+	_, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[1]))
+	input := vars["input"].(map[string]any)
+	if len(input) != 1 || input["title"] != title {
+		t.Fatalf("title-only input = %#v, want title only", input)
+	}
+}
+
 func TestLinearEditCommentEmptyKeyDoesNotRequest(t *testing.T) {
 	rt := &scriptedRoundTripper{}
 	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))

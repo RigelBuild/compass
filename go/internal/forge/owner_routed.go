@@ -250,6 +250,14 @@ func (r *OwnerRoutedGitHub) TransitionIssueState(ctx context.Context, repo strin
 	return client.TransitionIssueState(ctx, repo, number, in)
 }
 
+func (r *OwnerRoutedGitHub) EditIssue(ctx context.Context, repo string, number uint64, in EditIssue) (Issue, error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return Issue{}, err
+	}
+	return client.EditIssue(ctx, repo, number, in)
+}
+
 func (r *OwnerRoutedGitHub) TransitionPullRequestState(ctx context.Context, repo string, number uint64, in TransitionState) (PullRequest, error) {
 	client, err := r.clientFor(ctx, repo)
 	if err != nil {

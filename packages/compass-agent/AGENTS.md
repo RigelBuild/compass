@@ -78,7 +78,7 @@ Both tools render names/handles only — never account, container, or session id
 
 ## The forge toolset
 
-Twelve native forge tools ship (`src/forge.ts`), one per `ForgeCallRequest` arm,
+Fourteen native forge tools ship (`src/forge.ts`), one per registered tool,
 over a thin `ForgeBroker` on the `RunnerTransport.forge()` seam — the same
 broker/identity/registration shape as comms:
 
@@ -87,8 +87,8 @@ broker/identity/registration shape as comms:
 - Writes (`approval: "write"`): `forge_comment_on_issue`,
   `forge_comment_on_pull_request`, `forge_submit_review`, `forge_create_issue`,
   `forge_create_pull_request`, `forge_transition_issue_state`,
-  `forge_transition_pull_request_state`, `forge_subscribe`,
-  `forge_unsubscribe`.
+  `forge_edit_issue`, `forge_transition_pull_request_state`, `forge_subscribe`,
+  `forge_unsubscribe`, `forge_mirror_messages`.
 
 `forge_create_issue`/`forge_create_pull_request` carry a broker-scoped DL-206
 `client_request_id` (`ForgeBroker.idempotencyKey`); the other arms send none.

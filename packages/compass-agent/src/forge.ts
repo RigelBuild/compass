@@ -1,6 +1,6 @@
-// The agent's forge surface: a thin broker over the Runner transport, plus the thirteen native
+// The agent's forge surface: a thin broker over the Runner transport, plus the fourteen native
 // tools to read and write forge artifacts — issues, PRs, comments, reviews, state
-// transitions, subscriptions, and message mirroring (design compass-agent-forge-tools T1 + T2).
+// transitions, subscriptions, and message mirroring.
 
 // Mirrors comms.ts / lifecycle.ts: `AgentGateway.Forge` is a Connect unary over the
 // per-container Unix socket, so a result is the awaited return value — no pending map, no
@@ -34,6 +34,7 @@ import {
 	CreateIssueRequestSchema,
 	CreatePullRequestRequestSchema,
 	create,
+	EditIssueRequestSchema,
 	ForgeArtifactKind,
 	type ForgeCallRequest,
 	ForgeCallRequestSchema,
@@ -330,6 +331,23 @@ export const transitionIssueStateParameters = type({
 });
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
+export const editIssueParameters = type({
+	...forgeSelector,
+	repo: nonBlank(REPO_DESC),
+	issue_number: type("number.integer >= 1"),
+	"title?": type("string").describe(
+		"New issue title; omitted leaves it unchanged",
+	),
+	"body?": type("string").describe(
+		"New markdown body; the server replaces any attribution header and stamps the caller",
+	),
+}).narrow((v, ctx) =>
+	v.title !== undefined || v.body !== undefined
+		? true
+		: ctx.reject("provide title, body, or both"),
+);
+
+/** Exported so a test can validate the wire contract the agent loop enforces. */
 export const transitionPullRequestStateParameters = type({
 	...forgeSelector,
 	repo: nonBlank(REPO_DESC),
@@ -614,7 +632,7 @@ function renderSubscribed(
 }
 
 /**
- * The native forge tool set. Thirteen tools, including the mirror arm.
+ * The native forge tool set. Fourteen tools, including the mirror arm.
  *
  * Wired into the container entrypoint by `cli.ts main()`: merged into the
  * session's `customTools` and registered as `#withNatives` natives. This
@@ -1071,6 +1089,45 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 		},
 	};
 
+	const editIssue: AgentTool<typeof editIssueParameters> = {
+		name: "forge_edit_issue",
+		label: "Edit forge issue",
+		approval: "write",
+		description: `Edit an existing issue's title, body, or both and return the updated issue. ${REPO_ADDRESSING} ${SCOPE_DISCIPLINE} ${SELECTOR_RULE} ${STAMP_RULE}`,
+		parameters: editIssueParameters,
+		execute: async (toolCallId, params) => {
+			if (params.title === undefined && params.body === undefined) {
+				throw new Error("forge_edit_issue: provide title, body, or both");
+			}
+			const result = await broker.call(
+				create(ForgeCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "editIssue",
+						value: create(EditIssueRequestSchema, {
+							repo: params.repo,
+							issueNumber: BigInt(params.issue_number),
+							title: params.title,
+							body: params.body,
+						}),
+					},
+					forge: forgeRef(params),
+				}),
+			);
+			if (result.result.case !== "issue")
+				throw forgeFailure(result, "forge_edit_issue", "issue");
+			const fence = crypto.randomUUID().slice(0, 8);
+			return {
+				content: [
+					{
+						type: "text",
+						text: framedRead(renderIssueRecord(result.result.value, fence)),
+					},
+				],
+			};
+		},
+	};
+
 	const subscribe: AgentTool<typeof subscribeParameters> = {
 		name: "forge_subscribe",
 		label: "Subscribe to forge artifact",
@@ -1157,6 +1214,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 		createIssue,
 		createPullRequest,
 		transitionIssueState,
+		editIssue,
 		transitionPullRequestState,
 		subscribe,
 		unsubscribe,

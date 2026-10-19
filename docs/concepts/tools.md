@@ -66,6 +66,7 @@ a subagent spawn.
 - **`forge_comment_on_issue`, `forge_comment_on_pull_request`, `forge_submit_review`** — write comments and reviews under server-stamped agent attribution.
 - **`forge_create_issue`, `forge_create_pull_request`** — create forge artifacts with idempotent retries.
 - **`forge_transition_issue_state`, `forge_transition_pull_request_state`** — change artifact state.
+- **`forge_edit_issue`** — edit an issue's title, body, or both under server-stamped caller attribution.
 - **`forge_subscribe`, `forge_unsubscribe`** — manage notifications for forge artifacts.
 - **`forge_mirror_messages`** — mirror one visible topic or selected messages to an AUTO-enabled issue or pull request. Choose exactly one source. A topic mirrors its newest 50 messages; selected messages must come from one channel. An optional channel is a visible channel name, and an optional note appears above the messages. The Server checks source visibility, AUTO mode, repository scope, and idempotent delivery before posting.
 

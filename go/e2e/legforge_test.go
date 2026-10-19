@@ -40,6 +40,10 @@ func registerForgeFixtureOptions() {
 			CannedToolCall("forge_transition_issue_state", args(map[string]any{"repo": forgeLegRepo, "issue_number": forgeStubIssueNumber, "state": "closed", "close_reason": "completed"})),
 			CannedText("closed"),
 			CannedToolCall("forge_get_issue", args(map[string]any{"repo": forgeLegRepo, "issue_number": forgeStubIssueNumber})),
+			CannedText("read"),
+			CannedToolCall("forge_edit_issue", args(map[string]any{"repo": forgeLegRepo, "issue_number": forgeStubIssueNumber, "title": "edited forge leg issue"})),
+			CannedText("edited"),
+			CannedToolCall("forge_get_issue", args(map[string]any{"repo": forgeLegRepo, "issue_number": forgeStubIssueNumber})),
 			CannedText("verified"),
 			CannedToolCall("forge_create_pull_request", args(map[string]any{"repo": forgeLegRepo, "title": "forge leg pull request", "body": "authored by the forge leg", "head_ref": "forge-leg", "base_ref": "main", "draft": true})),
 			CannedText("opened"),
@@ -91,6 +95,8 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 		forgeAgentLoopMarker + " read the issue",
 		forgeAgentLoopMarker + " comment on the issue",
 		forgeAgentLoopMarker + " close the issue",
+		forgeAgentLoopMarker + " edit the issue title",
+		forgeAgentLoopMarker + " read the closed issue",
 		forgeAgentLoopMarker + " verify the issue",
 		forgeAgentLoopMarker + " create a pull request",
 	} {
@@ -122,7 +128,13 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 			t.Fatalf("awaitTranscriptPersisted (decoded issue %s): %v", want, err)
 		}
 	}
+	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, "[title "); err != nil {
+		t.Fatalf("awaitTranscriptPersisted (edited issue title): %v", err)
+	}
 	finalIssue := f.ForgeStub().Issue(forgeStubIssueNumber)
+	if finalIssue["title"] != "edited forge leg issue" {
+		t.Fatalf("final issue title=%v, want edited forge leg issue", finalIssue["title"])
+	}
 	if finalIssue["state"] != "closed" || finalIssue["state_reason"] != "completed" {
 		t.Fatalf("final issue state=%v state_reason=%v, want closed/completed", finalIssue["state"], finalIssue["state_reason"])
 	}
@@ -151,12 +163,12 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 
 func assertForgeRequests(t *testing.T, requests []forgeStubRequest, handle string) {
 	t.Helper()
-	if len(requests) != 7 {
+	if len(requests) != 9 {
 		paths := make([]string, 0, len(requests))
 		for _, request := range requests {
 			paths = append(paths, request.Method+" "+request.Path)
 		}
-		t.Fatalf("forge requests = %d, want 7 (one mint plus six API calls); saw %v", len(requests), paths)
+		t.Fatalf("forge requests = %d, want 9 (one mint plus eight API calls); saw %v", len(requests), paths)
 	}
 	if requests[0].Path != "/api/v3/app/installations/1/access_tokens" || requests[0].Method != http.MethodPost {
 		t.Fatalf("mint request = %#v", requests[0])
@@ -167,9 +179,11 @@ func assertForgeRequests(t *testing.T, requests []forgeStubRequest, handle strin
 		"/api/v3/repos/owner/repo/issues/4242/comments",
 		"/api/v3/repos/owner/repo/issues/4242",
 		"/api/v3/repos/owner/repo/issues/4242",
+		"/api/v3/repos/owner/repo/issues/4242",
+		"/api/v3/repos/owner/repo/issues/4242",
 		"/api/v3/repos/owner/repo/pulls",
 	}
-	wantMethods := []string{http.MethodPost, http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodGet, http.MethodPost}
+	wantMethods := []string{http.MethodPost, http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodGet, http.MethodPatch, http.MethodGet, http.MethodPost}
 	for i, want := range wantPaths {
 		request := requests[i+1]
 		if request.Path != want {
@@ -194,6 +208,13 @@ func assertForgeRequestBodies(t *testing.T, requests []forgeStubRequest, handle 
 	if transitionBody["state"] != "closed" || transitionBody["state_reason"] != "completed" {
 		t.Fatalf("transition body = %#v, want state=closed state_reason=completed", transitionBody)
 	}
+	var editBody map[string]any
+	if err := json.Unmarshal(requests[6].Body, &editBody); err != nil {
+		t.Fatalf("decode edit body: %v", err)
+	}
+	if len(editBody) != 1 || editBody["title"] != "edited forge leg issue" {
+		t.Fatalf("edit body = %#v, want title only", editBody)
+	}
 	var createBody map[string]any
 	if err := json.Unmarshal(requests[1].Body, &createBody); err != nil {
 		t.Fatalf("decode create body: %v", err)
@@ -215,7 +236,7 @@ func assertForgeRequestBodies(t *testing.T, requests []forgeStubRequest, handle 
 		t.Fatalf("comment body = %q", commentBody["body"])
 	}
 	var pullRequestBody map[string]any
-	if err := json.Unmarshal(requests[6].Body, &pullRequestBody); err != nil {
+	if err := json.Unmarshal(requests[8].Body, &pullRequestBody); err != nil {
 		t.Fatalf("decode pull request body: %v", err)
 	}
 	pullTitle, pullTitleOK := pullRequestBody["title"].(string)

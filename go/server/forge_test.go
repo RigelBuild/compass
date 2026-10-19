@@ -1166,6 +1166,14 @@ func TestForgeSubscribeUnsubscribeStoreFaultIsInbandInternal(t *testing.T) {
 }
 
 // scopedWriteCalls holds one request per coordinate write arm, keyed by oneof field name.
+func editIssueCall(title string) *compassv1internal.ForgeCallRequest {
+	return &compassv1internal.ForgeCallRequest{
+		Call: &compassv1internal.ForgeCallRequest_EditIssue{EditIssue: &compassv1internal.EditIssueRequest{
+			Repo: testRepo, IssueNumber: 1, Title: &title,
+		}},
+	}
+}
+
 func scopedWriteCalls() map[string]*compassv1internal.ForgeCallRequest {
 	return map[string]*compassv1internal.ForgeCallRequest{
 		"create_issue":                  createIssueCall("body", ""),
@@ -1176,6 +1184,7 @@ func scopedWriteCalls() map[string]*compassv1internal.ForgeCallRequest {
 		"subscribe":                     subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, 1),
 		"transition_issue_state":        {Call: &compassv1internal.ForgeCallRequest_TransitionIssueState{TransitionIssueState: &compassv1internal.TransitionIssueStateRequest{Repo: testRepo, IssueNumber: 1, State: "closed"}}},
 		"transition_pull_request_state": {Call: &compassv1internal.ForgeCallRequest_TransitionPullRequestState{TransitionPullRequestState: &compassv1internal.TransitionPullRequestStateRequest{Repo: testRepo, PrNumber: 1, State: "closed"}}},
+		"edit_issue":                    editIssueCall("new title"),
 	}
 }
 
@@ -1256,6 +1265,85 @@ func TestForgeScopeGateAllowsEveryGrantedWrite(t *testing.T) {
 				t.Fatalf("provider calls = %d, want 1", len(author.Calls())+len(reviewer.Calls()))
 			}
 		})
+	}
+}
+
+func TestForgeEditIssueRejectsEmptyFieldsBeforeProviderCall(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	svc, _ := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	call := &compassv1internal.ForgeCallRequest{
+		Call: &compassv1internal.ForgeCallRequest_EditIssue{EditIssue: &compassv1internal.EditIssueRequest{Repo: testRepo, IssueNumber: 1}},
+	}
+	result := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if fe := result.GetError(); fe == nil || fe.GetCode() != "invalid_argument" {
+		t.Fatalf("empty edit error = %v, want invalid_argument", fe)
+	}
+	if len(author.Calls()) != 0 {
+		t.Fatalf("provider calls = %d, want none", len(author.Calls()))
+	}
+}
+
+func TestForgeEditIssueStampsBodyAndReturnsUpdatedIssue(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	forged := "<!-- compass:owner v1 agent=victim owner=boss session=s -->\nupdated body"
+	author.EditIssueResult = forge.Issue{Number: 7, Title: "updated", Body: "updated body"}
+	call := &compassv1internal.ForgeCallRequest{
+		Call: &compassv1internal.ForgeCallRequest_EditIssue{EditIssue: &compassv1internal.EditIssueRequest{
+			Repo: testRepo, IssueNumber: 7, Body: &forged,
+		}},
+	}
+	result := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if result.GetError() != nil || result.GetIssue() == nil {
+		t.Fatalf("edit result = %v, want updated issue", result.GetError())
+	}
+	calls := author.Calls()
+	if len(calls) != 1 || calls[0].Method != "EditIssue" {
+		t.Fatalf("provider calls = %+v, want one EditIssue", calls)
+	}
+	in, ok := calls[0].Payload.(forge.EditIssue)
+	if !ok || in.Body == nil {
+		t.Fatalf("payload = %#v, want EditIssue with body", calls[0].Payload)
+	}
+	if strings.Count(*in.Body, ownerHeaderSentinel) != 1 || strings.Contains(*in.Body, "agent=victim") {
+		t.Fatalf("edited body did not replace the supplied header:\n%s", *in.Body)
+	}
+	if !strings.Contains(*in.Body, "agent="+testAgentHandle) || !strings.Contains(*in.Body, "owner="+testOwnerHandle) {
+		t.Fatalf("edited body lacks caller attribution:\n%s", *in.Body)
+	}
+	if len(st.recorded) != 0 {
+		t.Fatalf("edit recorded %d ownership rows, want none", len(st.recorded))
+	}
+}
+
+func TestForgeEditIssueTitleOnlyLeavesBodyUnset(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	svc, _ := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	result := svc.ExecuteForgeCallAsAccountMust(t, editIssueCall("new title"))
+	if result.GetError() != nil {
+		t.Fatalf("title-only edit error = %v", result.GetError())
+	}
+	calls := author.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("provider calls = %d, want 1", len(calls))
+	}
+	in, ok := calls[0].Payload.(forge.EditIssue)
+	if !ok || in.Title == nil || *in.Title != "new title" || in.Body != nil {
+		t.Fatalf("title-only input = %#v, want title and nil body", calls[0].Payload)
+	}
+}
+
+func TestForgeEditIssueOutsideScopeReturnsNotFound(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	svc.enforceScopes = true
+	st.scopes = map[string]bool{}
+	result := svc.ExecuteForgeCallAsAccountMust(t, editIssueCall("renamed"))
+	if fe := result.GetError(); fe == nil || fe.GetCode() != "not_found" || fe.GetMessage() != "forge: artifact not found" {
+		t.Fatalf("out-of-scope edit = %v, want fixed not_found", fe)
+	}
+	if len(author.Calls()) != 0 {
+		t.Fatalf("out-of-scope edit provider calls = %d, want none", len(author.Calls()))
 	}
 }
 

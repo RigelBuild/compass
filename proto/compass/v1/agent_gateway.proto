@@ -253,6 +253,7 @@ message ForgeCallRequest {
     MirrorMessagesRequest mirror_messages = 16;
     TransitionIssueStateRequest transition_issue_state = 14;
     TransitionPullRequestStateRequest transition_pull_request_state = 15;
+    EditIssueRequest edit_issue = 17;
   }
   // Which forge the call addresses. UNSET selects the default (configured
   // GitHub) forge — additive, existing callers unchanged. An unknown/unconfigured
@@ -285,7 +286,7 @@ message MirrorMessagesRequest {
 message ForgeCallResult {
   string call_id = 1;
   oneof result {
-    compass.v1.Issue issue = 2;             // create_issue / get_issue / transition_issue_state
+    compass.v1.Issue issue = 2;             // create_issue / get_issue / edit_issue / transition_issue_state
     CommentRef issue_comment = 3;           // comment_on_issue / mirror_messages on an issue
     ListIssuesResponse issues = 4;          // list_issues
     compass.v1.PullRequest pull_request = 5; // create_pull_request / get_pull_request / transition_pull_request_state
@@ -389,6 +390,14 @@ message ReviewCommentInput {
 // A successful transition returns the UPDATED artifact on the existing
 // ForgeCallResult.issue / .pull_request arms, so the caller sees
 // post-transition truth exactly as a create's caller sees the created one.
+// Edit the title, body, or both on an existing issue. Unset fields are unchanged.
+message EditIssueRequest {
+  string repo = 1;                // REQUIRED; repository or team key
+  uint64 issue_number = 2;
+  optional string title = 3;      // unset = unchanged
+  optional string body = 4;       // unstamped; the Server stamps it; unset = unchanged
+}
+
 message TransitionIssueStateRequest {
   string repo = 1;            // REQUIRED; "<owner>/<name>" on GitHub, team key on Linear
   uint64 issue_number = 2;
