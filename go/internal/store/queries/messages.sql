@@ -38,8 +38,8 @@ ON CONFLICT (channel_id, lower(name)) DO NOTHING;
 -- name: GetTopicByName :one
 SELECT id, archived FROM topics WHERE channel_id = $1 AND lower(name) = lower($2);
 
--- name: ReviveTopic :exec
-UPDATE topics SET archived = FALSE WHERE id = $1;
+-- name: ReviveTopic :execrows
+UPDATE topics SET archived = FALSE WHERE id = $1 AND archived;
 
 -- name: MessagesHeadSeq :one
 SELECT COALESCE(MAX(seq), 0)::BIGINT AS head FROM messages;

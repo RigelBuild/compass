@@ -299,24 +299,35 @@ func TestSubscribeCommsTopicCreateUpsertsBeforePost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel(private): %v", err)
 	}
-	post := func(create bool) string {
+	post := func(ref *compassv1.PostMessageRequest, create bool, key string) string {
 		t.Helper()
-		resp, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: create, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hi"}}}})
+		ref.Container = &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}
+		ref.CreateTopic = create
+		ref.ClientRequestId = key
+		ref.Blocks = []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hi"}}}
+		resp, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), ref)
 		if err != nil {
-			t.Fatalf("PostMessage(create=%v): %v", create, err)
+			t.Fatalf("PostMessage(create=%v key=%q): %v", create, key, err)
 		}
 		return resp.GetMessage().GetTopicId()
 	}
-	topicID := post(true)
-	// Posting again to the existing topic, even with create set, adds no new topic.
-	post(true)
-	post(false)
+	byName := func() *compassv1.PostMessageRequest {
+		return &compassv1.PostMessageRequest{Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}}
+	}
+	topicID := post(byName(), true, "create")
+	// A retry of the creating post is deduped: no second topic or message event.
+	post(byName(), true, "create")
+	// Posting again to the existing topic, by name with create set, by name
+	// without it, or by id, adds no new topic event.
+	post(byName(), true, "")
+	post(byName(), false, "")
+	post(&compassv1.PostMessageRequest{Topic: &compassv1.PostMessageRequest_TopicId{TopicId: topicID}}, false, "")
 	// A post by name revives an archived topic, which must be announced too.
 	archived := true
 	if _, err := h.svc.UpdateTopic(WithActor(ctx, memberA.ID), &compassv1.UpdateTopicRequest{TopicId: topicID, Archived: &archived}); err != nil {
 		t.Fatalf("UpdateTopic(archive): %v", err)
 	}
-	post(false)
+	post(byName(), false, "")
 
 	canary := mkCanary(t, h, "canary")
 
@@ -331,8 +342,8 @@ func TestSubscribeCommsTopicCreateUpsertsBeforePost(t *testing.T) {
 			order = append(order, "post")
 		}
 	}
-	// create, three posts, archive, revive, post.
-	if want := []string{"upsert", "post", "post", "post", "upsert", "upsert", "post"}; fmt.Sprint(order) != fmt.Sprint(want) {
+	// create, four posts (retry deduped), archive, revive, post.
+	if want := []string{"upsert", "post", "post", "post", "post", "upsert", "upsert", "post"}; fmt.Sprint(order) != fmt.Sprint(want) {
 		t.Fatalf("member events for the new topic = %v, want %v", order, want)
 	}
 	if !revived {

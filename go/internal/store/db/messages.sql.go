@@ -429,13 +429,16 @@ func (q *Queries) MessagesHeadSeq(ctx context.Context) (int64, error) {
 	return head, err
 }
 
-const reviveTopic = `-- name: ReviveTopic :exec
-UPDATE topics SET archived = FALSE WHERE id = $1
+const reviveTopic = `-- name: ReviveTopic :execrows
+UPDATE topics SET archived = FALSE WHERE id = $1 AND archived
 `
 
-func (q *Queries) ReviveTopic(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, reviveTopic, id)
-	return err
+func (q *Queries) ReviveTopic(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, reviveTopic, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const searchMessages = `-- name: SearchMessages :many

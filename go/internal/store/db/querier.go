@@ -670,7 +670,7 @@ type Querier interface {
 	ResolveVisibleAgentHandles(ctx context.Context, arg ResolveVisibleAgentHandlesParams) ([]ResolveVisibleAgentHandlesRow, error)
 	ResolveVisibleGlobalHandles(ctx context.Context, arg ResolveVisibleGlobalHandlesParams) ([]ResolveVisibleGlobalHandlesRow, error)
 	ResumeSessionBlobs(ctx context.Context, arg ResumeSessionBlobsParams) ([]ResumeSessionBlobsRow, error)
-	ReviveTopic(ctx context.Context, id string) error
+	ReviveTopic(ctx context.Context, id string) (int64, error)
 	// Agent rows only: a user id deletes nothing, so a user grant is never removed here.
 	RevokeAgentForgeScope(ctx context.Context, arg RevokeAgentForgeScopeParams) (int64, error)
 	RevokeForgeScope(ctx context.Context, arg RevokeForgeScopeParams) error

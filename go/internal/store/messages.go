@@ -221,10 +221,12 @@ func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, top
 		return "", false, fmt.Errorf("store: resolve topic: %w", err)
 	}
 	if row.Archived {
-		if err := q.ReviveTopic(ctx, row.ID); err != nil {
+		// Guarded on archived so only the post that actually revives it reports the change.
+		n, err := q.ReviveTopic(ctx, row.ID)
+		if err != nil {
 			return "", false, fmt.Errorf("store: revive archived topic: %w", err)
 		}
-		return row.ID, true, nil
+		return row.ID, n > 0, nil
 	}
 	return row.ID, created, nil
 }
