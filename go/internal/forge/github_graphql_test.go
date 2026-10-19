@@ -501,10 +501,10 @@ func TestGetPullRequestMalformedRepo(t *testing.T) {
 	for _, repo := range []string{"repo", "/repo", "org/", "org/repo/extra"} {
 		rt := &scriptedRoundTripper{}
 		g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
-		if _, err := g.GetPullRequest(context.Background(), repo, 1); !errors.Is(err, errMalformedRepo) {
+		if _, err := g.GetPullRequest(context.Background(), repo, 1); !errors.Is(err, ErrMalformedRepo) {
 			t.Errorf("repo %q: err = %v, want errMalformedRepo", repo, err)
 		}
-		if _, err := g.Checks(context.Background(), repo, 1); !errors.Is(err, errMalformedRepo) {
+		if _, err := g.Checks(context.Background(), repo, 1); !errors.Is(err, ErrMalformedRepo) {
 			t.Errorf("Checks repo %q: err = %v, want errMalformedRepo", repo, err)
 		}
 		if rt.calls != 0 {

@@ -1507,6 +1507,8 @@ func buildBoardWebhookWiring(
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("board webhook installation resolver: %w", err)
 	}
+	// The default installation must get this exact client: its rate gate lives on the
+	// *GitHub and is shared with board and notify reads against that installation.
 	router := forge.NewOwnerRoutedGitHub(client, installationResolver, appConfig, httpClient)
 	// The board lane reuses the notify lane's head-SHA cache: every check_suite
 	// reaches both lanes, so one cache keeps it to one lookup.

@@ -16,9 +16,9 @@ import (
 	"time"
 )
 
-// errMalformedRepo is returned (wrapped) when a GitHub repo coordinate is not
-// exactly "owner/name"; GraphQL takes the two halves as separate variables.
-var errMalformedRepo = errors.New("forge: malformed github repo, want owner/name")
+// ErrMalformedRepo is returned (wrapped) when a GitHub repo coordinate is not
+// exactly "owner/name"; callers map it to invalid input.
+var ErrMalformedRepo = errors.New("forge: malformed github repo, want owner/name")
 
 // errHeadMoved means the PR head changed during a read, so the REST checks and
 // the GraphQL contexts describe different commits; a fresh read is consistent.
@@ -45,7 +45,7 @@ type pullCoord struct {
 func newPullCoord(repo string, number uint64) (pullCoord, error) {
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-		return pullCoord{}, fmt.Errorf("%w: %q", errMalformedRepo, repo)
+		return pullCoord{}, fmt.Errorf("%w: %q", ErrMalformedRepo, repo)
 	}
 	if number > math.MaxInt32 {
 		return pullCoord{}, fmt.Errorf("forge: github pull request number %d exceeds the GraphQL Int range", number)

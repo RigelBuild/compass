@@ -185,7 +185,7 @@ func (r *OwnerRoutedGitHub) TransitionPullRequestState(ctx context.Context, repo
 func (r *OwnerRoutedGitHub) clientFor(ctx context.Context, repo string) (*GitHub, error) {
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-		return nil, fmt.Errorf("forge: malformed github repo %q, want owner/name", repo)
+		return nil, fmt.Errorf("%w: %q", ErrMalformedRepo, repo)
 	}
 	if r.resolver == nil {
 		return nil, fmt.Errorf("%w: %w", ErrInstallationLookup, errors.New("forge: installation resolver is unavailable"))

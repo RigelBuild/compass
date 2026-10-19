@@ -507,7 +507,9 @@ func TestForgeOwnerInstallationErrorsMapToExpectedCodes(t *testing.T) {
 		err  error
 		want string
 	}{
-		{name: "no installation", err: fmt.Errorf("owner: %w", forge.ErrNoInstallation), want: "not_found"},
+		// The router's shape: the resolver's no-installation error inside the lookup wrapper.
+		{name: "no installation", err: fmt.Errorf("%w: %w", forge.ErrInstallationLookup, fmt.Errorf("forge: owner %q: %w", "owner-b", forge.ErrNoInstallation)), want: "not_found"},
+		{name: "malformed repo", err: fmt.Errorf("%w: %q", forge.ErrMalformedRepo, "no-slash"), want: "invalid_argument"},
 		{name: "lookup unavailable", err: fmt.Errorf("%w: %w", forge.ErrInstallationLookup, errors.New("refresh throttled")), want: "unavailable"},
 		{name: "app credential failure", err: fmt.Errorf("%w: %w", forge.ErrInstallationLookup, forge.ErrAppCredentials), want: "internal"},
 	}

@@ -882,6 +882,8 @@ func mapForgeError(err error, op forgeOp) *compassv1internal.ForgeCallError {
 		return forgeErr(installationErrorCode(err), "forge: GitHub App installation lookup failed")
 	}
 	switch {
+	case errors.Is(err, forge.ErrMalformedRepo):
+		return forgeErr(connect.CodeInvalidArgument, "forge: repo must be owner/name")
 	case errors.Is(err, forge.ErrBodyTooLarge):
 		return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf("forge: body of %d bytes exceeds the %s limit of %d bytes once the owner header is reserved", op.bodyLen, op.provider, op.bodyLimit))
 	case errors.Is(err, forge.ErrUnsupported):

@@ -141,6 +141,42 @@ func TestOwnerRoutedGitHubWrapsInstallationLookupErrors(t *testing.T) {
 	}
 }
 
+func TestOwnerRoutedGitHubOwnerWithoutInstallation(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/app/installations" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := fmt.Fprint(w, `[{"id":7,"account":{"login":"owner-a"}}]`); err != nil {
+			t.Errorf("write installation list: %v", err)
+		}
+	}))
+	defer api.Close()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate app key: %v", err)
+	}
+	appConfig := GitHubAppConfig{
+		AppID:          42,
+		InstallationID: 7,
+		PrivateKey: func(context.Context) ([]byte, error) {
+			return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), nil
+		},
+	}
+	resolver := newTestInstallationResolver(t, api, appConfig)
+	primary := NewGitHub(GitHubConfig{Token: routedIdentityTokenSource{token: "primary"}, Client: testAppHTTPClient(t, api)})
+	router := NewOwnerRoutedGitHub(primary, resolver, appConfig, testAppHTTPClient(t, api))
+
+	_, err = router.CreateIssue(context.Background(), "owner-c/repo", CreateIssue{Title: "x"})
+	if !errors.Is(err, ErrNoInstallation) || !errors.Is(err, ErrInstallationLookup) {
+		t.Fatalf("CreateIssue error = %v, want ErrNoInstallation inside ErrInstallationLookup", err)
+	}
+	if _, err := router.CreateIssue(context.Background(), "no-slash", CreateIssue{Title: "x"}); !errors.Is(err, ErrMalformedRepo) {
+		t.Fatalf("malformed repo error = %v, want ErrMalformedRepo", err)
+	}
+}
+
 func TestOwnerRoutedGitHubUsesInstallationIDCache(t *testing.T) {
 	var mintRequests int
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
