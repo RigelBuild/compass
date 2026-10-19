@@ -14,8 +14,10 @@ tools do not cover.
 You never push. `vcs_submit` sends a git bundle of your commits to the Compass
 Server, and the Server pushes them and writes the PRs. Your forge credential
 can still write today, but a raw `git push` or PR write skips every check the
-tools make, so never use one. Hard limits: **never push or force-push `main`,
-never merge** — the human operator holds the merge gate.
+tools make, so never use one. The one exception is `gh pr close` on an older
+PR that `vcs_retire` cannot close (see "Moving an older PR onto the tools").
+Hard limits: **never push or force-push `main`, never merge** — the human
+operator holds the merge gate.
 
 ## Mental model
 
@@ -38,7 +40,7 @@ never merge** — the human operator holds the merge gate.
 
 | Tool | Does |
 | --- | --- |
-| `vcs_status` | Your stack from the base to the tip: change, commit, bookmark, subject, conflict, empty. |
+| `vcs_status` | Your stack from the tip down to the base: change, commit, bookmark, subject, conflict, empty. |
 | `vcs_commit` | Describes `@` (or `<workspace>@`) from `subject` and `sections`, sets `bookmark`, then starts a new `@` on it. |
 | `vcs_workspace` | `add`, `forget`, or `update-stale` one subagent working copy. |
 | `vcs_sync` | Fetches `origin`, then rebases your own commits onto trunk or the foreign base they sit on. Reports conflicts. |

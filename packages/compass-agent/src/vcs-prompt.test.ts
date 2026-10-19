@@ -81,9 +81,11 @@ describe("shipped VCS guidance", () => {
 		expect(manager).toContain("forge_create_issue");
 	});
 
-	test("the jj skill says a pre-push timeout means fixing the hook", () => {
-		expect(skill).toContain("vcs_submit");
-		expect(skill).toMatch(/pre-push hook timed out/);
+	// The timeout fails open (the record's OQ-9); guidance that says it stops the submit would stall every agent on a slow hook.
+	test("the jj skill says a pre-push timeout lets the submit go on and the hook gets fixed", () => {
+		expect(skill).toMatch(/after 120 s is stopped and the submit\s+goes on/);
+		expect(skill).toMatch(/fix it in a change of its own/);
+		expect(manager).toMatch(/fix\s+the hook in a change of its own/);
 	});
 
 	test("the setup skill installs a pre-push hook where a repo has none", () => {
