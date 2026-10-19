@@ -1,356 +1,139 @@
 # Build & CI
 
-How a change goes from an editor to a verified build. Each layer is configured
-in a real format and composes cleanly:
+How a change goes from an editor to a verified build:
 
 ```text
 devenv      the dev shell — owns every toolchain (Go/bun/node/moon + the rest)
 moon        the task graph: what to build/test, caching, affected detection
 ```
 
-The headline property: **the same task graph runs remotely and locally.**
-GitHub Actions schedules remote runs; moon schedules local ones. The
-version-parity gate below fails builds when toolchains diverge.
+**The same task graph runs remotely and locally.** GitHub Actions schedules
+remote runs; moon schedules local ones. The parity gate fails a build when the
+toolchains differ. What `release.yml` publishes, and how a release is cut, is in
+[Release and images](release.md).
 
 ## Toolchains: devenv/nix
 
-[devenv](https://devenv.sh) (nix underneath) owns the entire toolchain — one
-owner, one activation path. The language runtimes (Go, bun, node, moon) are
-pinned in `tools/toolchain/versions/*.nix`; the linters (biome, rumdl), rumdl's
-base policy, and the Go analysis tools (golangci-lint, govulncheck, go-licenses,
-nilaway) come from the locked `meissa` input, built by Meissa with the consumer's
-Go toolchain. Everything else — protobuf/contract tooling (buf, protoc, and the
-Go codegen plugins) — comes from the pinned nixpkgs revision. A single owner
-means PATH order never silently decides which copy of a tool wins.
+[devenv](https://devenv.sh) (nix underneath) owns the entire toolchain, so PATH
+order never decides which copy of a tool wins.
 
-- **Local:** `direnv allow` puts the toolchain on PATH. devenv injects tools,
-  not a whole shell — you keep your own prompt and dotfiles.
-- **CI:** the identical derivations the dev shell builds are resolved from the
-  same pinned sources and put on PATH — no `setup-*` actions. See CI below.
+- The language runtimes (Go, bun, node, moon) are pinned in
+  `tools/toolchain/versions/*.nix`.
+- The linters (biome, rumdl), rumdl's base policy, and the Go analysis tools
+  (golangci-lint, govulncheck, go-licenses, nilaway) come from the locked
+  `meissa` input. Meissa builds them with the consumer's Go toolchain, through
+  its `devenvModules.go` module and `lib.goAnalysis`.
+- Everything else, including the contract tooling (buf, protoc, the Go codegen
+  plugins), comes from the pinned nixpkgs revision.
+
+**Local:** `direnv allow` puts the toolchain on PATH. devenv injects tools, not a
+whole shell, so you keep your own prompt and dotfiles.
+
+**CI:** nix builds the same derivations from the same pinned sources, through
+`tools/toolchain/gate-tools.nix`, which also yields `RUMDL_BASE_CONFIG`. Their
+`bin/` dirs go on PATH. There are no `setup-*` actions.
 
 ## Task graph: moon
 
 [moon](https://moonrepo.dev) owns the task graph (`deps:`), result caching
 (`inputs`/`outputs`), affected-target detection, and local parallel execution.
 `moon run <project>:<task>` is the interface; `moon run :ci` runs every
-project's `ci` task. Affected detection decides which projects a change
-actually touches. In CI, the `setup` job queries moon's affected set and hands
-each `moon` leg its targets; a local `moon run :ci --affected` is the same
-detection on demand.
+project's `ci` task, and `moon run :ci --affected` runs only what a change
+touches.
 
-moon runs `go` and `bun` as **system tasks** — it execs the toolchain on PATH
-rather than managing its own. moon's graph/caching layer stays
-toolchain-agnostic; the nix pin files under `tools/toolchain/versions/*.nix`
-remain the version source.
+moon runs `go` and `bun` as **system tasks**: it execs the toolchain on PATH
+rather than managing its own. The nix pin files stay the version source.
 
 ## The contract gate
 
-The `compass.v1` schema is the sole, owned door between any UI and the daemon,
-and it is gated three ways:
+The owned `compass.v1` schema is the only door between any UI and the daemon. It is
+gated three ways:
 
-- **`buf lint`** — schema style and consistency.
-- **`buf breaking`** — rejects backward-incompatible schema edits.
-- **Drift** — regenerate the clients, then `git diff --exit-code`. A checked-in
-  client that no longer matches the schema fails the build, so generated code
-  can never silently fall out of sync.
+- **`buf lint`**: schema style and consistency.
+- **`buf breaking`**: rejects backward-incompatible schema edits.
+- **Drift**: regenerate the clients, then `git diff --exit-code`. A checked-in
+  client that no longer matches the schema fails the build.
 
-The generated Go and TypeScript clients are checked in (not generated at build
-time by consumers), so a normal `go build` / `bun install` needs no codegen
-step.
+The generated Go and TypeScript clients are checked in, so a normal
+`go build` / `bun install` needs no codegen step.
 
 ## CI
 
 `.github/workflows/ci.yml` runs on every pull request, every push to `main`, and
-a nightly schedule, and is re-run automatically (by `pr-base-repoint.yml`) when
-a stacked PR's base moves. It is a set of jobs behind one required check,
-`rollup`, which passes only when every job it needs succeeded, or skipped
-because `setup` marked it unaffected. Branch protection requires only `rollup`,
-so jobs can be added or renamed without touching it.
+a nightly schedule. `pr-base-repoint.yml` re-runs it when a stacked PR's base
+moves. Branch protection requires one check, `rollup`. It passes only when every
+job it needs succeeded, or skipped because `setup` marked it unaffected, so jobs
+can be added or renamed without touching branch protection.
 
 - **`setup`** asks moon which projects to run: the affected set on a pull
   request, every project on `main` and nightly. Some special-job flags come from
-  a changed-paths diff instead. `tools/ci-matrix` turns that answer into the
-  matrix for the `moon` job and an affected flag for each special job. Nothing
-  about the workspace is listed in the workflow, so a new project is gated the
-  moment it is registered in `.moon/workspace.yml` and tagged with a
-  `ci-group.<name>` tag. On a pull request it also fails when the change adds
-  or edits a file under `docs/designs/`. Design records live in
-  [RigelBuild/docs](https://github.com/RigelBuild/docs); deleting a record here
-  is allowed.
-- **`moon`** runs the moon battery, one leg per concern group, each its own
-  check, today `moon (go)`, `moon (bun)` and `moon (nix)`. This is the same task
-  graph the local gate and the `hk` pre-push hook run.
-- **Special jobs** need an environment the moon battery does not have. On a
-  pull request each runs only when its flag says the change affects it. The Go
-  suites derive those flags from tagged test roots and first-party dependency
-  closures; gate changes and declared owner-task inputs widen selection. On
-  `main` and nightly each always runs.
+  a changed-paths diff instead. `tools/ci-matrix` turns the answer into the
+  `moon` matrix and one affected flag per special job. The workflow lists no
+  projects, so a new project is gated once it is in `.moon/workspace.yml` with a
+  `ci-group.<name>` tag. On a pull request, `setup` also fails when the change
+  adds or edits a file under `docs/designs/`; design records live in
+  [RigelBuild/docs](https://github.com/RigelBuild/docs). Deleting one here is
+  allowed.
+- **`moon`** runs one leg per concern group, each its own check: `moon (go)`,
+  `moon (bun)` and `moon (nix)`. The local gate and the `hk` pre-push hook run
+  the same task graph.
+- **Special jobs** need an environment the `moon` legs lack. On a pull request
+  each runs only when its flag says the change affects it. The Go suites derive
+  their flags from tagged test roots and first-party dependency closures; gate
+  changes and declared owner-task inputs widen selection. On `main` and nightly
+  each always runs.
   - `pgtest`: the real-Postgres suites (`go test -tags pgtest -race ./...`)
     against a Postgres service container. `COMPASS_REQUIRE_LIVE=1` turns a
     missing database into a failure.
-  - `e2e`: the podman tier in a privileged container, so rootless podman can
-    load and run a tree-built agent image. On a pull request it runs for changes
-    in its Go dependency closures or when an owner task widens the suite. The
-    stack starts its own Postgres. The command is
+  - `e2e`: the podman tier, in a privileged container so rootless podman can
+    load and run a tree-built agent image. The stack starts its own Postgres.
+    The command is
     `go test -tags podman -race -count=1 -p 1 ./e2e/... ./cmd/compass-stack/...`.
     It builds `compass-postgres`, `compass-server` and `compass-runner`; the
     `compass-stack` package is tested as an E2E root but is not a built child.
-  - `microvm`, `forge`, `gtk4`, `darwin` and `agent-fod-arm64` cover the
-    microVM suites, the live forge contract, the GTK UI, the macOS bundle, and
-    the arm64 agent dependency pin.
-- **`bun-audit`** checks bun dependencies against the live advisory database,
-  whatever the affected set.
+  - `microvm`, `forge` and `gtk4` cover the microVM suites, the live forge
+    contract and the GTK UI.
+  - `darwin` builds the macOS shell and the ad-hoc signed `.app`/`.dmg` with
+    `tools/macos-bundle` on `macos-14`. Its PR flag, `darwin_affected`, comes
+    from the changed paths.
+  - `agent-fod-arm64` re-runs `renovate:agent-fod` on `ubuntu-24.04-arm`.
+    `agent-image/entrypoint.nix` pins one node_modules `outputHash` per system,
+    and the moon task checks only the host's. Its PR flag, `agent_fod_affected`,
+    is set when moon reports `renovate:agent-fod` affected.
+    `refresh-fod-hashes.ts` rewrites both pins from any host, since each FOD
+    picks its arch with `bun install --cpu`.
+- **`bun-audit`** checks bun dependencies against the live advisory database on
+  every run.
 
 A tagged suite skips when its dependency is missing, so `pgtest`, `e2e`,
-`microvm` and `forge` each end with a step that fails if the suite skipped
-instead of running.
+`microvm` and `forge` each end with a step that fails if the suite skipped.
 
 **Affected on pull requests, full on `main`.** Affected detection trusts each
-task's `inputs` globs and the affected closure, so an incomplete glob can skip
-a task on a pull request. The full run on every push to `main` and the nightly
-sweep catch that as soon as the change lands.
+task's `inputs` globs and the affected closure, so an incomplete glob can skip a
+task on a pull request. The full run on every push to `main` and the nightly
+sweep catch it once the change lands.
 
 Which test tier to write at, and how the Go test harness is built:
 [Go testing tiers](testing-tiers.md).
 
-### Where CI's toolchain comes from
-
-CI's toolchain is the local one — no remote-only seam. Nix builds the identical
-derivations the dev shell builds, from the same pinned sources: the language
-runtimes (bun, node, moon, go) from `tools/toolchain/versions/*.nix`; the Go
-analysis battery (golangci-lint, govulncheck, go-licenses, nilaway), supplied by
-Meissa's `devenvModules.go` module and `lib.goAnalysis` using that Go toolchain;
-and biome and rumdl from the locked `meissa` input (all via
-`tools/toolchain/gate-tools.nix`, which also yields `RUMDL_BASE_CONFIG`). Their
-`bin/` dirs go on PATH; there are no `setup-*` actions. One owner, one activation
-path, remotely and locally.
-
 ### The parity gate
 
-Reading a version from a file does not prove the runner got it. A step before
-the gate (`tools/toolchain/parity.ts`, also scheduled by `:ci` as
-`toolchain-parity:parity`) asserts that the toolchain actually on PATH is the
-one the dev shell defines, and **fails the build** — never warns — when it is
-not. Every tool is pinned the same way now — as a nix derivation — so the gate
-checks every one the same way: it resolves `realpath` of each command on PATH
-and asserts it lands inside the derivation the pinned sources build. That is a
-store-path identity check, stronger than comparing version strings: it catches
-an ambient binary of the same version shadowing the pinned one, and it works
-for the tools (`go-licenses`, `nilaway`) that implement no version flag at all.
-
-A tool the gate cannot check is reported `UNVERIFIABLE` and fails the build.
-Skipping what it cannot verify would make its green mean nothing.
+Reading a version from a file does not prove the runner got it.
+`tools/toolchain/parity.ts`, scheduled by `:ci` as `toolchain-parity:parity`,
+resolves the `realpath` of each command on PATH. It **fails the build** unless
+the path is inside the derivation the pinned sources build. This store-path
+check catches an ambient binary of the same version, and it works for tools with
+no version flag (`go-licenses`, `nilaway`). A tool it cannot check is reported
+`UNVERIFIABLE` and also fails the build; skipping it would make green mean
+nothing.
 
 ### What CI does not gate
 
-- **A live UI↔server path.** Every `compass-ui` task runs against fixtures, so
-  no check exercises the UI against a running server.
-- **The native app shell and the microVM boot lane.** `compass-app-dev`'s
-  `build`/`run` and `compass-go:test-microvm` are `runInCI: false` — they need a
-  GUI toolchain and KVM respectively. The `gtk4` and `microvm` jobs in
-  `ci.yml` cover those paths instead, so neither is unguarded; they are just
-  not gated through the moon battery.
-
-## Publishing the agent image
-
-The `compass-agent` runtime image (the base every agent workstream runs in) is
-published to GHCR by the unified `release.yml` lane, separate from the gate
-above. For the full design see the frozen record
-`RigelBuild/docs:docs/designs/compass/infra/release/compass-unified-release-lane/design.md` (the earlier
-`RigelBuild/docs:docs/designs/compass/infra/ci/compass-agent-image-publish/design.md` records the
-original image-publish rationale); the durable operational shape is here.
-
-**Ref and tags.** The image is `ghcr.io/rigelbuild/compass-agent`. Every
-closure-affecting push to main publishes two per-push tags, and a tagged release
-adds a third:
-
-- `:git-<sha12>` — the 12-hex short commit sha, **immutable**. This is the pin
-  the native app bakes in and hands the runner via `--image` /
-  `$COMPASS_AGENT_IMAGE`; it is the real consumption path. The publish refuses
-  to overwrite an existing `:git-<sha>` whose content differs and re-inspects
-  after each push to assert the digest landed, so the tag is immutable by
-  enforcement, not convention.
-- `:latest` — moving, documented **first-run fallback only**, never the default.
-- `:vX.Y.Z` — the semver release tag, **immutable**, minted only when a
-  `vX.Y.Z` release is cut. The release-gated `release-image` job digest-re-tags
-  the already-published `:git-<sha>` image (no rebuild — same digest, a new
-  pointer), so the released image is byte-identical to the per-push one.
-
-The git-sha tag is pushed before `:latest`, so the immutable pin always exists
-before the moving tag moves. The image is multi-arch: `publish-image-amd64` and
-`publish-image-arm64` build natively in parallel, and `publish-image-manifest`
-pushes one `linux/amd64` + `linux/arm64` index. The package is
-**public** — compass is open-source, the image payload is public source, and it
-carries no runtime secrets (those are runner-supplied per-exec) — so the
-first-run pull needs no credential anywhere.
-
-The weekly `agent-image-retention` workflow prunes old out-of-window `git-*`
-versions while preserving release tags, off-main images, lock-pinned digests,
-index children, and recent untagged publishes. Dispatch defaults to a dry-run
-plan; GitHub keeps deleted versions restorable for 30 days.
-
-**One derivation, two destinations.** The published `:git-<sha>` and the local
-`dogfood:agent-image` load are copies of the *same* nix derivation — both flow
-through the image's `container build agent`. They diverge only in the skopeo
-destination (a registry ref versus `containers-storage:`), so what CI publishes
-is byte-for-byte what a developer loads locally.
-
-**The unified release lane.** Publishing lives in
-`.github/workflows/release.yml`, **not** a job in `ci.yml` and **not** a
-required check. Two jobs share it. The per-push `publish-image` job runs
-main-only plus `workflow_dispatch`, closure-gated in-job (an in-job changed-path
-check, not a trigger `paths:` filter — release-pr needs every commit),
-with its own concurrency group set to `cancel-in-progress: false` (publishes
-serialize rather than tear a tag pair mid-push) and a `packages: write` token
-the gate job never gets; it publishes `:git-<sha>` + `:latest`. The
-release-gated `release-image` job fires only when a `vX.Y.Z` release is cut and
-digest-re-tags that image to `:vX.Y.Z`. It keeps the [CI](#ci) rule that no
-workflow lists moon projects, because a list goes stale silently: release.yml
-lists none (`agent-image/` is a standalone devenv, not a moon project). A
-published tag is the source of truth; a missing per-push tag (paths filtered it
-out, or a superseding push skipped it under the serialized concurrency group) is
-**not** a failure — `workflow_dispatch` republishes any HEAD on demand.
-
-The same workflow also runs `publish-runner-image`, `publish-server-image`,
-`publish-guest-image`, and `publish-gateway-image`, plus the
-`release-runner-image` and `release-server-image` re-tags. The gateway job builds and smoke-tests one local OCI
-layout, then publishes its write-once `:git-<sha12>` tag and records the
-`repo@sha256:…` identity to pin in the step summary.
-
-**The release-please cadence.** `release.yml` also runs release-please, which
-keeps a standing Release PR that batches conventional commits since the last
-release. Merging that PR is the release: it cuts the `vX.Y.Z` git tag, updates
-the CHANGELOG, and stamps the root `version.txt` to `X.Y.Z`. The tag then gates
-the release jobs — the four-binary asset set is built stamped from `version.txt`
-(so every released binary reports the same `X.Y.Z`), and `release-image` mints
-the `:vX.Y.Z` image tag. Dev/bundle builds off `app-bundle/build.sh` read the
-same `version.txt` base and append a `+g<shortsha>` suffix, so a local bundle
-reports the release base it descends from. The standalone
-`publish-agent-image.yml` predated this unification; it has been retired
-(RIG-2994), its per-push publish duty relocated verbatim into `release.yml`'s
-`publish-image` job.
-
-**Smoke.** On a runner host, pull the immutable tag and drive the consumer seam:
-
-```sh
-podman pull ghcr.io/rigelbuild/compass-agent:git-<sha12>
-compass-runner --image ghcr.io/rigelbuild/compass-agent:git-<sha12>
-# then drive one provision
-```
-
-**One-time setup.** The first `GITHUB_TOKEN` push creates the package
-private-by-default (and only if the org policy permits `GITHUB_TOKEN`-created
-packages, else the push 403s and an owner must pre-create it). An owner sets the
-package **public** once in its settings after that first push; the repo linkage
-grants the workflow write access thereafter. Pre-creating the empty package
-also settles the immutability guard's first-publish edge: the guard inspects
-`:git-<sha>` *before* the creating copy and only an authoritative
-`manifest unknown` frees the tag, so an owner-pre-created (hence
-authenticatable) package guarantees the absent-tag inspect classifies cleanly
-rather than on a not-yet-existent repository's error shape.
-
-### Pre-merge build check
-
-`agent-image/` is registered as the `compass-agent-image` moon project
-(`.moon/workspace.yml`), so the CI gate builds the image on any PR that
-affects its closure. Before this the image was outside moon and had zero
-pre-merge coverage — an image-build break surfaced only post-merge in the
-publish workflow, while a consumer waited on a tag.
-
-The project's `build` task realises the image with the same pinned devenv
-derivation the publish lane ships (`nix run "$src" -- container build agent`,
-where `$src` is the devenv flakeref that `tools/toolchain/devenv-cli` resolves
-from `agent-image/devenv.lock`), so a green build proves the exact artifact
-that publishes still builds — both an eval-time break (a bun-pin drift against
-the `agent-image/toolchain.nix` assert) and a realise-time break (an
-`agent-image/entrypoint.nix` FOD-hash invalidation or a broken bundle), the
-full class.
-
-The Compass agent's compile script derives the SDK's lazy legacy-module registry from installed package exports and supplies it through a local Bun plugin. If the SDK adds a supported root option, Compass can remove this local plugin and use that option instead.
-
-The build is heavy — the image closure is the dominant CI cost, the reason
-the `moon` job's timeout is 90m — but it is not paid on every PR. `setup`
-selects a PR's *affected* projects only, and the task's `inputs` scope it to the
-image closure: the `agent-image/` tree, `packages/compass-agent/`, the root
-`package.json` and `bun.lock`, and `tools/toolchain/versions/bun.nix`.
-A PR that touches none of those never builds the image; every push to main runs
-it unconditionally in the full sweep. Its `inputs` mirror the closure set the
-`publish-image` job's in-job changed-path gate diffs over in `release.yml` (the
-trigger carries no `paths:` filter — release-pr needs every commit, so the job
-self-gates) — the reviewed source of truth for what changes the published
-artifact — including the bun pin file, since the image now builds bun from that
-pinned derivation, so a pin move there changes the output. As a `ci-group.nix`
-project it runs in the `moon (nix)` leg behind `rollup`, so a build break
-blocks merge, like every other build in CI.
-
-## Release assets and install channels
-
-The frozen record
-`RigelBuild/docs:docs/designs/compass/infra/release/compass-distribution/design.md` defines the
-distribution surface. This section lists what is live.
-
-**The Release.** `release-pr` cuts the `vX.Y.Z` tag and creates the GitHub
-Release as a **draft**. `release-assets` builds the Linux assets, collects the
-macOS dmg from `release-assets-macos`, attaches the set, then publishes the
-draft as its last step. Releases are immutable once published, so a release
-published before its assets exist could never get them.
-
-| Asset | Built by | Notes |
-| --- | --- | --- |
-| `compass`, `compass-server`, `compass-runner`, `compass-stack` (`_linux-amd64`) | `release-assets` | static (`CGO_ENABLED=0`) |
-| `compass_<tag>_darwin-arm64` | `release-assets` | the CLI, cross-built |
-| `compass-app_<tag>_linux-amd64.tar.gz` | `release-assets` | gtk4 shell, the embedded sidecars, UI dist |
-| `compass-app_<tag>_darwin-arm64.dmg` | `release-assets-macos` (`macos-14`) | ad-hoc signed `.app`; handed over as an artifact |
-| `SHA256SUMS` | `release-assets` | checksums of the seven downloads above |
-| `nix-outputs.json` | `release-assets` | nix output manifest; not in `SHA256SUMS` |
-
-Every asset listed in `SHA256SUMS` gets a build-provenance attestation from
-`actions/attest-build-provenance` in `release-assets`. The tag ruleset blocks a
-forged tag; the attestation lets a user detect an asset the release workflow
-did not build.
-
-The macOS app links the system WebKit framework, so it builds only on a mac
-runner and is never cross-compiled. Developer ID signing, notarization and the
-app's homebrew cask are not live yet. They wait on the Apple Developer Program
-enrollment.
-
-**Homebrew.** After `release-assets` publishes a semver release, the
-`bump-homebrew-tap` job renders `Formula/compass-cli.rb` with
-`tools/homebrew-tap` from the tag and the published `SHA256SUMS`, then commits
-it to `RigelBuild/homebrew-tap` with an App token scoped to that repo.
-`brew install rigelbuild/tap/compass-cli` installs the `compass` CLI on
-Apple-silicon macOS and on x86_64 Linux. Prerelease tags never reach the job,
-and the renderer rejects any tag that is not `vX.Y.Z`. The job skips the write
-when the tap already pins the same or a newer version, so an out-of-order
-release cannot downgrade it. If the job fails, re-run that job alone: it reads
-only the published release, while re-running `release-assets` would try to
-re-upload to the published release.
-
-**Nix flake.** `flake.nix` exposes `compass`, `compass-server`,
-`compass-runner`, `compass-stack`, `compass-app`, `compass-ui` and
-`compass-stack-env`, for `x86_64-linux` only. `compass-stack-env` bundles the
-microVM userspace trio and `secretspec`. The `flake-gate` moon project runs
-`nix flake check`, so a package that stops building from a bare checkout fails
-CI.
-
-**darwin CI.** The `ci.yml` `darwin` job compiles the macOS shell and builds
-the ad-hoc signed `.app`/`.dmg` with `tools/macos-bundle` on `macos-14`. It
-runs on every push to main and nightly. On a PR it runs only when the setup
-job's `darwin_affected` output is true (computed by `tools/ci-matrix` from the
-changed paths).
-
-**arm64 agent FOD pin.** `agent-image/entrypoint.nix` pins one node_modules
-`outputHash` per system. The `renovate:agent-fod` task checks the host's pin,
-so the `ci.yml` `agent-fod-arm64` job reruns the same script on
-`ubuntu-24.04-arm` for the `aarch64-linux` pin. On a PR it runs only when the
-setup job's `agent_fod_affected` output is true (moon reports
-`renovate:agent-fod` affected). `refresh-fod-hashes.ts` rewrites both pins
-from any host, because each FOD selects its arch with `bun install --cpu`.
-
-**Postgres image.** The stack's default database is the stock `postgres:18`
-image pinned by digest (`DefaultPostgresImage` in
-`go/internal/stack/postgres_image.go`). There is no postgres build lane;
-bumping it means changing the digest.
+- **A live UI↔server path.** Every `compass-ui` task runs against fixtures.
+- **The native app shell and the microVM boot lane** in the moon battery.
+  `compass-app-dev`'s `build`/`run` and `compass-go:test-microvm` are
+  `runInCI: false`, because they need a GUI toolchain and KVM. The `gtk4` and
+  `microvm` jobs cover those paths instead.
 
 ## Caching
 
