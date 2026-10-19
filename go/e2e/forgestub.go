@@ -119,6 +119,15 @@ func (s *forgeStub) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "close body", http.StatusInternalServerError)
 		return
 	}
+	// Installation discovery is App-level traffic, not an installation call.
+	if r.Method == http.MethodGet && r.URL.Path == "/api/v3/app/installations" {
+		if !validAppJWT(r.Header.Get("Authorization")) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		jsonOut(w, http.StatusOK, []map[string]any{{"id": forgeStubAuthorInstallation, "account": map[string]string{"login": "owner"}}})
+		return
+	}
 	s.mu.Lock()
 	s.requests = append(s.requests, forgeStubRequest{
 		Method:        r.Method,

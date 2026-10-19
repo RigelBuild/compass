@@ -9,13 +9,21 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
-	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/linearagent"
 	"github.com/RigelBuild/compass/go/internal/secrets"
@@ -676,11 +684,17 @@ func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
 		ReviewerApp: ForgeAppConfig{AppID: 43, InstallationID: 8, AppPrivateKeySecret: reviewerKey},
 	}}
 	resolver := &fakeResolver{resolved: []secrets.ResolvedSecret{
+		{Name: serverSecretName("APP_KEY"), Value: "key"},
 		{Name: serverSecretName(reviewerKey), Value: "key"},
 	}}
 	primary := forge.NewGitHub(forge.GitHubConfig{Host: "github.com", Token: staticTokenSource{}})
-
-	svc, err := buildForgeWriteService(ctx, cfg, nil, nil, resolver, primary, tokens, slog.Default())
+	appConfig := forge.GitHubAppConfig{AppID: 42, InstallationID: 7, PrivateKey: func(context.Context) ([]byte, error) { return []byte("unused"), nil }, Host: "github.com"}
+	installations, err := forge.NewInstallationResolver(appConfig)
+	if err != nil {
+		t.Fatalf("NewInstallationResolver: %v", err)
+	}
+	primaryRouter := forge.NewOwnerRoutedGitHub(primary, installations, appConfig, nil)
+	svc, err := buildForgeWriteService(ctx, cfg, nil, nil, resolver, primaryRouter, tokens, slog.Default())
 	if err != nil {
 		t.Fatalf("buildForgeWriteService: %v", err)
 	}
@@ -714,7 +728,88 @@ func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
 	if !ok {
 		t.Fatal("no default GitHub write coordinate registered")
 	}
-	if ghResolved.author != forge.Provider(primary) {
-		t.Fatal("GitHub coordinate author is not the primaryClient passed to buildForgeWriteService")
+	if got, ok := ghResolved.author.(*forge.OwnerRoutedGitHub); !ok || got == nil {
+		t.Fatalf("GitHub coordinate author is %T, want the owner router", ghResolved.author)
 	}
+}
+
+func TestGitHubForgeCoordinateRoutesReviewerByOwner(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
+			if _, err := fmt.Fprint(w, `[{"id":8,"account":{"login":"owner-b"}}]`); err != nil {
+				t.Errorf("write installation list: %v", err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/8/access_tokens":
+			if _, err := fmt.Fprint(w, `{"token":"reviewer-owner-b-token","expires_at":"2030-01-01T00:00:00Z"}`); err != nil {
+				t.Errorf("write token response: %v", err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/owner-b/repo/pulls/9/reviews":
+			if got := r.Header.Get("Authorization"); got != "Bearer reviewer-owner-b-token" {
+				t.Errorf("review Authorization = %q, want reviewer owner B token", got)
+			}
+			if _, err := fmt.Fprint(w, `{"id":5,"html_url":"https://github.com/owner-b/repo/pull/9"}`); err != nil {
+				t.Errorf("write review response: %v", err)
+			}
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	target, err := url.Parse(api.URL)
+	if err != nil {
+		t.Fatalf("parse API URL: %v", err)
+	}
+	client := &http.Client{Transport: testForgeRewriteTransport{target: target}}
+	key := testForgeAppKey(t)
+	reviewerConfig := forge.GitHubAppConfig{
+		AppID:          43,
+		InstallationID: 7,
+		PrivateKey:     func(context.Context) ([]byte, error) { return key, nil },
+		Host:           "github.com",
+		Client:         client,
+	}
+	reviewerPrimaryToken, err := forge.NewAppTokenSource(reviewerConfig)
+	if err != nil {
+		t.Fatalf("NewAppTokenSource: %v", err)
+	}
+	reviewerPrimary := forge.NewGitHub(forge.GitHubConfig{Host: "github.com", Token: reviewerPrimaryToken, Client: client})
+	reviewerInstallations, err := forge.NewInstallationResolver(reviewerConfig)
+	if err != nil {
+		t.Fatalf("NewInstallationResolver: %v", err)
+	}
+	reviewerRouter := forge.NewOwnerRoutedGitHub(reviewerPrimary, reviewerInstallations, reviewerConfig, client)
+	primary := forge.NewGitHub(forge.GitHubConfig{Host: "github.com", Token: staticTokenSource{}, Client: client})
+	registry := newForgeProviderRegistry()
+	if err := registerGitHubForgeCoordinate(registry, ForgeConfig{Host: "github.com"}, primary, reviewerRouter); err != nil {
+		t.Fatalf("registerGitHubForgeCoordinate: %v", err)
+	}
+	resolved, ok := registry.resolve(nil)
+	if !ok {
+		t.Fatal("no default GitHub write coordinate registered")
+	}
+	if _, err := resolved.reviewer.SubmitReview(context.Background(), "owner-b/repo", 9, forge.SubmitReview{Verdict: "approve", Body: "review details"}); err != nil {
+		t.Fatalf("reviewer submit review: %v", err)
+	}
+
+	if _, ok := resolved.reviewer.(*forge.OwnerRoutedGitHub); !ok {
+		t.Fatalf("reviewer provider is %T, want owner router", resolved.reviewer)
+	}
+}
+func testForgeAppKey(t *testing.T) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate app key: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+}
+
+type testForgeRewriteTransport struct{ target *url.URL }
+
+func (rt testForgeRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = rt.target.Scheme
+	req.URL.Host = rt.target.Host
+	return http.DefaultTransport.RoundTrip(req)
 }

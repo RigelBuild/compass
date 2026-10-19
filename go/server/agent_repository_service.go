@@ -317,19 +317,7 @@ func (s *agentRepositoryService) checkInstallation(ctx context.Context, org stri
 		if errors.Is(err, forge.ErrNoInstallation) {
 			return 0, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("the GitHub App has no installation for owner %q", org)).WithCause(err)
 		}
-		if statusErr, ok := errors.AsType[*forge.StatusError](err); ok {
-			if statusErr.Status == 401 || statusErr.Status == 403 {
-				return 0, connect.NewError(connect.CodeInternal, "GitHub App credentials rejected or misconfigured").WithCause(err)
-			}
-		}
-		if errors.Is(err, forge.ErrAppCredentials) {
-			return 0, connect.NewError(connect.CodeInternal, "GitHub App credentials rejected or misconfigured").WithCause(err)
-		}
-		if errors.Is(err, forge.ErrBudgetExhausted) {
-			return 0, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
-		}
-		wrappedErr := fmt.Errorf("resolving GitHub App installation for owner %q: %w", org, err)
-		return 0, connect.NewError(connect.CodeUnavailable, wrappedErr.Error()).WithCause(wrappedErr)
+		return 0, connect.NewError(installationErrorCode(err), fmt.Sprintf("resolving GitHub App installation for owner %q failed", org)).WithCause(err)
 	}
 	return installation, nil
 }

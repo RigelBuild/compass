@@ -27,14 +27,26 @@ func TestForgeStubProviderClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCATrustClient: %v", err)
 	}
-	appTokens, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
+	appConfig := forge.GitHubAppConfig{
 		AppID: 1001, InstallationID: 1,
 		PrivateKey: func(context.Context) ([]byte, error) { return pemKey, nil },
 		Host:       stub.Host(),
 		Client:     client,
-	})
+	}
+	appTokens, err := forge.NewAppTokenSource(appConfig)
 	if err != nil {
 		t.Fatalf("NewAppTokenSource: %v", err)
+	}
+	installations, err := forge.NewInstallationResolver(appConfig)
+	if err != nil {
+		t.Fatalf("NewInstallationResolver: %v", err)
+	}
+	installationID, err := installations.InstallationFor(context.Background(), "owner")
+	if err != nil || installationID != 1 {
+		t.Fatalf("InstallationFor owner = (%d, %v), want (1, nil)", installationID, err)
+	}
+	if requests := stub.Requests(); len(requests) != 0 {
+		t.Fatalf("discovery requests recorded = %d, want 0", len(requests))
 	}
 	provider := forge.NewGitHub(forge.GitHubConfig{Host: stub.Host(), Token: appTokens, Client: client})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
