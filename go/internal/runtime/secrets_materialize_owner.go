@@ -49,6 +49,10 @@ func GHOwnerTokensScript(homeDir string, creds []GHCredentials) (string, error) 
 	var b strings.Builder
 	b.WriteString("set -eu\numask 077\n")
 	b.WriteString("root=" + shellSingleQuote(root) + "\n")
+	if len(creds) == 0 {
+		b.WriteString(`rm -rf -- "$root"` + "\n")
+		return b.String(), nil
+	}
 	b.WriteString(`mkdir -p "$root"` + "\n")
 	for _, path := range owners {
 		b.WriteString("d=" + shellSingleQuote(filepath.Dir(path)) + "\n")
@@ -58,7 +62,6 @@ func GHOwnerTokensScript(homeDir string, creds []GHCredentials) (string, error) 
 	for _, host := range hosts {
 		writeOwnerFile(&b, forgecred.DefaultOwnerPath(homeDir, host), defaults[host]+"\n")
 	}
-
 	b.WriteString(`for f in "$root"/*/*; do` + "\n")
 	b.WriteString(`  [ -f "$f" ] || continue` + "\n")
 	writeCleanupCase(&b, active)

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RigelBuild/compass/go/internal/forgecred"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 )
 
@@ -594,9 +595,9 @@ func TestInstallEmptySetWritesOnlyTheEmptyEnvFile(t *testing.T) {
 	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, nil); err != nil {
 		t.Fatalf("Install(empty) = %v, want nil", err)
 	}
-	// The empty env file and stale GitHub credential removal each run once.
-	if specs := rt.specsSnapshot(); len(specs) != 2 {
-		t.Fatalf("Install(empty) ran %d execs, want 2 (env-file write and stale credential removal)", len(specs))
+	// Empty env, stale gh credentials, and owner credential cleanup each run once.
+	if specs := rt.specsSnapshot(); len(specs) != 3 {
+		t.Fatalf("Install(empty) ran %d execs, want 3 (env write and both credential cleanups)", len(specs))
 	}
 	envPath := filepath.Join(home, ".compass", "env")
 	env, err := os.ReadFile(envPath)
@@ -610,6 +611,39 @@ func TestInstallEmptySetWritesOnlyTheEmptyEnvFile(t *testing.T) {
 	// No seed / gh / secrets-dir content.
 	if _, err := os.Stat(filepath.Join(home, ".compass", "auth-seed.json")); !os.IsNotExist(err) {
 		t.Fatal("empty-set Install wrote a provider seed")
+	}
+}
+
+func TestInstallRemovesOwnerCredentialsWhenOwnerSetDisappears(t *testing.T) {
+	home := t.TempDir()
+	m := NewSecretMaterializer(&scriptRunner{}, discardLog())
+	resolved := []secrets.ResolvedSecret{
+		{Name: "GH_A", Value: "token-a", Kind: secrets.SecretGH, Host: "github.com", Owner: "owner-a", Delivery: secrets.DeliveryFile},
+		{Name: "GH_B", Value: "token-b", Kind: secrets.SecretGH, Host: "github.com", Owner: "owner-b", Delivery: secrets.DeliveryFile},
+	}
+	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, resolved); err != nil {
+		t.Fatalf("Install(owner credentials): %v", err)
+	}
+	for _, path := range []string{
+		forgecred.TokenPath(home, "github.com", "owner-a"),
+		forgecred.TokenPath(home, "github.com", "owner-b"),
+		forgecred.DefaultOwnerPath(home, "github.com"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("owner credential not installed at %s: %v", path, err)
+		}
+	}
+	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, nil); err != nil {
+		t.Fatalf("Install(empty owner set): %v", err)
+	}
+	for _, path := range []string{
+		forgecred.TokenPath(home, "github.com", "owner-a"),
+		forgecred.TokenPath(home, "github.com", "owner-b"),
+		forgecred.DefaultOwnerPath(home, "github.com"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("owner credential remains at %s after empty refresh: %v", path, err)
+		}
 	}
 }
 

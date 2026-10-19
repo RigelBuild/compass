@@ -39,8 +39,8 @@ func TestAgentImageGHTokenAuth(t *testing.T) {
 	}
 	tokenA, tokenB := "owner-a-token", "owner-b-token"
 	ownerFiles, err := runtime.GHOwnerTokensScript("/home/agent", []runtime.GHCredentials{
-		{Host: "github.com", Owner: "owner-a", Token: tokenA},
 		{Host: "github.com", Owner: "owner-b", Token: tokenB},
+		{Host: "github.com", Owner: "owner-a", Token: tokenA},
 	})
 	if err != nil {
 		t.Fatalf("GHOwnerTokensScript: %v", err)
@@ -50,9 +50,10 @@ func TestAgentImageGHTokenAuth(t *testing.T) {
 		t.Fatalf("GHHostsScript: %v", err)
 	}
 	checks := []struct {
-		name  string
-		setup string
-		check string
+		name      string
+		setup     string
+		check     string
+		withToken bool
 	}{
 		{name: "owner tokens", check: `for pair in owner-a/one:owner-a-token owner-b/two:owner-b-token; do
   repo=${pair%%:*}; want=${pair#*:}
@@ -66,20 +67,23 @@ case "$out" in *"no credential for owner owner-c"*) ;; *) echo "$out"; exit 1 ;;
 test "$got" = owner-a-token || { echo "default fallback mismatch"; exit 1; }
 out=$(printf 'protocol=https\nhost=github.com\npath=owner-c/three\n\n' | git credential fill 2>&1) && { echo "wildcard owner unexpectedly accepted"; exit 1; }
 case "$out" in *"no credential for owner owner-c"*) ;; *) echo "$out"; exit 1 ;; esac`},
-		{name: "jj token command resolves project owner", check: `a=$(compass-forge-credential token --host github.com --repo owner-a/one)
+		{name: "marker-free arbitrary owner falls through", setup: `rm -f /home/agent/.compass/forge/github.com/.default-owner`, withToken: true, check: `got=$(printf 'protocol=https\nhost=github.com\npath=owner-z/repo\n\n' | git credential fill | sed -n 's/^password=//p')
+		test "$got" = fallback-token || { echo "Git marker-free fallback mismatch"; exit 1; }
+		got=$(compass-forge-credential token --host github.com --repo owner-z/repo)
+		test "$got" = fallback-token || { echo "jj marker-free fallback mismatch"; exit 1; }`},
+		{name: "credential helper routes project owner", check: `a=$(compass-forge-credential token --host github.com --repo owner-a/one)
 	b=$(compass-forge-credential token --host github.com --repo owner-b/two)
 	test "$a" = owner-a-token && test "$b" = owner-b-token
 	if compass-forge-credential token --host github.com --repo owner-c/three; then echo "unknown owner token accepted"; exit 1; fi`},
-		{name: "marker-free arbitrary owner falls through", setup: `rm -f /home/agent/.compass/forge/github.com/.default-owner
-			printf '%s\n' fallback-token | gh auth login --with-token
-`, check: `got=$(printf 'protocol=https\nhost=github.com\npath=owner-z/repo\n\n' | git credential fill | sed -n 's/^password=//p')
-test "$got" = fallback-token || { echo "Git marker-free fallback mismatch"; exit 1; }
-got=$(compass-forge-credential token --host github.com --repo owner-z/repo)
-test "$got" = fallback-token || { echo "jj marker-free fallback mismatch"; exit 1; }`},
 	}
 	for _, tc := range checks {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.CommandContext(t.Context(), "podman", "run", "--rm", "-i", "-e", "HOME=/home/agent", "-e", "GH_TOKEN=fallback-token", agentImage, "sh", "-s")
+			args := []string{"run", "--rm", "-i", "-e", "HOME=/home/agent"}
+			if tc.withToken {
+				args = append(args, "-e", "GH_TOKEN=fallback-token")
+			}
+			args = append(args, agentImage, "sh", "-s")
+			cmd := exec.CommandContext(t.Context(), "podman", args...)
 			cmd.Stdin = strings.NewReader(ownerFiles + defaultHosts + "set -eu\n" + tc.setup + tc.check)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("owner credential check in %s: %v\n%s", agentImage, err, out)

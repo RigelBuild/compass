@@ -79,8 +79,20 @@ func TestGHOwnerTokensScriptEmptySetRemovesOwnersAndMarker(t *testing.T) {
 		t.Fatalf("GHOwnerTokensScript: %v", err)
 	}
 	runScript(t, script)
-	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
-		t.Fatalf("owner directory entries = (%v, %v), want empty", entries, err)
+	if _, err := os.Stat(filepath.Join(home, ".compass", "forge")); !os.IsNotExist(err) {
+		t.Fatalf("forge directory after empty cleanup = %v, want not exist", err)
+	}
+}
+
+func TestGHOwnerTokensScriptEmptySetToleratesMissingForgeDirectory(t *testing.T) {
+	home := t.TempDir()
+	script, err := GHOwnerTokensScript(home, nil)
+	if err != nil {
+		t.Fatalf("GHOwnerTokensScript: %v", err)
+	}
+	runScript(t, script)
+	if _, err := os.Stat(filepath.Join(home, ".compass", "forge")); !os.IsNotExist(err) {
+		t.Fatalf("forge directory after empty cleanup = %v, want not exist", err)
 	}
 }
 

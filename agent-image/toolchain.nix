@@ -91,14 +91,14 @@ pkgs.buildEnv {
     pkgs.cacert
 
     nixConf
-    # jj-vine passes the target project to select its installation token.
+    # jj-vine asks gh for the resolved host's token; a host gh lacks fails closed.
     (pkgs.writeTextDir "etc/jj/conf.d/compass-agent.toml" ''
       [jj-vine]
       forge = "github"
       openAsDraft = true
       [jj-vine.github]
       host = "https://api.github.com"
-      tokenCommand = ["${compassForgeCredential}/bin/compass-forge-credential", "token", "--host", "{host}", "--repo", "{project}"]
+      tokenCommand = ["${pkgs.gh}/bin/gh", "auth", "token", "--hostname", "{host}"]
     '')
     # Owner-aware credential lookup runs before gh, the default-installation fallback.
     (pkgs.writeTextDir "etc/gitconfig" ''

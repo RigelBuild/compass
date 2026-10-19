@@ -413,14 +413,12 @@ func (m *SecretMaterializer) Install(ctx context.Context, id WorkloadID, homeDir
 			return err
 		}
 	}
-	if len(ghOwnerCreds) > 0 {
-		ownerScript, err := GHOwnerTokensScript(homeDir, ghOwnerCreds)
-		if err != nil {
-			return fmt.Errorf("building gh owner credential script: %w", err)
-		}
-		if err := m.runScript(ctx, id, homeDir, uid, "install gh owner credentials", ownerScript); err != nil {
-			return err
-		}
+	ownerScript, err := GHOwnerTokensScript(homeDir, ghOwnerCreds)
+	if err != nil {
+		return fmt.Errorf("building gh owner credential script: %w", err)
+	}
+	if err := m.runScript(ctx, id, homeDir, uid, "install gh owner credentials", ownerScript); err != nil {
+		return err
 	}
 	if len(files) > 0 {
 		script, err := SecretSetupScript(homeDir, files)

@@ -115,6 +115,22 @@ func TestTokenWithRepoWithoutOwnerMarkerFallsThrough(t *testing.T) {
 	}
 }
 
+func TestTokenDefaultOwnerMissingFileExecsGH(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(forgecred.DefaultOwnerPath(home, "github.com")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(forgecred.DefaultOwnerPath(home, "github.com"), []byte("owner-a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installFakeGH(t)
+	var out, stderr bytes.Buffer
+	err := token(home, []string{"--host", "github.com", "--repo", "owner-a/x"}, &out, &stderr)
+	if err != nil || out.String() != "gh-fallback\n" || stderr.Len() != 0 {
+		t.Fatalf("missing default owner token = (%q, %q, %v), want gh fallback", out.String(), stderr.String(), err)
+	}
+}
+
 func TestTokenDefaultWithoutOwnerFileExecsGH(t *testing.T) {
 	home := t.TempDir()
 	installFakeGH(t)
