@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +28,7 @@ const (
 
 // WriteIntent records one forge create attempt and the agent that owns its result.
 type WriteIntent struct {
+	// ID is the attempt id; a caller may set it so it can tell its own new attempt from a replay.
 	ID             string
 	Provider       ForgeProvider
 	Host           string
@@ -39,6 +41,10 @@ type WriteIntent struct {
 	SessionID      string
 	RequestKey     string
 	State          WriteState
+	// ForgeKey, CreatedAt, and TenantID are read back; RecordWriteIntent ignores them on input.
+	ForgeKey  string
+	CreatedAt time.Time
+	TenantID  TenantID
 }
 
 // RecordWriteIntent commits an idempotency record before any forge create.
@@ -68,9 +74,14 @@ func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteInt
 	if in.Kind != forge.WriteKindPullRequest && in.HeadRef != "" {
 		return WriteIntent{}, fmt.Errorf("%w: head ref is only valid for pull requests", ErrInvalidArgument)
 	}
+	if in.ID == "" {
+		in.ID = uuid.NewString()
+	} else if _, err := uuid.Parse(in.ID); err != nil {
+		return WriteIntent{}, fmt.Errorf("%w: write intent id must be a UUID", ErrInvalidArgument)
+	}
 	in.Repo = (ForgeCoord{Provider: in.Provider, Repo: in.Repo}).Normalized().Repo
 	row, err := s.q.RecordForgeWriteIntent(ctx, db.RecordForgeWriteIntentParams{
-		ID:              uuid.NewString(),
+		ID:              in.ID,
 		ForgeProvider:   int16(in.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum.
 		ForgeHost:       in.Host,
 		Repo:            in.Repo,
@@ -173,7 +184,8 @@ func (s *Store) CompleteWriteIntent(ctx context.Context, id string, artifact *Au
 		if err := recordAuthoredArtifact(ctx, qtx, record); err != nil {
 			return err
 		}
-		forgeKey = ""
+		// The number lets a same-key replay return the object with no forge call.
+		forgeKey = strconv.FormatUint(artifact.Number, 10)
 	} else if artifact != nil || forgeKey == "" {
 		return fmt.Errorf("%w: comment and review intents require a forge key only", ErrInvalidArgument)
 	}
@@ -295,5 +307,8 @@ func writeIntentFromRow(row db.ForgeWriteIntent) WriteIntent {
 		SessionID:      row.SessionID,
 		RequestKey:     row.ClientRequestID,
 		State:          WriteState(row.State),
+		ForgeKey:       row.ForgeKey,
+		CreatedAt:      row.CreatedAt.Time,
+		TenantID:       TenantID(row.TenantID),
 	}
 }

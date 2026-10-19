@@ -562,6 +562,7 @@ func TestBuildForgeWriteServiceEnforcesScopesBehaviorally(t *testing.T) {
 			}
 
 			call := &compassv1internal.ForgeCallRequest{
+				ClientRequestId: "req-scope",
 				Call: &compassv1internal.ForgeCallRequest_CreateIssue{CreateIssue: &compassv1internal.CreateIssueRequest{
 					Repo: "owner/repo", Title: "title", Body: "body",
 				}},

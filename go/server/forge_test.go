@@ -20,6 +20,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/refs"
 	"github.com/RigelBuild/compass/go/internal/store"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,13 +32,15 @@ const ownerHeaderSentinel = "<!-- compass:owner "
 
 // --- fake store -------------------------------------------------------------
 
-// Models caller resolution, agent/request dedup, and paired artifact/memo writes.
+// Models caller resolution, write intents (one non-failed attempt per agent and key), and ownership rows.
 type fakeForgeStore struct {
 	accounts map[store.AccountID]store.Account
-	memo     map[string]store.AuthoredArtifact // key: agent|client_request_id
+	intents  []store.WriteIntent
 	recorded []store.AuthoredArtifact
 	getErr   error // if set, GetAccount returns it verbatim
-	recErr   error // if set, RecordAuthoredArtifact returns it verbatim
+	recErr   error // if set, every store write after the forge create returns it verbatim
+	// clock stamps a new intent's CreatedAt.
+	clock func() time.Time
 
 	prCreates []prCreate
 
@@ -79,7 +82,7 @@ type recordedTransition struct {
 func newFakeForgeStore() *fakeForgeStore {
 	return &fakeForgeStore{
 		accounts:    make(map[store.AccountID]store.Account),
-		memo:        make(map[string]store.AuthoredArtifact),
+		clock:       nowStub,
 		subs:        make(map[string]store.AgentForgeSubscription),
 		subKey:      make(map[string]string),
 		mirrorModes: make(map[string]store.ForgeMirrorMode),
@@ -160,39 +163,94 @@ func (f *fakeForgeStore) GetAccount(_ context.Context, id store.AccountID) (stor
 	return acc, nil
 }
 
-func (f *fakeForgeStore) AuthoredArtifactByRequestID(_ context.Context, agent store.AccountID, clientRequestID string) (store.AuthoredArtifact, bool, error) {
-	if clientRequestID == "" {
-		return store.AuthoredArtifact{}, false, nil
-	}
-	a, ok := f.memo[string(agent)+"|"+clientRequestID]
-	return a, ok, nil
-}
-
-func (f *fakeForgeStore) RecordAuthoredArtifact(_ context.Context, a store.AuthoredArtifact) error {
-	if f.recErr != nil {
-		return f.recErr
-	}
-	f.recorded = append(f.recorded, a)
-	if a.ClientRequestID != "" {
-		f.memo[string(a.AgentAccountID)+"|"+a.ClientRequestID] = a
-	}
-	return nil
-}
-
 // prCreate is one CreatePullRequestWithLink call the fake saw.
 type prCreate struct {
 	row  store.PullRequestRow
 	link *store.ForgeCoord
 }
 
-// CreatePullRequestWithLink records the DL-055 row like RecordAuthoredArtifact
-// and keeps the PR row and link for assertions.
-func (f *fakeForgeStore) CreatePullRequestWithLink(ctx context.Context, a store.AuthoredArtifact, pr store.PullRequestRow, issue *store.ForgeCoord) error {
-	if err := f.RecordAuthoredArtifact(ctx, a); err != nil {
-		return err
+// CreatePullRequestWithLink records the DL-055 row and keeps the PR row and
+// link for assertions.
+func (f *fakeForgeStore) CreatePullRequestWithLink(_ context.Context, a store.AuthoredArtifact, pr store.PullRequestRow, issue *store.ForgeCoord) error {
+	if f.recErr != nil {
+		return f.recErr
 	}
+	f.recordArtifact(a)
 	f.prCreates = append(f.prCreates, prCreate{row: pr, link: issue})
 	return nil
+}
+
+// RecordWriteIntent returns the agent's non-failed attempt for the key, or
+// inserts a pending one, as the partial unique index does.
+func (f *fakeForgeStore) RecordWriteIntent(_ context.Context, in store.WriteIntent) (store.WriteIntent, error) {
+	if in.RequestKey == "" {
+		return store.WriteIntent{}, fmt.Errorf("%w: client request id is required", store.ErrInvalidArgument)
+	}
+	for _, w := range f.intents {
+		if w.AgentAccountID == in.AgentAccountID && w.RequestKey == in.RequestKey && w.State != store.WriteStateFailed {
+			return w, nil
+		}
+	}
+	in.State = store.WriteStatePending
+	in.CreatedAt = f.clock()
+	in.ForgeKey = ""
+	f.intents = append(f.intents, in)
+	return in, nil
+}
+
+// CompleteWriteIntent writes the ownership row (issue, PR) or keeps the forge
+// key (comment, review) and marks the pending attempt done.
+func (f *fakeForgeStore) CompleteWriteIntent(_ context.Context, id string, artifact *store.AuthoredArtifact, forgeKey string) error {
+	if f.recErr != nil {
+		return f.recErr
+	}
+	w, err := f.intent(id)
+	if err != nil {
+		return err
+	}
+	if w.State != store.WriteStatePending {
+		return fmt.Errorf("%w: write intent %q is %s", store.ErrConflict, id, w.State)
+	}
+	if artifact != nil {
+		f.recordArtifact(*artifact)
+		forgeKey = strconv.FormatUint(artifact.Number, 10)
+	}
+	w.State = store.WriteStateDone
+	w.ForgeKey = forgeKey
+	return nil
+}
+
+// EndWriteIntent moves a pending attempt to failed or lost.
+func (f *fakeForgeStore) EndWriteIntent(_ context.Context, id string, state store.WriteState) error {
+	w, err := f.intent(id)
+	if err != nil {
+		return err
+	}
+	if w.State != store.WriteStatePending {
+		return fmt.Errorf("%w: write intent %q is no longer pending", store.ErrConflict, id)
+	}
+	w.State = state
+	return nil
+}
+
+// PendingWriteIntents lists pending attempts created before olderThan.
+func (f *fakeForgeStore) PendingWriteIntents(_ context.Context, olderThan time.Time, limit int) ([]store.WriteIntent, error) {
+	var out []store.WriteIntent
+	for _, w := range f.intents {
+		if w.State == store.WriteStatePending && w.CreatedAt.Before(olderThan) && len(out) < limit {
+			out = append(out, w)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeForgeStore) AuthoredArtifactByCoordinateFold(_ context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64) (store.AuthoredArtifact, error) {
+	for _, r := range f.recorded {
+		if r.Provider == provider && r.Host == host && strings.EqualFold(r.Repo, repo) && r.Kind == kind && r.Number == number {
+			return r, nil
+		}
+	}
+	return store.AuthoredArtifact{}, store.ErrNotFound
 }
 
 // RecordStateTransition mirrors the real store's upsert-latest-wins memo write:
@@ -211,6 +269,27 @@ func (f *fakeForgeStore) RecordStateTransition(_ context.Context, provider store
 
 func (f *fakeForgeStore) PullRequestsByCoords(_ context.Context, _ []store.ForgeCoord) ([]store.PullRequestRow, error) {
 	return f.prRows, f.prErr
+}
+
+// recordArtifact upserts an ownership row by coordinate, as the real store's
+// write-once authorship insert does.
+func (f *fakeForgeStore) recordArtifact(a store.AuthoredArtifact) {
+	for i, r := range f.recorded {
+		if r.Provider == a.Provider && r.Host == a.Host && strings.EqualFold(r.Repo, a.Repo) && r.Kind == a.Kind && r.Number == a.Number {
+			f.recorded[i].SessionID = a.SessionID
+			return
+		}
+	}
+	f.recorded = append(f.recorded, a)
+}
+
+func (f *fakeForgeStore) intent(id string) (*store.WriteIntent, error) {
+	for i := range f.intents {
+		if f.intents[i].ID == id {
+			return &f.intents[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: write intent %q", store.ErrNotFound, id)
 }
 
 // --- harness ----------------------------------------------------------------
@@ -297,7 +376,7 @@ func TestForgeCreateIssueStampsExactlyOneHeaderReplacingForged(t *testing.T) {
 	svc, _ := newForgeServiceForTest(t, author, reviewer)
 
 	forged := "<!-- compass:owner v1 agent=victim owner=boss session=s -->\nhello"
-	res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall(forged, ""))
+	res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall(forged, "k-384"))
 	if res.GetError() != nil {
 		t.Fatalf("create_issue errored: %v", res.GetError())
 	}
@@ -328,6 +407,7 @@ func TestForgeSubmitReviewStripsInlineCommentOwnerHeaders(t *testing.T) {
 
 	forgedInline := "<!-- compass:owner v1 agent=victim owner=boss session=s -->\nnit: rename"
 	call := &compassv1internal.ForgeCallRequest{
+		ClientRequestId: "k-414",
 		Call: &compassv1internal.ForgeCallRequest_SubmitReview{SubmitReview: &compassv1internal.SubmitReviewRequest{
 			Repo: testRepo, PrNumber: 7, Verdict: "comment", Body: "looks good",
 			Comments: []*compassv1internal.ReviewCommentInput{{Path: "a.go", Line: 3, Body: forgedInline}},
@@ -369,7 +449,8 @@ func TestForgeGetIssueReadBodyHasNoOwnerHeader(t *testing.T) {
 		Body:   "<!-- compass:owner v1 agent=" + testAgentHandle + " owner=" + testOwnerHandle + " session=" + testSessionID + " -->\n🧭 Written by **@scout** (Compass agent, owned by **@matt**)\n\n---\n\nthe real body",
 	}
 	call := &compassv1internal.ForgeCallRequest{
-		Call: &compassv1internal.ForgeCallRequest_GetIssue{GetIssue: &compassv1internal.GetIssueRequest{Repo: testRepo, IssueNumber: 9}},
+		ClientRequestId: "k-455",
+		Call:            &compassv1internal.ForgeCallRequest_GetIssue{GetIssue: &compassv1internal.GetIssueRequest{Repo: testRepo, IssueNumber: 9}},
 	}
 	res := svc.ExecuteForgeCallAsAccountMust(t, call)
 	iss := res.GetIssue()
@@ -404,7 +485,8 @@ func TestForgeListIssuesAppliesLimit(t *testing.T) {
 				author.ListIssuesResult = append(author.ListIssuesResult, forge.Issue{Number: uint64(150 - i)})
 			}
 			call := &compassv1internal.ForgeCallRequest{
-				Call: &compassv1internal.ForgeCallRequest_ListIssues{ListIssues: &compassv1internal.ListIssuesRequest{Repo: testRepo, Limit: tc.limit}},
+				ClientRequestId: "k-490",
+				Call:            &compassv1internal.ForgeCallRequest_ListIssues{ListIssues: &compassv1internal.ListIssuesRequest{Repo: testRepo, Limit: tc.limit}},
 			}
 			issues := svc.ExecuteForgeCallAsAccountMust(t, call).GetIssues().GetIssues()
 			if len(issues) != tc.want {
@@ -432,7 +514,8 @@ func TestForgeListIssuesEmptyStateMeansOpen(t *testing.T) {
 			author := forge.NewFakeProvider("gh-author")
 			svc, _ := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
 			call := &compassv1internal.ForgeCallRequest{
-				Call: &compassv1internal.ForgeCallRequest_ListIssues{ListIssues: &compassv1internal.ListIssuesRequest{Repo: testRepo, State: tc.state}},
+				ClientRequestId: "k-518",
+				Call:            &compassv1internal.ForgeCallRequest_ListIssues{ListIssues: &compassv1internal.ListIssuesRequest{Repo: testRepo, State: tc.state}},
 			}
 			svc.ExecuteForgeCallAsAccountMust(t, call)
 			calls := author.Calls()
@@ -453,7 +536,7 @@ func TestForgeEmptyCallerIsConnectErrorWithZeroProviderCalls(t *testing.T) {
 	reviewer := forge.NewFakeProvider("gh-reviewer")
 	svc, _ := newForgeServiceForTest(t, author, reviewer)
 
-	_, err := svc.ExecuteForgeCallAsAccount(context.Background(), "", testSessionID, createIssueCall("b", ""))
+	_, err := svc.ExecuteForgeCallAsAccount(context.Background(), "", testSessionID, createIssueCall("b", "k-540"))
 	if err == nil {
 		t.Fatal("empty caller = nil error, want a Connect error")
 	}
@@ -484,7 +567,8 @@ func TestForgeEmptyRepoIsInvalidArgumentBeforeAnyTouch(t *testing.T) {
 	svc, st := newForgeServiceForTest(t, author, reviewer)
 
 	call := &compassv1internal.ForgeCallRequest{
-		Call: &compassv1internal.ForgeCallRequest_CreateIssue{CreateIssue: &compassv1internal.CreateIssueRequest{Repo: "", Body: "b"}},
+		ClientRequestId: "k-570",
+		Call:            &compassv1internal.ForgeCallRequest_CreateIssue{CreateIssue: &compassv1internal.CreateIssueRequest{Repo: "", Body: "b"}},
 	}
 	res := svc.ExecuteForgeCallAsAccountMust(t, call)
 	if fe := res.GetError(); fe == nil || fe.GetCode() != "invalid_argument" {
@@ -535,7 +619,8 @@ func TestForgeStatusError403And404FlattenToByteIdenticalNotFound(t *testing.T) {
 		svc, _ := newForgeServiceForTest(t, author, reviewer)
 		author.SetError("GetIssue", &forge.StatusError{Status: status, Message: "secret-" + itoa(status)})
 		call := &compassv1internal.ForgeCallRequest{
-			Call: &compassv1internal.ForgeCallRequest_GetIssue{GetIssue: &compassv1internal.GetIssueRequest{Repo: testRepo, IssueNumber: 1}},
+			ClientRequestId: "k-593",
+			Call:            &compassv1internal.ForgeCallRequest_GetIssue{GetIssue: &compassv1internal.GetIssueRequest{Repo: testRepo, IssueNumber: 1}},
 		}
 		return svc.ExecuteForgeCallAsAccountMust(t, call).GetError()
 	}
@@ -561,7 +646,7 @@ func TestForgeStatusError422IsInvalidArgumentCarryingForgeMessage(t *testing.T) 
 	svc, _ := newForgeServiceForTest(t, author, reviewer)
 	author.SetError("CreateIssue", &forge.StatusError{Status: 422, Message: "label does not exist"})
 
-	res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", ""))
+	res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "k-620"))
 	fe := res.GetError()
 	if fe == nil || fe.GetCode() != "invalid_argument" {
 		t.Fatalf("422 error = %v, want invalid_argument", fe)
@@ -579,7 +664,7 @@ func TestForgeUnsupportedIsUnimplementedNamingProviderAndOp(t *testing.T) {
 	svc, _ := newForgeServiceForTest(t, author, reviewer)
 	author.SetError("CreateIssue", forge.ErrUnsupported)
 
-	fe := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "")).GetError()
+	fe := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "k-638")).GetError()
 	if fe == nil || fe.GetCode() != "unimplemented" {
 		t.Fatalf("unsupported error = %v, want unimplemented", fe)
 	}
@@ -602,7 +687,9 @@ func TestForgeBodyBudgetBoundaryStampsThenErrorsWithoutProviderCall(t *testing.T
 		t.Fatalf("reference stamp: %v", err)
 	}
 	const limit = 500
-	fit := strings.Repeat("x", limit-len(hdr))
+	// A GitHub body also reserves the write marker after the owner header.
+	marker := len(forge.WithWriteMarker("", "00000000-0000-0000-0000-000000000000"))
+	fit := strings.Repeat("x", limit-len(hdr)-marker)
 	over := fit + "x"
 
 	t.Run("exactly at budget stamps and calls provider", func(t *testing.T) {
@@ -610,7 +697,7 @@ func TestForgeBodyBudgetBoundaryStampsThenErrorsWithoutProviderCall(t *testing.T
 		reviewer := forge.NewFakeProvider("gh-reviewer")
 		author.BodyLimitResult = limit
 		svc, _ := newForgeServiceForTest(t, author, reviewer)
-		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall(fit, ""))
+		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall(fit, "k-669"))
 		if res.GetError() != nil {
 			t.Fatalf("at-budget body errored: %v", res.GetError())
 		}
@@ -624,7 +711,7 @@ func TestForgeBodyBudgetBoundaryStampsThenErrorsWithoutProviderCall(t *testing.T
 		reviewer := forge.NewFakeProvider("gh-reviewer")
 		author.BodyLimitResult = limit
 		svc, _ := newForgeServiceForTest(t, author, reviewer)
-		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall(over, ""))
+		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall(over, "k-683"))
 		fe := res.GetError()
 		if fe == nil || fe.GetCode() != "invalid_argument" {
 			t.Fatalf("over-budget error = %v, want invalid_argument", fe)
@@ -717,6 +804,7 @@ func TestForgeF1DispatchReviewerVsAuthorClient(t *testing.T) {
 	svc, _ := newForgeServiceForTest(t, author, reviewer)
 
 	review := &compassv1internal.ForgeCallRequest{
+		ClientRequestId: "k-775",
 		Call: &compassv1internal.ForgeCallRequest_SubmitReview{SubmitReview: &compassv1internal.SubmitReviewRequest{
 			Repo: testRepo, PrNumber: 1, Verdict: "approve", Body: "ok",
 		}},
@@ -728,7 +816,7 @@ func TestForgeF1DispatchReviewerVsAuthorClient(t *testing.T) {
 		t.Fatalf("submit_review dispatch: reviewer=%d author=%d, want reviewer=1 author=0", len(reviewer.Calls()), len(author.Calls()))
 	}
 
-	if res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "")); res.GetError() != nil {
+	if res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "k-787")); res.GetError() != nil {
 		t.Fatalf("create_issue errored: %v", res.GetError())
 	}
 	if len(author.Calls()) != 1 {
@@ -749,7 +837,7 @@ func TestForgeCreatePullRequestStampsAndRecordsPRKind(t *testing.T) {
 	svc, st := newForgeServiceForTest(t, author, reviewer)
 	author.CreatePRResult = forge.PullRequest{Number: 55, URL: "u"}
 
-	res := svc.ExecuteForgeCallAsAccountMust(t, createPRCall("body", ""))
+	res := svc.ExecuteForgeCallAsAccountMust(t, createPRCall("body", "k-811"))
 	if res.GetError() != nil {
 		t.Fatalf("create_pull_request errored: %v", res.GetError())
 	}
@@ -815,7 +903,7 @@ func TestForgeNonAgentCallerIsInvalidArgumentZeroProviderCalls(t *testing.T) {
 	const nonAgentID = store.AccountID("acct-user")
 	st.accounts[nonAgentID] = store.Account{ID: nonAgentID, Handle: "auser", User: &store.UserAccount{}}
 
-	res, err := svc.ExecuteForgeCallAsAccount(context.Background(), nonAgentID, testSessionID, createIssueCall("b", ""))
+	res, err := svc.ExecuteForgeCallAsAccount(context.Background(), nonAgentID, testSessionID, createIssueCall("b", "k-884"))
 	if err != nil {
 		t.Fatalf("non-agent caller returned a Connect error, want in-band: %v", err)
 	}
@@ -844,6 +932,7 @@ func TestForgeCommentArmsStampBodies(t *testing.T) {
 		reviewer := forge.NewFakeProvider("gh-reviewer")
 		svc, _ := newForgeServiceForTest(t, author, reviewer)
 		call := &compassv1internal.ForgeCallRequest{
+			ClientRequestId: "k-912",
 			Call: &compassv1internal.ForgeCallRequest_CommentOnIssue{CommentOnIssue: &compassv1internal.CommentOnIssueRequest{
 				Repo: testRepo, IssueNumber: 3, Body: "hi",
 			}},
@@ -864,6 +953,7 @@ func TestForgeCommentArmsStampBodies(t *testing.T) {
 		reviewer := forge.NewFakeProvider("gh-reviewer")
 		svc, _ := newForgeServiceForTest(t, author, reviewer)
 		call := &compassv1internal.ForgeCallRequest{
+			ClientRequestId: "k-932",
 			Call: &compassv1internal.ForgeCallRequest_CommentOnPullRequest{CommentOnPullRequest: &compassv1internal.CommentOnPullRequestRequest{
 				Repo: testRepo, PrNumber: 4, Body: "hi",
 			}},
@@ -889,7 +979,7 @@ func TestForgeBudgetExhaustedAnd429MapToResourceExhausted(t *testing.T) {
 		reviewer := forge.NewFakeProvider("gh-reviewer")
 		svc, _ := newForgeServiceForTest(t, author, reviewer)
 		author.SetError("CreateIssue", scripted)
-		return svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "")).GetError()
+		return svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "k-962")).GetError()
 	}
 	for _, tc := range []struct {
 		name        string
@@ -1094,6 +1184,7 @@ func TestForgeSubscribeEmptyRepoIsInvalidArgument(t *testing.T) {
 	svc, st := newForgeServiceForTest(t, author, reviewer)
 
 	call := &compassv1internal.ForgeCallRequest{
+		ClientRequestId: "k-1170",
 		Call: &compassv1internal.ForgeCallRequest_Subscribe{Subscribe: &compassv1internal.SubscribeForgeRequest{
 			Repo: "", Kind: compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, Number: 1,
 		}},
@@ -1176,11 +1267,11 @@ func editIssueCall(title string) *compassv1internal.ForgeCallRequest {
 
 func scopedWriteCalls() map[string]*compassv1internal.ForgeCallRequest {
 	return map[string]*compassv1internal.ForgeCallRequest{
-		"create_issue":                  createIssueCall("body", ""),
-		"create_pull_request":           createPRCall("body", ""),
-		"comment_on_issue":              {Call: &compassv1internal.ForgeCallRequest_CommentOnIssue{CommentOnIssue: &compassv1internal.CommentOnIssueRequest{Repo: testRepo, IssueNumber: 1, Body: "body"}}},
-		"comment_on_pull_request":       {Call: &compassv1internal.ForgeCallRequest_CommentOnPullRequest{CommentOnPullRequest: &compassv1internal.CommentOnPullRequestRequest{Repo: testRepo, PrNumber: 1, Body: "body"}}},
-		"submit_review":                 {Call: &compassv1internal.ForgeCallRequest_SubmitReview{SubmitReview: &compassv1internal.SubmitReviewRequest{Repo: testRepo, PrNumber: 1, Verdict: "approve"}}},
+		"create_issue":                  createIssueCall("body", "k-1248"),
+		"create_pull_request":           createPRCall("body", "k-1249"),
+		"comment_on_issue":              {ClientRequestId: "k-ci", Call: &compassv1internal.ForgeCallRequest_CommentOnIssue{CommentOnIssue: &compassv1internal.CommentOnIssueRequest{Repo: testRepo, IssueNumber: 1, Body: "body"}}},
+		"comment_on_pull_request":       {ClientRequestId: "k-cp", Call: &compassv1internal.ForgeCallRequest_CommentOnPullRequest{CommentOnPullRequest: &compassv1internal.CommentOnPullRequestRequest{Repo: testRepo, PrNumber: 1, Body: "body"}}},
+		"submit_review":                 {ClientRequestId: "k-sr", Call: &compassv1internal.ForgeCallRequest_SubmitReview{SubmitReview: &compassv1internal.SubmitReviewRequest{Repo: testRepo, PrNumber: 1, Verdict: "approve"}}},
 		"subscribe":                     subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, 1),
 		"transition_issue_state":        {Call: &compassv1internal.ForgeCallRequest_TransitionIssueState{TransitionIssueState: &compassv1internal.TransitionIssueStateRequest{Repo: testRepo, IssueNumber: 1, State: "closed"}}},
 		"transition_pull_request_state": {Call: &compassv1internal.ForgeCallRequest_TransitionPullRequestState{TransitionPullRequestState: &compassv1internal.TransitionPullRequestStateRequest{Repo: testRepo, PrNumber: 1, State: "closed"}}},
@@ -1192,18 +1283,20 @@ func scopedWriteCalls() map[string]*compassv1internal.ForgeCallRequest {
 // covers it), an explicit ungated read or caller-scoped arm, or an arm gated by
 // the mirror policy (its scope refusal is a pgtest: it needs the mirror store).
 func TestForgeCallArmsHaveScopeClassification(t *testing.T) {
-	ungated := map[string]bool{"get_issue": true, "list_issues": true, "get_pull_request": true, "unsubscribe": true}
+	ungated := map[string]bool{"get_issue": true, "list_issues": true, "get_pull_request": true, "unsubscribe": true, "stack_status": true}
 	mirrorGated := map[string]bool{"mirror_messages": true}
+	// Scoped writes whose dispatch lands with their arms; the gate tests cover them then.
+	undispatchedWrites := map[string]bool{"submit_stack": true, "retire_head": true}
 	writes := scopedWriteCalls()
 	fields := (&compassv1internal.ForgeCallRequest{}).ProtoReflect().Descriptor().Oneofs().ByName("call").Fields()
-	if len(writes)+len(ungated)+len(mirrorGated) != fields.Len() {
-		t.Fatalf("classified arms = %d, descriptor arms = %d", len(writes)+len(ungated)+len(mirrorGated), fields.Len())
+	if n := len(writes) + len(undispatchedWrites) + len(ungated) + len(mirrorGated); n != fields.Len() {
+		t.Fatalf("classified arms = %d, descriptor arms = %d", n, fields.Len())
 	}
 	for i := range fields.Len() {
 		name := string(fields.Get(i).Name())
 		call, isWrite := writes[name]
 		classes := 0
-		for _, in := range []bool{isWrite, ungated[name], mirrorGated[name]} {
+		for _, in := range []bool{isWrite, undispatchedWrites[name], ungated[name], mirrorGated[name]} {
 			if in {
 				classes++
 			}
@@ -1386,7 +1479,7 @@ func TestForgeScopeGateAllowsOwnerGrantAndPreservesDefaultOff(t *testing.T) {
 		svc.enforceScopes = true
 		st.scopes = map[string]bool{fmt.Sprintf("%s|%d|%s|%s", testOwnerID, store.ForgeProviderGitHub, testHost, testRepo): true}
 
-		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("body", ""))
+		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("body", "k-1347"))
 		if res.GetError() != nil || len(author.Calls()) != 1 || st.scopeCalls != 1 {
 			t.Fatalf("owner grant result=%v provider calls=%d scope checks=%d", res.GetError(), len(author.Calls()), st.scopeCalls)
 		}
@@ -1396,7 +1489,7 @@ func TestForgeScopeGateAllowsOwnerGrantAndPreservesDefaultOff(t *testing.T) {
 		reviewer := forge.NewFakeProvider("gh-reviewer")
 		svc, st := newForgeServiceForTest(t, author, reviewer)
 
-		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("body", ""))
+		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("body", "k-1357"))
 		if res.GetError() != nil || len(author.Calls()) != 1 || st.scopeCalls != 0 {
 			t.Fatalf("default-off result=%v provider calls=%d scope checks=%d", res.GetError(), len(author.Calls()), st.scopeCalls)
 		}
@@ -1411,7 +1504,7 @@ func TestForgeScopeGateStoreErrorAndMemoHit(t *testing.T) {
 		svc.enforceScopes = true
 		st.scopeErr = errors.New("scope database unavailable")
 
-		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("body", ""))
+		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("body", "k-1372"))
 		if fe := res.GetError(); fe == nil || fe.GetCode() != "internal" {
 			t.Fatalf("scope store error = %v, want internal", fe)
 		}
@@ -1419,7 +1512,9 @@ func TestForgeScopeGateStoreErrorAndMemoHit(t *testing.T) {
 			t.Fatalf("provider calls = %d, want 0", len(author.Calls()))
 		}
 	})
-	t.Run("create memo hit skips scope check", func(t *testing.T) {
+	// The scope check runs before the intent is recorded, so an ungranted call
+	// leaves no pending intent; a same-key retry after a revoked grant is refused.
+	t.Run("same-key retry after a revoked grant is refused", func(t *testing.T) {
 		author := forge.NewFakeProvider("gh-author")
 		reviewer := forge.NewFakeProvider("gh-reviewer")
 		svc, st := newForgeServiceForTest(t, author, reviewer)
@@ -1429,11 +1524,11 @@ func TestForgeScopeGateStoreErrorAndMemoHit(t *testing.T) {
 		}
 		svc.enforceScopes = true
 		second := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("different", "memo-key"))
-		if second.GetError() != nil || second.GetIssue() == nil {
-			t.Fatalf("memo hit = %v, want original issue", second.GetError())
+		if fe := second.GetError(); fe == nil || fe.GetCode() != "not_found" {
+			t.Fatalf("revoked retry = %v, want not_found", second)
 		}
-		if st.scopeCalls != 0 || len(author.Calls()) != 1 {
-			t.Fatalf("memo hit scope checks=%d provider calls=%d, want 0 and 1", st.scopeCalls, len(author.Calls()))
+		if len(author.Calls()) != 1 || len(st.intents) != 1 {
+			t.Fatalf("provider calls=%d intents=%d, want 1 and 1", len(author.Calls()), len(st.intents))
 		}
 	})
 }
@@ -1552,7 +1647,7 @@ func TestForgeCreatePullRequestStoresIssueLink(t *testing.T) {
 			author.CreatePRResult = forge.PullRequest{Number: 55, State: "open", CreatedAt: created}
 			ghe.CreatePRResult = author.CreatePRResult
 
-			call := createPRWithIssue("", tc.issue)
+			call := createPRWithIssue("k-link", tc.issue)
 			call.Forge = tc.prForge
 			res := svc.ExecuteForgeCallAsAccountMust(t, call)
 			if res.GetError() != nil {
@@ -1602,7 +1697,7 @@ func TestForgeCreatePullRequestRejectsBadIssueLink(t *testing.T) {
 			if err := svc.providers.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: "ghe.example"}, ghe, ghe, false); err != nil {
 				t.Fatalf("register ghe: %v", err)
 			}
-			res := svc.ExecuteForgeCallAsAccountMust(t, createPRWithIssue("", tc.issue))
+			res := svc.ExecuteForgeCallAsAccountMust(t, createPRWithIssue("k-badlink", tc.issue))
 			if fe := res.GetError(); fe == nil || fe.GetCode() != tc.code {
 				t.Fatalf("error = %v, want code %q", fe, tc.code)
 			}

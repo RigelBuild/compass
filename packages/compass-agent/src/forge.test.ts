@@ -686,13 +686,14 @@ describe("forge_list_issues", () => {
 });
 
 describe("forge_comment_on_issue", () => {
-	test("puts a commentOnIssue arm on the wire, no clientRequestId, and renders the ack", async () => {
+	test("puts a commentOnIssue arm on the wire with the broker's idempotency key, and renders the ack", async () => {
 		const transport = new FakeTransport(
 			commentResult("issueComment", {
 				url: "https://github.com/o/r/issues/5#c1",
 			}),
 		);
-		const t = tool(new ForgeBroker(transport), "forge_comment_on_issue");
+		const broker = new ForgeBroker(transport);
+		const t = tool(broker, "forge_comment_on_issue");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
 			issue_number: 5,
@@ -703,7 +704,7 @@ describe("forge_comment_on_issue", () => {
 		if (req.call.case !== "commentOnIssue") throw new Error("expected arm");
 		expect(req.call.value.issueNumber).toBe(5n);
 		expect(req.call.value.body).toBe("looks good");
-		expect(req.clientRequestId).toBe("");
+		expect(req.clientRequestId).toBe(broker.idempotencyKey("tc-1"));
 		expect(textOf(result)).toBe(
 			"Commented on issue #5: https://github.com/o/r/issues/5#c1",
 		);
@@ -728,7 +729,8 @@ describe("forge_comment_on_pull_request", () => {
 		const transport = new FakeTransport(
 			commentResult("prComment", { url: "https://github.com/o/r/pull/8#c1" }),
 		);
-		const t = tool(new ForgeBroker(transport), "forge_comment_on_pull_request");
+		const broker = new ForgeBroker(transport);
+		const t = tool(broker, "forge_comment_on_pull_request");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
 			pr_number: 8,
@@ -739,6 +741,7 @@ describe("forge_comment_on_pull_request", () => {
 		if (req.call.case !== "commentOnPullRequest")
 			throw new Error("expected arm");
 		expect(req.call.value.prNumber).toBe(8n);
+		expect(req.clientRequestId).toBe(broker.idempotencyKey("tc-1"));
 		expect(textOf(result)).toBe(
 			"Commented on PR #8: https://github.com/o/r/pull/8#c1",
 		);
@@ -750,7 +753,8 @@ describe("forge_submit_review", () => {
 		const transport = new FakeTransport(
 			reviewResult("https://github.com/o/r/pull/8#r7", "changes_requested"),
 		);
-		const t = tool(new ForgeBroker(transport), "forge_submit_review");
+		const broker = new ForgeBroker(transport);
+		const t = tool(broker, "forge_submit_review");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
 			pr_number: 8,
@@ -762,6 +766,7 @@ describe("forge_submit_review", () => {
 		expect(req.call.case).toBe("submitReview");
 		if (req.call.case !== "submitReview") throw new Error("expected arm");
 		expect(req.call.value.prNumber).toBe(8n);
+		expect(req.clientRequestId).toBe(broker.idempotencyKey("tc-1"));
 		expect(req.call.value.verdict).toBe("request_changes");
 		expect(req.call.value.comments).toHaveLength(1);
 		expect(req.call.value.comments[0].path).toBe("a.ts");

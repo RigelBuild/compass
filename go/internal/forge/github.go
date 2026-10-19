@@ -477,12 +477,6 @@ func (g *GitHub) FindPullRequestByHead(ctx context.Context, repo, headRef string
 	return PullRequest{}, false, nil
 }
 
-const writeMarkerPrefix = "<!-- compass:write "
-
-func hasWriteMarker(body, intentID string) bool {
-	return strings.Contains(body, writeMarkerPrefix+intentID+" -->")
-}
-
 type ghIssueComment struct {
 	ID        uint64 `json:"id"`
 	HTMLURL   string `json:"html_url"`

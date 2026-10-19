@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -115,10 +116,8 @@ func (r *forgeProviderRegistry) resolve(ref *compassv1.ForgeRef) (resolvedForge,
 
 // forgeStore is the narrow persistence surface for writes, attribution, scope,
 // mirror mode, and tracked PR reads.
-type forgeStore interface {
+type forgeStore interface { //nolint:interfacebloat // the forge write path's whole store surface: attribution, write intents, scope, and mirror mode.
 	GetAccount(ctx context.Context, id store.AccountID) (store.Account, error)
-	AuthoredArtifactByRequestID(ctx context.Context, agent store.AccountID, clientRequestID string) (store.AuthoredArtifact, bool, error)
-	RecordAuthoredArtifact(ctx context.Context, a store.AuthoredArtifact) error
 	CreatePullRequestWithLink(ctx context.Context, a store.AuthoredArtifact, pr store.PullRequestRow, issue *store.ForgeCoord) error
 	EnsureAgentForgeSubscription(ctx context.Context, sub store.AgentForgeSubscription) (string, error)
 	DeleteAgentForgeSubscription(ctx context.Context, agent store.AccountID, subscriptionID string) error
@@ -126,6 +125,11 @@ type forgeStore interface {
 	HasForgeScope(ctx context.Context, account store.AccountID, provider store.ForgeProvider, host, repo string) (bool, error)
 	ForgeMirrorMode(ctx context.Context, provider store.ForgeProvider, host, repo string) (store.ForgeMirrorMode, error)
 	PullRequestsByCoords(ctx context.Context, coords []store.ForgeCoord) ([]store.PullRequestRow, error)
+	RecordWriteIntent(ctx context.Context, in store.WriteIntent) (store.WriteIntent, error)
+	CompleteWriteIntent(ctx context.Context, id string, artifact *store.AuthoredArtifact, forgeKey string) error
+	EndWriteIntent(ctx context.Context, id string, state store.WriteState) error
+	PendingWriteIntents(ctx context.Context, olderThan time.Time, limit int) ([]store.WriteIntent, error)
+	AuthoredArtifactByCoordinateFold(ctx context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64) (store.AuthoredArtifact, error)
 }
 
 // forgeService implements ForgeCaller and the forge write chokepoint. It owns
@@ -341,31 +345,9 @@ func (s *forgeService) unsubscribeForge(ctx context.Context, caller store.Accoun
 	}
 }
 
-// dedup is the F3 idempotency-memo lookup: the artifact the agent authored under
-// clientRequestID, or ok=false on a miss. An empty key is always a miss (it is
-// never stored), short-circuited so it never touches the store.
-func (s *forgeService) dedup(ctx context.Context, caller store.AccountID, clientRequestID string) (store.AuthoredArtifact, bool, *compassv1internal.ForgeCallError) {
-	if clientRequestID == "" {
-		return store.AuthoredArtifact{}, false, nil
-	}
-	hit, ok, err := s.store.AuthoredArtifactByRequestID(ctx, caller, clientRequestID)
-	if err != nil {
-		return store.AuthoredArtifact{}, false, storeForgeError(err)
-	}
-	return hit, ok, nil
-}
-
-// record writes ownership and idempotency after a forge create. Only issue and
-// pull-request creates have artifact coordinates to record.
-func (s *forgeService) record(ctx context.Context, rf resolvedForge, id callerIdentity, caller store.AccountID, sessionID, clientRequestID, repo string, kind store.ForgeArtifactKind, number uint64) *compassv1internal.ForgeCallError {
-	if err := s.store.RecordAuthoredArtifact(ctx, s.authoredArtifact(rf, id, caller, sessionID, clientRequestID, repo, kind, number)); err != nil {
-		return storeForgeError(err)
-	}
-	return nil
-}
-
-// authoredArtifact builds the DL-055 ownership row for one write.
-func (s *forgeService) authoredArtifact(rf resolvedForge, id callerIdentity, caller store.AccountID, sessionID, clientRequestID, repo string, kind store.ForgeArtifactKind, number uint64) store.AuthoredArtifact {
+// authoredArtifact builds the DL-055 ownership row for one write. The intent
+// carries the request key, so the row carries none.
+func (s *forgeService) authoredArtifact(rf resolvedForge, id callerIdentity, caller store.AccountID, sessionID, repo string, kind store.ForgeArtifactKind, number uint64) store.AuthoredArtifact {
 	return store.AuthoredArtifact{
 		Provider:        store.ForgeProvider(rf.provider),
 		Host:            rf.host,
@@ -375,41 +357,47 @@ func (s *forgeService) authoredArtifact(rf resolvedForge, id callerIdentity, cal
 		AgentAccountID:  caller,
 		OwnerUserID:     id.ownerID,
 		SessionID:       sessionID,
-		ClientRequestID: clientRequestID,
 		CreatedAtUnixMS: s.now().UnixMilli(),
 	}
 }
 
-// createIssue is a create arm: resolve target, F3 dedup (a hit returns the
-// recorded coordinate with ZERO provider calls), then on a miss stamp → author
-// client write → flatten → DL-055 row+memo → result.
+// createIssue is a create arm: resolve target, record the write intent (a
+// replay returns the earlier object with no create), then stamp, create on the
+// author client, and complete the intent with the ownership row.
 func (s *forgeService) createIssue(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.CreateIssueRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
-	if hit, ok, fe := s.dedup(ctx, caller, call.GetClientRequestId()); fe != nil {
+	if fe := requireWriteKey(call); fe != nil {
 		return forgeErrorResult(fe)
-	} else if ok {
-		return coordinateResult(hit)
 	}
 	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
 		return forgeErrorResult(fe)
 	}
-
 	id, fe := s.resolveIdentity(ctx, caller, sessionID)
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
-	body, err := forge.StampOwner(req.GetBody(), id.author, rf.bodyLimit)
-	if err != nil {
-		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "create_issue", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit}))
+	intent, prior, fe := s.beginWrite(ctx, call.GetClientRequestId(), writeTarget{
+		rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), kind: forge.WriteKindIssue,
+	})
+	if fe != nil {
+		return forgeErrorResult(fe)
 	}
-	iss, err := rf.author.CreateIssue(ctx, req.GetRepo(), forge.CreateIssue{Title: req.GetTitle(), Body: body, Labels: req.GetLabels()})
-	if err != nil {
-		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "create_issue"}))
+	if prior != nil {
+		return replayResult(intent, prior)
 	}
-	if fe := s.record(ctx, rf, id, caller, sessionID, call.GetClientRequestId(), req.GetRepo(), store.ForgeArtifactKindIssue, iss.Number); fe != nil {
+	body, err := writeBody(rf, id.author, req.GetBody(), intent.ID, true)
+	if err != nil {
+		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.author.Name(), op: "create_issue", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit})
+	}
+	iss, err := rf.author.CreateIssue(ctx, req.GetRepo(), forge.CreateIssue{Title: req.GetTitle(), Body: body, ID: intent.ID, Labels: req.GetLabels()})
+	if err != nil {
+		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.author.Name(), op: "create_issue"})
+	}
+	a := s.authoredArtifact(rf, id, caller, sessionID, req.GetRepo(), store.ForgeArtifactKindIssue, iss.Number)
+	if fe := s.completeWrite(ctx, intent.ID, &a, ""); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	return &compassv1internal.ForgeCallResult{
@@ -417,17 +405,15 @@ func (s *forgeService) createIssue(ctx context.Context, caller store.AccountID, 
 	}
 }
 
-// createPullRequest is the PR-create twin of createIssue (author client;
-// F3-deduped; DL-055 row on success).
+// createPullRequest is the PR-create twin of createIssue (author client; one
+// write intent; ownership row, PR row, and link on success).
 func (s *forgeService) createPullRequest(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.CreatePullRequestRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
-	if hit, ok, fe := s.dedup(ctx, caller, call.GetClientRequestId()); fe != nil {
+	if fe := requireWriteKey(call); fe != nil {
 		return forgeErrorResult(fe)
-	} else if ok {
-		return coordinateResult(hit)
 	}
 	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
 		return forgeErrorResult(fe)
@@ -436,14 +422,23 @@ func (s *forgeService) createPullRequest(ctx context.Context, caller store.Accou
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
-
 	id, fe := s.resolveIdentity(ctx, caller, sessionID)
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
-	body, err := forge.StampOwner(req.GetBody(), id.author, rf.bodyLimit)
+	intent, prior, fe := s.beginWrite(ctx, call.GetClientRequestId(), writeTarget{
+		rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), kind: forge.WriteKindPullRequest, headRef: req.GetHeadRef(),
+	})
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if prior != nil {
+		return replayResult(intent, prior)
+	}
+	// A PR is recovered by its head, so its body carries no write marker.
+	body, err := writeBody(rf, id.author, req.GetBody(), intent.ID, false)
 	if err != nil {
-		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "create_pull_request", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit}))
+		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.author.Name(), op: "create_pull_request", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit})
 	}
 	pr, err := rf.author.CreatePullRequest(ctx, req.GetRepo(), forge.CreatePR{
 		Title:   req.GetTitle(),
@@ -453,10 +448,14 @@ func (s *forgeService) createPullRequest(ctx context.Context, caller store.Accou
 		Draft:   req.GetDraft(),
 	})
 	if err != nil {
-		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "create_pull_request"}))
+		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.author.Name(), op: "create_pull_request"})
 	}
 	wire := translatePR(pr, rf, req.GetRepo())
-	if fe := s.recordPullRequest(ctx, rf, id, caller, sessionID, call.GetClientRequestId(), req.GetRepo(), pr, wire, link); fe != nil {
+	a := s.authoredArtifact(rf, id, caller, sessionID, req.GetRepo(), store.ForgeArtifactKindPullRequest, pr.Number)
+	if fe := s.recordPullRequest(ctx, a, pr, wire, link); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := s.completeWrite(ctx, intent.ID, &a, ""); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	return &compassv1internal.ForgeCallResult{
@@ -495,17 +494,16 @@ func (s *forgeService) resolveIssueLink(rf resolvedForge, prRepo string, in *com
 // recordPullRequest writes the DL-055 row, the PR row and the explicit link in
 // one transaction, then republishes the linked issue so the PR shows at once.
 // The PR row's forge_updated_at is the epoch, so the next hydrate always wins.
-func (s *forgeService) recordPullRequest(ctx context.Context, rf resolvedForge, id callerIdentity, caller store.AccountID, sessionID, clientRequestID, repo string, raw forge.PullRequest, wire *compassv1.PullRequest, link *store.ForgeCoord) *compassv1internal.ForgeCallError {
+func (s *forgeService) recordPullRequest(ctx context.Context, a store.AuthoredArtifact, raw forge.PullRequest, wire *compassv1.PullRequest, link *store.ForgeCoord) *compassv1internal.ForgeCallError {
 	body, err := protojson.Marshal(wire)
 	if err != nil {
 		return forgeErr(connect.CodeInternal, "forge: encode pull request")
 	}
-	coord := store.ForgeCoord{Provider: store.ForgeProvider(rf.provider), Host: rf.host, Repo: repo, Number: raw.Number}
+	coord := store.ForgeCoord{Provider: a.Provider, Host: a.Host, Repo: a.Repo, Number: raw.Number}
 	row := store.PullRequestRow{Coord: coord, State: raw.State, CreatedAt: raw.CreatedAt, UpdatedAt: time.Unix(0, 0).UTC(), PR: body}
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = s.now()
 	}
-	a := s.authoredArtifact(rf, id, caller, sessionID, clientRequestID, repo, store.ForgeArtifactKindPullRequest, raw.Number)
 	if err := s.store.CreatePullRequestWithLink(ctx, a, row, link); err != nil {
 		return storeForgeError(err)
 	}
@@ -518,68 +516,89 @@ func (s *forgeService) recordPullRequest(ctx context.Context, rf resolvedForge, 
 	return nil
 }
 
-// commentOnIssue stamps the comment body (author client) and returns the write
-// ack. A comment mints no artifact coordinate, so it is neither F3-deduped nor
-// DL-055-recorded (the store index has no comment kind).
-func (s *forgeService) commentOnIssue(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.CommentOnIssueRequest) *compassv1internal.ForgeCallResult { //nolint:dupl // deliberate parallel of commentOnPullRequest: two distinct proto arms (issue vs PR comment) with distinct result variants (IssueComment vs PrComment); the shared prefix resolves rf in-body, so a closure-extracted helper reads worse than the explicit parallel.
-	rf, fe := s.resolveTarget(call, req.GetRepo())
-	if fe != nil {
-		return forgeErrorResult(fe)
-	}
-	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
-		return forgeErrorResult(fe)
-	}
-	id, fe := s.resolveIdentity(ctx, caller, sessionID)
-	if fe != nil {
-		return forgeErrorResult(fe)
-	}
-	body, err := forge.StampOwner(req.GetBody(), id.author, rf.bodyLimit)
-	if err != nil {
-		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "comment_on_issue", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit}))
-	}
-	cm, err := rf.author.CommentOnIssue(ctx, req.GetRepo(), req.GetIssueNumber(), body, "")
-	if err != nil {
-		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "comment_on_issue"}))
-	}
-	return &compassv1internal.ForgeCallResult{
-		Result: &compassv1internal.ForgeCallResult_IssueComment{IssueComment: &compassv1internal.CommentRef{Url: cm.URL, CommentId: cm.ID}},
-	}
+// commentOnIssue writes an issue comment under a write intent (author client).
+func (s *forgeService) commentOnIssue(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.CommentOnIssueRequest) *compassv1internal.ForgeCallResult {
+	return s.writeComment(ctx, caller, sessionID, call, req.GetRepo(), req.GetIssueNumber(), "comment_on_issue", req.GetBody(),
+		func(p forge.Provider, body, clientID string) (forge.Comment, error) {
+			return p.CommentOnIssue(ctx, req.GetRepo(), req.GetIssueNumber(), body, clientID)
+		},
+		func(ref *compassv1internal.CommentRef) *compassv1internal.ForgeCallResult {
+			return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_IssueComment{IssueComment: ref}}
+		})
 }
 
 // commentOnPullRequest is the PR-conversation-comment twin of commentOnIssue.
-func (s *forgeService) commentOnPullRequest(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.CommentOnPullRequestRequest) *compassv1internal.ForgeCallResult { //nolint:dupl // deliberate parallel of commentOnIssue (see its note): distinct proto arm + result variant, explicit parallel over a closure helper.
-	rf, fe := s.resolveTarget(call, req.GetRepo())
+func (s *forgeService) commentOnPullRequest(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.CommentOnPullRequestRequest) *compassv1internal.ForgeCallResult {
+	return s.writeComment(ctx, caller, sessionID, call, req.GetRepo(), req.GetPrNumber(), "comment_on_pull_request", req.GetBody(),
+		func(p forge.Provider, body, clientID string) (forge.Comment, error) {
+			return p.CommentOnPullRequest(ctx, req.GetRepo(), req.GetPrNumber(), body, clientID)
+		},
+		func(ref *compassv1internal.CommentRef) *compassv1internal.ForgeCallResult {
+			return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_PrComment{PrComment: ref}}
+		})
+}
+
+// writeComment runs one comment create under a write intent. The intent id is
+// the Linear comment id and the GitHub body marker, so recovery finds either.
+func (s *forgeService) writeComment(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, repo string, parent uint64, op, rawBody string,
+	create func(p forge.Provider, body, clientID string) (forge.Comment, error),
+	wrap func(*compassv1internal.CommentRef) *compassv1internal.ForgeCallResult,
+) *compassv1internal.ForgeCallResult {
+	rf, fe := s.resolveTarget(call, repo)
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
-	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
+	if fe := requireWriteKey(call); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := s.requireForgeScope(ctx, caller, rf, repo); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	id, fe := s.resolveIdentity(ctx, caller, sessionID)
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
-	body, err := forge.StampOwner(req.GetBody(), id.author, rf.bodyLimit)
+	intent, prior, fe := s.beginWrite(ctx, call.GetClientRequestId(), writeTarget{
+		rf: rf, id: id, caller: caller, session: sessionID, repo: repo, kind: forge.WriteKindComment, parent: parent,
+	})
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if prior != nil {
+		if intent.Kind != forge.WriteKindComment {
+			return replayResult(intent, prior)
+		}
+		return wrap(&compassv1internal.CommentRef{Url: prior.URL, CommentId: refID(prior)})
+	}
+	body, err := writeBody(rf, id.author, rawBody, intent.ID, true)
 	if err != nil {
-		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "comment_on_pull_request", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit}))
+		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.author.Name(), op: op, bodyLen: len(rawBody), bodyLimit: rf.bodyLimit})
 	}
-	cm, err := rf.author.CommentOnPullRequest(ctx, req.GetRepo(), req.GetPrNumber(), body, "")
+	cm, err := create(rf.author, body, intent.ID)
 	if err != nil {
-		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "comment_on_pull_request"}))
+		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.author.Name(), op: op})
 	}
-	return &compassv1internal.ForgeCallResult{
-		Result: &compassv1internal.ForgeCallResult_PrComment{PrComment: &compassv1internal.CommentRef{Url: cm.URL, CommentId: cm.ID}},
+	key := cm.Key
+	if key == "" {
+		key = strconv.FormatUint(cm.ID, 10)
 	}
+	if fe := s.completeWrite(ctx, intent.ID, nil, key); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	return wrap(&compassv1internal.CommentRef{Url: cm.URL, CommentId: cm.ID})
 }
 
-// submitReview stamps the top-level body and dispatches as the reviewer.
-// Inline bodies are stripped, not stamped, because ingestion parses owner
-// headers; reviews create no artifact coordinate to record or deduplicate.
+// submitReview stamps the top-level body and dispatches as the reviewer under
+// a write intent. Inline bodies are stripped, not stamped, because ingestion
+// parses owner headers.
 func (s *forgeService) submitReview(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.SubmitReviewRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
+	if fe := requireWriteKey(call); fe != nil {
+		return forgeErrorResult(fe)
+	}
 	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
 		return forgeErrorResult(fe)
 	}
@@ -587,16 +606,25 @@ func (s *forgeService) submitReview(ctx context.Context, caller store.AccountID,
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
-	body, err := forge.StampOwner(req.GetBody(), id.author, rf.bodyLimit)
+	intent, prior, fe := s.beginWrite(ctx, call.GetClientRequestId(), writeTarget{
+		rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), kind: forge.WriteKindReview, parent: req.GetPrNumber(),
+	})
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if prior != nil {
+		return replayResult(intent, prior)
+	}
+	body, err := writeBody(rf, id.author, req.GetBody(), intent.ID, true)
 	if err != nil {
-		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.reviewer.Name(), op: "submit_review", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit}))
+		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.reviewer.Name(), op: "submit_review", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit})
 	}
 
 	comments := make([]forge.ReviewCommentInput, 0, len(req.GetComments()))
 	for _, c := range req.GetComments() {
 		// STRIP-not-stamp (A6): discard the parsed display claim, keep the clean
 		// body. StripOwner removes every owner block regardless of forge/mangle.
-		clean, _, _ := forge.StripOwner(c.GetBody())
+		clean, _, _ := forge.StripOwner(forge.StripWriteMarkers(c.GetBody()))
 		comments = append(comments, forge.ReviewCommentInput{
 			Path: c.GetPath(),
 			Line: c.GetLine(),
@@ -611,7 +639,10 @@ func (s *forgeService) submitReview(ctx context.Context, caller store.AccountID,
 		Comments: comments,
 	})
 	if err != nil {
-		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.reviewer.Name(), op: "submit_review"}))
+		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.reviewer.Name(), op: "submit_review"})
+	}
+	if fe := s.completeWrite(ctx, intent.ID, nil, strconv.FormatUint(sr.ID, 10)); fe != nil {
+		return forgeErrorResult(fe)
 	}
 	return &compassv1internal.ForgeCallResult{
 		Result: &compassv1internal.ForgeCallResult_Review{Review: &compassv1internal.ReviewRef{Url: sr.URL, ReviewId: sr.ID, Verdict: sr.Verdict}},

@@ -978,6 +978,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if forgeMirrorService != nil {
 		forgeMirrorService.SetMirrorLifetime(gctx)
 		defer forgeMirrorService.StopMirrorLifetime()
+		g.Go(func() error { return forgeMirrorService.runWriteSweep(gctx) })
 	}
 	startServeDoors(g, gctx, doors, udsListener, devListener, netListener, mergeQueueRunner)
 	// The forge webhook-ingestion lanes (RIG-2883 board + RIG-2732 T7 notify):
