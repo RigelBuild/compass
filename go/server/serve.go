@@ -1413,8 +1413,8 @@ type forgeReadWiring struct {
 	linearTokens  *linearagent.TokenSource
 }
 
-// buildForgeReadWiring assembles the forge read-side credentials in one call.
-// The GitHub App lanes and Linear OAuth source are independently optional.
+// buildForgeReadWiring assembles the GitHub App read lanes and the Linear token source.
+// No App turns both lanes off with one warning; a configured App with a bad secret fails startup.
 func buildForgeReadWiring(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -1442,9 +1442,8 @@ func buildForgeReadWiring(
 	}, nil
 }
 
-// buildBoardWebhookWiring builds both GitHub App lanes over one shared client
-// and owner router. It returns the webhook sink, secret resolver, and router used
-// by the write path. The default installation keeps the primary client's rate gate.
+// buildBoardWebhookWiring assembles both GitHub App lanes over one shared client and owner router.
+// It fans webhooks to both lanes and returns setup faults so Serve can close listeners.
 func buildBoardWebhookWiring(
 	ctx context.Context,
 	cfg ServeConfig,
