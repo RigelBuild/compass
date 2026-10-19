@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ForgeBroker } from "./forge";
@@ -42,6 +42,10 @@ type JjRow = {
 	mine: boolean;
 	parents: JjParent[];
 };
+
+type JjWorkspace = { name: string; root: string };
+
+const WORKSPACE_TEMPLATE = 'self.name() ++ "\\t" ++ self.root() ++ "\\n"';
 
 function isStringArray(value: unknown): value is string[] {
 	return (
@@ -132,6 +136,74 @@ function parseRow(line: string, toolName: string): JjRow {
 	}
 }
 
+function parseWorkspaces(output: string, toolName: string): JjWorkspace[] {
+	return output
+		.split("\n")
+		.filter((line) => line.length > 0)
+		.map((line) => {
+			const separator = line.indexOf("\t");
+			if (separator < 1 || separator === line.length - 1)
+				throw new Error(`${toolName}: jj returned an invalid workspace list`);
+			return {
+				name: line.slice(0, separator),
+				root: line.slice(separator + 1),
+			};
+		});
+}
+
+async function resolveWorkspace(
+	deps: VcsDeps,
+	workspace: string | undefined,
+	toolName: string,
+): Promise<string> {
+	const selected = await findWorkspace(deps, workspace, toolName);
+	return selected ? resolve(selected.root) : deps.cwd;
+}
+
+async function findWorkspace(
+	deps: VcsDeps,
+	workspace: string | undefined,
+	toolName: string,
+): Promise<JjWorkspace | undefined> {
+	if (!workspace) return undefined;
+	const output = await runJj(deps, toolName, [
+		...JJ_FLAGS,
+		// A stale caller checkout must still list workspaces, so update-stale can run.
+		"--ignore-working-copy",
+		"workspace",
+		"list",
+		"-T",
+		WORKSPACE_TEMPLATE,
+	]);
+	const workspaces = parseWorkspaces(output.stdout, toolName);
+	const requestedRoot = isAbsolute(workspace)
+		? resolve(workspace)
+		: workspace.split(/[\\/]+/).includes("..")
+			? ""
+			: resolve(deps.cwd, workspace);
+	const match = workspaces.find(
+		(candidate) =>
+			candidate.name === workspace ||
+			(requestedRoot.length > 0 && resolve(candidate.root) === requestedRoot),
+	);
+	if (!match)
+		throw new Error(
+			`${toolName}: workspace ${workspace} is not listed for this repository`,
+		);
+	return match;
+}
+
+function validateBookmark(
+	bookmark: string | undefined,
+	toolName: string,
+): void {
+	if (
+		bookmark !== undefined &&
+		!/^[A-Za-z0-9][A-Za-z0-9._/@-]*$/.test(bookmark)
+	)
+		throw new Error(`${toolName}: expected a plain bookmark name`);
+}
+
 function parseParent(parent: string): JjParent {
 	const [commit_id = "", trunk = "false", remote = ""] = parent.split(":");
 	return {
@@ -200,10 +272,6 @@ async function runJj(
 	return result;
 }
 
-export function ownCommits(tip: string): string {
-	return `::${tip} ~ ::(trunk() | untracked_remote_bookmarks())`;
-}
-
 async function resolveTip(
 	deps: VcsDeps,
 	bookmark: string | undefined,
@@ -212,21 +280,20 @@ async function resolveTip(
 ): Promise<string> {
 	if (bookmark) return bookmark;
 	const result = await runJj(deps, toolName, argsForLog("@ | @-"), cwd);
-	return resolveTipFromRows(parseRows(result.stdout, toolName), toolName);
-}
-
-function resolveTipFromRows(rows: JjRow[], toolName: string): string {
-	const localBookmarks = new Set(rows.flatMap((row) => row.localBookmarks));
+	const localBookmarks = new Set(
+		parseRows(result.stdout, toolName).flatMap((row) => row.localBookmarks),
+	);
 	if (localBookmarks.size !== 1)
 		throw new Error(
 			`${toolName}: expected exactly one bookmark across @ and @-`,
 		);
-	const tip = localBookmarks.values().next().value;
-	if (!tip)
-		throw new Error(
-			`${toolName}: expected exactly one bookmark across @ and @-`,
-		);
-	return tip;
+	return localBookmarks.values().next().value ?? "";
+}
+
+export function ownCommits(tip: string): string {
+	return tip === "@"
+		? "::@ ~ ::(trunk() | untracked_remote_bookmarks())"
+		: `::"${tip.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}" ~ ::(trunk() | untracked_remote_bookmarks())`;
 }
 
 function parseHeadings(template: string | undefined): string[] {
@@ -296,9 +363,8 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 			"Show the commits, bookmarks, subjects, conflicts, and empty commits in your stack.",
 		parameters: vcsStatusParameters,
 		execute: async (_toolCallId, params) => {
-			const cwd = params.workspace
-				? resolve(deps.cwd, params.workspace)
-				: deps.cwd;
+			validateBookmark(params.bookmark, "vcs_status");
+			const cwd = await resolveWorkspace(deps, params.workspace, "vcs_status");
 			const tip = await resolveTip(deps, params.bookmark, "vcs_status", cwd);
 			const result = await runJj(
 				deps,
@@ -326,9 +392,8 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 			"Describe the current working-copy commit, set its bookmark, then start the next commit on that bookmark. The first commit must include every pull request template heading.",
 		parameters: vcsCommitParameters,
 		execute: async (_toolCallId, params) => {
-			const cwd = params.workspace
-				? resolve(deps.cwd, params.workspace)
-				: deps.cwd;
+			validateBookmark(params.bookmark, "vcs_commit");
+			const cwd = await resolveWorkspace(deps, params.workspace, "vcs_commit");
 			const current = await runJj(
 				deps,
 				"vcs_commit",
@@ -340,12 +405,34 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 				row.localBookmarks.includes(params.bookmark),
 			);
 			const sections = params.sections;
-			const headings =
-				firstCommit || sections !== undefined
-					? parseHeadings(await readTemplate(deps, cwd))
-					: [];
-			validateSections(firstCommit, sections, headings);
-			const description = params.text ?? renderSections(sections, headings);
+			let description: string;
+			if (firstCommit) {
+				if (params.text !== undefined)
+					throw new Error(
+						"vcs_commit: first commit requires sections; text cannot replace sections",
+					);
+				if (sections === undefined)
+					throw new Error(
+						"vcs_commit: first commit requires template sections",
+					);
+				const source = await readTemplate(deps, cwd);
+				const headings = parseHeadings(source);
+				validateSections(true, sections, headings);
+				const rendered = renderSections(sections, headings);
+				const authoredWords = Object.values(sections)
+					.join(" ")
+					.trim()
+					.split(/\s+/)
+					.filter((word) => word.length > 0).length;
+				if (authoredWords < 40 || authoredWords > 300)
+					throw new Error(
+						`vcs_commit: authored sections must contain 40 to 300 words; found ${authoredWords}`,
+					);
+				description = rendered;
+			} else {
+				validateSections(false, sections, []);
+				description = params.text ?? renderSections(sections, []);
+			}
 			await runJj(
 				deps,
 				"vcs_commit",
@@ -383,24 +470,30 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 		parameters: vcsWorkspaceParameters,
 		execute: async (_toolCallId, params) => {
 			let args: string[];
-			switch (params.action) {
-				case "add":
-					args = [
-						...JJ_FLAGS,
-						"workspace",
-						"add",
-						resolve(deps.cwd, params.name),
-						...(params.base ? ["-r", params.base] : []),
-					];
-					break;
-				case "forget":
-					args = [...JJ_FLAGS, "workspace", "forget", params.name];
-					break;
-				case "update-stale":
-					args = [...JJ_FLAGS, "workspace", "update-stale"];
-					break;
+			let commandCwd = deps.cwd;
+			if (params.action === "add") {
+				args = [
+					...JJ_FLAGS,
+					"workspace",
+					"add",
+					resolve(deps.cwd, params.name),
+					...(params.base ? ["-r", params.base] : []),
+				];
+			} else {
+				const selected = await findWorkspace(
+					deps,
+					params.name,
+					"vcs_workspace",
+				);
+				if (!selected)
+					throw new Error("vcs_workspace: workspace name is required");
+				commandCwd = resolve(selected.root);
+				args =
+					params.action === "forget"
+						? [...JJ_FLAGS, "workspace", "forget", selected.name]
+						: [...JJ_FLAGS, "workspace", "update-stale"];
 			}
-			const result = await runJj(deps, "vcs_workspace", args);
+			const result = await runJj(deps, "vcs_workspace", args, commandCwd);
 			return {
 				content: [
 					{
@@ -422,6 +515,7 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 			"Fetch origin, then rebase your own commits onto the stack base. Reports conflicts without pushing.",
 		parameters: vcsSyncParameters,
 		execute: async (_toolCallId, params) => {
+			validateBookmark(params.bookmark, "vcs_sync");
 			await runJj(deps, "vcs_sync", [
 				...JJ_FLAGS,
 				"git",
@@ -460,10 +554,13 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 				],
 				deps.cwd,
 			);
-			const details = `${result.stderr}\n${result.stdout}`;
-			if (/conflict/i.test(details))
-				throw new Error(`vcs_sync: rebase conflict: ${details.trim()}`);
 			failIfJjFailed("vcs_sync", result);
+			const rebased = await runJj(deps, "vcs_sync", argsForLog(own));
+			const conflicts = parseRows(rebased.stdout, "vcs_sync")
+				.filter((row) => row.conflict)
+				.map((row) => row.commit_id ?? row.change_id ?? "unknown commit");
+			if (conflicts.length > 0)
+				throw new Error(`vcs_sync: rebase conflicts: ${conflicts.join(", ")}`);
 			return {
 				content: [{ type: "text", text: `Synced ${tip} onto ${rebaseBase}.` }],
 			};
