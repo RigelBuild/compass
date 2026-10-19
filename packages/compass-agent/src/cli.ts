@@ -40,9 +40,16 @@ import {
 	isTelemetryExportEnabled,
 } from "@oh-my-pi/pi-coding-agent/telemetry-export";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { getBlobsDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
+import {
+	attachSubagentBoardSync,
+	BoardFreshness,
+	createAgentBoardTools,
+	seedBoardFreshness,
+} from "./agent-board";
 import { type BatchWindow, DEFAULT_BATCH_WINDOW } from "./batch-window";
 import { BoardBroker, createBoardTools } from "./board";
 import { CommsBroker, createCommsTools } from "./comms";
@@ -1012,6 +1019,14 @@ export async function main(
 	// turn trigger (RIG-2894) via TraceBridge to stamp trigger_traceparent (off ⇒ "").
 	const commsBroker = new CommsBroker(transport, traceBridge);
 	const turnSequence = new TurnSequence(manager);
+	const boardFreshness = new BoardFreshness();
+	const subagentBus = new EventBus();
+	const detachBoardSync = attachSubagentBoardSync(
+		subagentBus,
+		commsBroker,
+		turnSequence,
+		boardFreshness,
+	);
 	const lifecycleBroker = new LifecycleBroker(transport);
 	const forgeBroker = new ForgeBroker(transport);
 	const boardBroker = new BoardBroker(transport);
@@ -1021,6 +1036,7 @@ export async function main(
 		...createLifecycleTools(lifecycleBroker),
 		...createForgeTools(forgeBroker),
 		...createBoardTools(boardBroker),
+		...createAgentBoardTools(commsBroker, turnSequence, boardFreshness),
 	].map(nativeAsCustomTool);
 
 	// Keep the SDK's session model restoration and fallback logic authoritative.
@@ -1030,6 +1046,7 @@ export async function main(
 		cwd,
 		modelPattern,
 		...(continued ? configuredThinkingLevel(fleetSettings) : {}),
+		subagentEventBus: subagentBus,
 		// The resumed history is already loaded through the tee-backed manager.
 		sessionManager: manager,
 		// The Runner-mounted agent-config (design §CD-3): each field passed
@@ -1167,6 +1184,12 @@ export async function main(
 	// the send spine, so without this barrier the process can exit uncommitted. The
 	// transport holds a 15-min idle HTTP/2 session; closing first abandons those frames.
 	try {
+		// A failed seed leaves freshness unknown, so the first tool call nudges once.
+		await seedBoardFreshness(commsBroker, turnSequence, boardFreshness).catch(
+			(error: unknown) => {
+				console.error("[compass-agent] failed to seed board freshness:", error);
+			},
+		);
 		// `traceBridge` (undefined when telemetry is off) flows in as the narrow
 		// `TurnTracer` facet — off ⇒ every agent-side trace call no-ops.
 		agent = new CompassAgent({
@@ -1176,9 +1199,11 @@ export async function main(
 			tracer: traceBridge,
 			turnSequence,
 			batchWindow,
+			boardFreshness,
 		});
 		await agent.run();
 	} finally {
+		detachBoardSync();
 		// The load-bearing drain→close chain is UNTOUCHED (storage.drain → sink.drain
 		// → transport.close). MCP disconnect wraps it as an OWN outer finally so it
 		// runs unconditionally AFTER the frame barrier: MCP is independent of the send

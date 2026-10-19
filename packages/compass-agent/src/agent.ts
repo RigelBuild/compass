@@ -4,7 +4,11 @@
 // replay barrier. Drives the inner `session.agent` to keep the control contract.
 
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
+import type {
+	AgentSession,
+	AgentSessionEvent,
+} from "@oh-my-pi/pi-coding-agent";
+import type { BoardFreshness } from "./agent-board";
 import {
 	type BatchTimer,
 	type BatchWindow,
@@ -53,6 +57,8 @@ export interface CompassAgentOptions {
 	// The idle batching window. Absent means an idle deliver or forge item starts
 	// a turn at once.
 	readonly batchWindow?: BatchWindow;
+	readonly boardFreshness?: BoardFreshness;
+	readonly now?: () => number;
 }
 
 // An idle steer that drains the queued items into its own prompt, rendered last.
@@ -75,6 +81,7 @@ export class CompassAgent {
 	// the live, caller-owned `state.tools` array by reference, so an in-place
 	// mutation would otherwise revoke natives out from under us.
 	readonly #natives: AgentTool[];
+	readonly #turnSequence: TurnSequence | undefined;
 	// Runner holds live prompt/steer until the agent acks ReplayComplete, but the
 	// agent also guards locally: frames before replay settles apply as context, and
 	// live prompt/steer are refused until `#replayComplete` — belt-and-suspenders.
@@ -128,6 +135,12 @@ export class CompassAgent {
 	#batchFirstAt: number | undefined;
 	// The armed timer's cancel thunk. Set exactly while a window is open.
 	#batchCancel: (() => void) | undefined;
+	readonly #boardFreshness: BoardFreshness | undefined;
+	readonly #now: () => number;
+	#turnHadTool = false;
+	#turnNudgeSent = false;
+	#repromptTurn = false;
+	#boardReprompt = false;
 
 	constructor(opts: CompassAgentOptions) {
 		this.#session = opts.session;
@@ -139,6 +152,9 @@ export class CompassAgent {
 		this.#tracer = opts.tracer;
 		this.#batchWindow = opts.batchWindow;
 		this.#batchTimer = opts.batchWindow?.timer ?? realBatchTimer;
+		this.#boardFreshness = opts.boardFreshness;
+		this.#turnSequence = opts.turnSequence;
+		this.#now = opts.now ?? Date.now;
 		this.#mapper = new EventMapper(Date.now, opts.turnSequence);
 		this.#onUnmapped =
 			opts.onUnmapped ??
@@ -160,6 +176,7 @@ export class CompassAgent {
 			// Turn-tracking (RIG-1310 §8): an ADDITIONAL read of the same event,
 			// beside the mapper fan-out. A turn-start edge marks the session active;
 			// `agent_end` settles it and flushes coalesced delivers into one prompt.
+			this.#trackBoardEvent(event);
 			this.#trackTurn(event.type);
 			for (const out of this.#mapper.map(event)) {
 				if (out.kind === "unmapped") {
@@ -480,6 +497,49 @@ export class CompassAgent {
 		}
 	}
 
+	#trackBoardEvent(event: AgentSessionEvent): void {
+		const freshness = this.#boardFreshness;
+		const sequence = this.#turnSequence;
+		if (freshness === undefined || sequence === undefined) return;
+		if (event.type === "agent_start") {
+			this.#turnHadTool = false;
+			this.#turnNudgeSent = false;
+			return;
+		}
+		if (event.type === "tool_execution_start") {
+			this.#turnHadTool = true;
+			return;
+		}
+		if (event.type === "tool_execution_end") {
+			const age = freshness.ageMs(this.#now());
+			if (!this.#turnNudgeSent && (age === undefined || age > 20 * 60_000)) {
+				this.#turnNudgeSent = true;
+				this.#session.agent.steer({
+					role: "user",
+					content:
+						"Your status board is stale. Update it with compass_update_board before continuing.",
+					steering: true,
+					attribution: "user",
+					timestamp: 0,
+				});
+			}
+			return;
+		}
+		if (event.type === "agent_end") {
+			// Read at the end: the mapper's own listener starts the sequence, in either order.
+			if (
+				this.#turnHadTool &&
+				!this.#repromptTurn &&
+				!freshness.wroteThisTurn(sequence.current())
+			) {
+				this.#boardReprompt = true;
+			}
+			this.#turnHadTool = false;
+			this.#turnNudgeSent = false;
+			this.#repromptTurn = false;
+		}
+	}
+
 	// Track a session turn edge (RIG-1310 §8, RIG-2732 W3). A turn-start edge marks
 	// the session active; `agent_end` settles it and flushes the coalesced deliver AND
 	// forge-notification queues. See the `#turnActive` field comment for why the flush
@@ -506,14 +566,25 @@ export class CompassAgent {
 	// Ack means injected, not turn-finished; a mid-turn crash keeps the receipt.
 	// On settled rejection, deliveries remain eligible for redelivery; forge re-enqueue stays with Runner.
 	// An idle tail drains last and adds one message to the trace topology.
+	// A board re-prompt runs alone; the queues wait for its `agent_end`. It is set and
+	// consumed on one `agent_end` edge, so an idle steer tail never meets it.
 	#flushTurnEnd(tail?: SteerTail): void {
 		// A started turn's `agent_end` owns whatever queues next, so the window closes.
 		this.#cancelBatch();
-		const delivers = this.#deliverQueue;
-		const forges = this.#forgeQueue;
-		this.#deliverQueue = [];
-		this.#forgeQueue = [];
-		if (delivers.length === 0 && forges.length === 0 && tail === undefined)
+		const boardReprompt = this.#boardReprompt;
+		this.#boardReprompt = false;
+		const delivers = boardReprompt ? [] : this.#deliverQueue;
+		const forges = boardReprompt ? [] : this.#forgeQueue;
+		if (!boardReprompt) {
+			this.#deliverQueue = [];
+			this.#forgeQueue = [];
+		}
+		if (
+			delivers.length === 0 &&
+			forges.length === 0 &&
+			tail === undefined &&
+			!boardReprompt
+		)
 			return;
 		const sections: string[] = [];
 		if (delivers.length > 0)
@@ -525,6 +596,10 @@ export class CompassAgent {
 				formatForgeNotifications(forges.map((e) => e.notification)),
 			);
 		if (tail !== undefined) sections.push(tail.content);
+		if (boardReprompt)
+			sections.push(
+				"Update your status board with compass_update_board. Do nothing else.",
+			);
 		const input = sections.join("\n\n");
 		// Every channel message feeding this turn, in prompt order, with its traceparent.
 		const fed = delivers.map((msg) => ({
@@ -553,6 +628,9 @@ export class CompassAgent {
 		} else {
 			this.#tracer?.clearTurnTrigger();
 		}
+		this.#turnHadTool = false;
+		this.#turnNudgeSent = false;
+		this.#repromptTurn = boardReprompt;
 		const startPrompt = (): Promise<void> => this.#session.agent.prompt(input);
 		const started =
 			this.#tracer !== undefined && parent !== undefined
@@ -565,6 +643,12 @@ export class CompassAgent {
 			if (acked) return;
 			rejected = true;
 			this.#turnActive = false;
+			if (boardReprompt) {
+				// A refused re-prompt must not strand the queued batch behind it.
+				this.#repromptTurn = false;
+				this.#flushTurnEnd();
+				return;
+			}
 			// Re-attach (RIG-2894): a refused prompt starts no turn, so clear any trigger
 			// the N=1 branch set above — else it leaks onto the next turn.
 			this.#tracer?.clearTurnTrigger();

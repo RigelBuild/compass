@@ -10,7 +10,9 @@ import {
 	type CreateAgentSessionOptions,
 	type CustomTool,
 	createAgentSession,
+	SessionManager,
 } from "@oh-my-pi/pi-coding-agent";
+import { BoardFreshness, createAgentBoardTools } from "./agent-board";
 import { BoardBroker, type BoardTransport, createBoardTools } from "./board";
 import { CommsBroker, type CommsTransport, createCommsTools } from "./comms";
 import type { CommsCallRequest, CommsCallResult } from "./compassv1";
@@ -27,6 +29,7 @@ import {
 	type LifecycleTransport,
 } from "./lifecycle";
 import { nativeAsCustomTool } from "./native-tools";
+import { TurnSequence } from "./turn-sequence";
 
 // This test reads tool NAMES + registration only — never invokes a tool — so
 // every transport method rejects: reaching one is a test bug, not a code path.
@@ -64,6 +67,11 @@ function compassNativeTools(): CustomTool[] {
 		...createLifecycleTools(new LifecycleBroker(lifecycleTransport)),
 		...createForgeTools(new ForgeBroker(forgeTransport)),
 		...createBoardTools(new BoardBroker(boardTransport)),
+		...createAgentBoardTools(
+			new CommsBroker(commsTransport),
+			new TurnSequence(SessionManager.inMemory()),
+			new BoardFreshness(),
+		),
 	].map(
 		(tool): CustomTool => ({
 			...nativeAsCustomTool(tool),

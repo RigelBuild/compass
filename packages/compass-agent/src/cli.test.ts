@@ -40,6 +40,7 @@ import {
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
+import { BoardFreshness, createAgentBoardTools } from "./agent-board";
 import { BoardBroker, createBoardTools } from "./board";
 import {
 	AGENT_SOCKET_PATH,
@@ -78,6 +79,7 @@ import { createLifecycleTools, LifecycleBroker } from "./lifecycle";
 import { createTeeSessionStorage } from "./session-tee";
 import type { RunnerTransport } from "./transport/index";
 import { createPublishSpine } from "./transport/publish-spine";
+import { TurnSequence } from "./turn-sequence";
 
 // These tests do real FS work and gate on events, not sleeps; under the parallel
 // pre-push gate that I/O outruns bun's implicit 5s default and flakes (the same
@@ -526,7 +528,20 @@ function fakeCarrier(
 			? real
 			: { ...real, drain: () => Promise.reject(hooks.drainError) };
 	return {
-		comms: () => Promise.reject(new Error("comms is not used by main")),
+		comms: async (req) =>
+			({
+				callId: req.callId,
+				result: {
+					case: "updateBoard" as const,
+					value: {
+						board: {
+							handle: "test",
+							writtenTurn: 0n,
+							writtenAtUnixMs: BigInt(Date.now()),
+						},
+					},
+				},
+			}) as never,
 		lifecycle: () => Promise.reject(new Error("lifecycle is not used by main")),
 		forge: () => Promise.reject(new Error("forge is not used by main")),
 		board: () => Promise.reject(new Error("board is not used by main")),
@@ -3046,6 +3061,11 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
 			...createForgeTools(new ForgeBroker(fakeTransport)),
 			...createBoardTools(new BoardBroker(fakeTransport)),
+			...createAgentBoardTools(
+				new CommsBroker(fakeTransport),
+				new TurnSequence(SessionManager.inMemory()),
+				new BoardFreshness(),
+			),
 		].map((t) => t.name);
 
 		const session = fakeSession();
@@ -3129,7 +3149,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// board natives are ALWAYS merged in (RIG-1741/RIG-2672/RIG-3191) — so
 		// customTools carries exactly those, and never a discovered MCP tool.
 		expect(toolNames(seen[0].customTools)).toContain("agents_spawn_peer");
-		expect(seen[0].customTools).toHaveLength(29);
+		expect(seen[0].customTools).toHaveLength(31);
 		expect(seen[0].enableMCP).toBe(false);
 	});
 
@@ -3162,7 +3182,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// (RIG-1741/RIG-2672/RIG-3191) — so customTools is exactly the comms/
 		// lifecycle/forge/board natives.
 		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
-		expect(seen[0].customTools).toHaveLength(29);
+		expect(seen[0].customTools).toHaveLength(31);
 	});
 
 	// ── RIG-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──

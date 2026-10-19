@@ -17,6 +17,7 @@ import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
 } from "@oh-my-pi/pi-coding-agent";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { context, propagation, type Span, trace } from "@opentelemetry/api";
 import {
 	InMemorySpanExporter,
@@ -25,10 +26,12 @@ import {
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import {
 	CompassAgent,
+	type CompassAgentOptions,
 	formatAskAnswerForPrompt,
 	formatDeliversForPrompt,
 	formatForgeNotifications,
 } from "./agent";
+import { BoardFreshness } from "./agent-board";
 import type { BatchTimer } from "./batch-window";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
@@ -65,6 +68,7 @@ import {
 	type TraceBridge,
 	type TurnTracer,
 } from "./trace-bridge";
+import { TurnSequence } from "./turn-sequence";
 
 // A recording fake for the SDK Agent — the control surface CompassAgent drives (reached
 // through session.agent). It records the calls the class makes so tests assert on observable
@@ -435,7 +439,13 @@ function answeredAsk(questions: AskQuestion[]): Ask {
 // loop drain it, `drive` pushes session turn edges through the recorded listener, `close` ends
 // the loop. Unlike runWith (a fixed script that runs to completion) this interleaves control
 // ops with turn edges — the deliver coalescing path needs both.
-function startControlAgent(natives: AgentTool[] = []) {
+function startControlAgent(
+	natives: AgentTool[] = [],
+	opts: Pick<
+		CompassAgentOptions,
+		"boardFreshness" | "now" | "turnSequence"
+	> = {},
+) {
 	const session = recordingSession(natives);
 	const frames: OutboundFrame[] = [];
 	const unmapped: UnmappedEvent[] = [];
@@ -468,6 +478,7 @@ function startControlAgent(natives: AgentTool[] = []) {
 			},
 		},
 		control,
+		...opts,
 		onUnmapped: (u) => unmapped.push(u),
 	});
 	const done = agent.run();
@@ -495,6 +506,144 @@ function startControlAgent(natives: AgentTool[] = []) {
 	};
 	return { agent, session, frames, unmapped, feed, drive, close };
 }
+
+const REPROMPT =
+	"Update your status board with compass_update_board. Do nothing else.";
+
+// A board-enabled agent plus a one-turn driver; the mapper's `agent_start` starts the sequence.
+function boardAgent(freshness: BoardFreshness, nowMs = 0) {
+	const turnSequence = new TurnSequence(SessionManager.inMemory());
+	const h = startControlAgent([], {
+		boardFreshness: freshness,
+		turnSequence,
+		now: () => nowMs,
+	});
+	const turn = (opts: { tool?: boolean; write?: boolean } = {}): void => {
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		const seq = turnSequence.current();
+		if (opts.tool === true) {
+			h.drive({
+				type: "tool_execution_start",
+				toolCallId: "t",
+				toolName: "read",
+				args: {},
+			} as AgentSessionEvent);
+			h.drive({
+				type: "tool_execution_end",
+				toolCallId: "t",
+				toolName: "read",
+				result: {},
+			} as AgentSessionEvent);
+		}
+		if (opts.write === true) freshness.noteWrite(seq, nowMs);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+	};
+	return { ...h, turn };
+}
+
+describe("CompassAgent board freshness", () => {
+	test("a working turn with no write starts one re-prompt, which starts none", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(0n, 0);
+		const h = boardAgent(freshness);
+		h.turn({ tool: true });
+		expect(h.session.agent.prompts).toEqual([REPROMPT]);
+		// The re-prompt turn itself runs a tool and writes nothing: still no second.
+		h.turn({ tool: true });
+		expect(h.session.agent.prompts).toEqual([REPROMPT]);
+		await h.close();
+	});
+
+	test("a turn that wrote, or ran no tool, starts no re-prompt", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(0n, 0);
+		const h = boardAgent(freshness);
+		h.turn({ tool: true, write: true });
+		h.turn();
+		expect(h.session.agent.prompts).toEqual([]);
+		await h.close();
+	});
+
+	test("an earlier turn's write does not count for this turn", async () => {
+		const freshness = new BoardFreshness();
+		const h = boardAgent(freshness);
+		h.turn({ write: true });
+		h.turn({ tool: true });
+		expect(h.session.agent.prompts).toEqual([REPROMPT]);
+		await h.close();
+	});
+
+	test("the re-prompt runs ahead of a queued batch, which flushes at its end", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(0n, 0);
+		const h = boardAgent(freshness);
+		await h.feed({ kind: "replayComplete" });
+		h.turn({ tool: true });
+		h.agent.deliver(deliverMsg("later", "queued reply"));
+		expect(h.session.agent.prompts).toEqual([REPROMPT]);
+		h.turn();
+		expect(h.session.agent.prompts).toHaveLength(2);
+		expect(h.session.agent.prompts[1]).toContain("queued reply");
+		await h.close();
+	});
+
+	test("a refused re-prompt still flushes the queued batch", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(0n, 0);
+		const h = boardAgent(freshness);
+		await h.feed({ kind: "replayComplete" });
+		const seq = h.session.agent;
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.drive({
+			type: "tool_execution_start",
+			toolCallId: "t",
+			toolName: "read",
+			args: {},
+		} as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("later", "queued reply"));
+		seq.promptRejectsNoModel = true;
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		seq.promptRejectsNoModel = false;
+		await tick();
+		expect(seq.prompts).toHaveLength(1);
+		expect(seq.prompts[0]).toContain("queued reply");
+		await h.close();
+	});
+
+	test("a fresh seed after restart sends no mid-turn reminder", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(4n, 60 * 60_000);
+		const h = boardAgent(freshness, 61 * 60_000);
+		h.turn({ tool: true, write: true });
+		expect(h.session.agent.steers).toEqual([]);
+		await h.close();
+	});
+
+	test("the mid-turn reminder fires once per turn past twenty minutes", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(0n, 0);
+		const h = boardAgent(freshness, 21 * 60_000);
+		const tool = (id: string): void =>
+			h.drive({
+				type: "tool_execution_end",
+				toolCallId: id,
+				toolName: "read",
+				result: {},
+			} as AgentSessionEvent);
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		tool("one");
+		tool("two");
+		expect(h.session.agent.steers).toHaveLength(1);
+		expect(steerContent(h.session.agent.steers[0])).toContain(
+			"compass_update_board",
+		);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		tool("three");
+		expect(h.session.agent.steers).toHaveLength(2);
+		await h.close();
+	});
+});
 
 describe("CompassAgent — config applies to the SDK independent of the barrier", () => {
 	test("config systemPrompt → setSystemPrompt, without touching tools", async () => {
