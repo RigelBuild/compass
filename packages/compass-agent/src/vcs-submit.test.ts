@@ -53,10 +53,12 @@ class Jj {
 		readonly own: Row[] = stack,
 		readonly above: Row[] = [],
 		readonly forks: Row[] = [],
+		readonly untracked = "",
 	) {}
 	async run(args: readonly string[]): Promise<JjResult> {
 		this.calls.push([...args]);
 		const a = args.slice(2);
+		if (a[0] === "bookmark" && a[1] === "list") return ok(this.untracked);
 		if (a[0] !== "log") return ok();
 		const revset = a[3] ?? "";
 		if (revset === "trunk()")
@@ -223,6 +225,45 @@ describe("vcs_submit", () => {
 			"refs/heads/b",
 			"^base",
 		]);
+	});
+
+	test("a second submit tracks the caller's own pushed bookmark before it reads the stack", async () => {
+		const authoredA = create(ForgeCallResultSchema, {
+			result: {
+				case: "stack",
+				value: create(StackResultSchema, {
+					entries: [
+						create(StackEntryResultSchema, {
+							headRef: "a",
+							authored: true,
+							pullRequest: create(PullRequestSchema, { number: 11 }),
+						}),
+					],
+				}),
+			},
+		});
+		const s = setup({
+			jj: new Jj(stack, [], [], "a\n"),
+			results: [authoredA, noPrs, submitted],
+		});
+		await exec(s.tool("vcs_submit"), { issues });
+		const track = s.jj.calls.findIndex(
+			(c) => c[2] === "bookmark" && c[3] === "track",
+		);
+		const firstLog = s.jj.calls.findIndex(
+			(c) => c[2] === "log" && c[5]?.startsWith("::"),
+		);
+		expect(s.jj.calls[track]?.slice(2)).toEqual([
+			"bookmark",
+			"track",
+			"exact:a",
+			"--remote",
+			"exact:origin",
+		]);
+		expect(track).toBeLessThan(firstLog);
+		const req = s.transport.requests[2];
+		if (req?.call.case !== "submitStack") throw new Error("arm");
+		expect(req.call.value.entries[0]?.baseRef).toBe("main");
 	});
 
 	test("the hook gets origin, the URL, and one stdin line per own bookmark", async () => {

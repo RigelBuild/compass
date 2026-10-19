@@ -12,7 +12,6 @@ import {
 	type StackEntryResult,
 	StackEntrySchema,
 	StackEntryStatus,
-	StackStatusRequestSchema,
 	SubmitStackRequestSchema,
 	toBinary,
 } from "./compassv1";
@@ -23,16 +22,18 @@ import {
 	composeSections,
 	JJ_FLAGS,
 	type JjRow,
+	originRemote,
 	ownCommits,
 	parseRows,
 	quoteRevset,
+	type Remote,
 	resolveTip,
 	runJj,
+	stackStatus,
 	syncOwn,
 	type VcsDeps,
 	validateBookmark,
 } from "./vcs";
-import type { CommandRunner } from "./vcs-runner";
 
 const HOOK_TIMEOUT_MS = 120_000;
 // The gateway refuses a message over 16 MiB; the margin covers framing and relay envelopes.
@@ -42,10 +43,6 @@ export const HOOK_TIMEOUT_NOTE =
 const NO_ISSUE_HINT =
 	"find an issue that fits with forge_list_issues, or create one with forge_create_issue when none does, then submit again";
 const ZERO_SHA = "0".repeat(40);
-
-export interface SubmitDeps extends VcsDeps {
-	git: CommandRunner;
-}
 
 export const vcsSubmitParameters = type({
 	"bookmark?": type("string").describe(
@@ -75,32 +72,6 @@ export const vcsPrStatusParameters = type({
 		"Bookmark at the tip of the stack; omit to use the one bookmark on @ or @-",
 	),
 });
-
-interface Remote {
-	repo: string;
-	url: string;
-}
-
-/** Reads `owner/name` and the URL of the origin GitHub remote. */
-async function originRemote(
-	deps: SubmitDeps,
-	toolName: string,
-): Promise<Remote> {
-	// git config gives the URL as configured; jj prints it after insteadOf rewrites.
-	const listed = await deps.git.run(
-		["config", "--get", "remote.origin.url"],
-		deps.cwd,
-	);
-	const url = listed.code === 0 ? listed.stdout.trim() : "";
-	const match = url.match(
-		/^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/,
-	);
-	if (!match)
-		throw new Error(
-			`${toolName}: origin must be a GitHub remote; found ${url || "none"}`,
-		);
-	return { repo: `${match[1]}/${match[2]}`, url };
-}
 
 interface Segment {
 	bookmark: string;
@@ -219,30 +190,9 @@ function withIssue(
 	};
 }
 
-async function stackStatus(
-	deps: VcsDeps,
-	toolCallId: string,
-	repo: string,
-	heads: string[],
-	toolName: string,
-): Promise<StackEntryResult[]> {
-	const result = await deps.forge.call(
-		create(ForgeCallRequestSchema, {
-			callId: toolCallId,
-			call: {
-				case: "stackStatus",
-				value: create(StackStatusRequestSchema, { repo, headRefs: heads }),
-			},
-		}),
-	);
-	if (result.result.case !== "stack")
-		throw forgeFailure(result, toolName, "stack");
-	return result.result.value.entries;
-}
-
 /** Runs the repo's own pre-push hook with the stdin a real push gives it (D4, OQ-9). */
 async function runPrePush(
-	deps: SubmitDeps,
+	deps: VcsDeps,
 	remote: Remote,
 	segs: Segment[],
 	toolName: string,
@@ -305,7 +255,7 @@ async function runPrePush(
 }
 
 async function bundle(
-	deps: SubmitDeps,
+	deps: VcsDeps,
 	segs: Segment[],
 	baseCommit: string,
 	toolName: string,
@@ -349,7 +299,7 @@ type SubmitParams = typeof vcsSubmitParameters.infer;
 
 /** Refuses new PRs with no issue: the Server would refuse each one after the push. */
 async function requireIssues(
-	deps: SubmitDeps,
+	deps: VcsDeps,
 	toolCallId: string,
 	repo: string,
 	segs: Segment[],
@@ -382,7 +332,7 @@ async function requireIssues(
 
 /** One entry per bookmark, bottom to top, with D3 title and body. */
 async function buildEntries(
-	deps: SubmitDeps,
+	deps: VcsDeps,
 	repo: string,
 	segs: Segment[],
 	params: SubmitParams,
@@ -415,7 +365,7 @@ async function buildEntries(
 	return entries;
 }
 
-export function createSubmitTools(deps: SubmitDeps): AgentTool[] {
+export function createSubmitTools(deps: VcsDeps): AgentTool[] {
 	const submit: AgentTool<typeof vcsSubmitParameters> = {
 		name: "vcs_submit",
 		label: "Submit stack as pull requests",
@@ -426,7 +376,7 @@ export function createSubmitTools(deps: SubmitDeps): AgentTool[] {
 			const name = "vcs_submit";
 			validateBookmark(params.text?.bookmark, name);
 			const remote = await originRemote(deps, name);
-			const synced = await syncOwn(deps, name, params.bookmark);
+			const synced = await syncOwn(deps, toolCallId, name, params.bookmark);
 			const root = synced.rows[synced.rows.length - 1];
 			const baseCommit = root?.parents[0]?.commit_id;
 			if (!baseCommit)

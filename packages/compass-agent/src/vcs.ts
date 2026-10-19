@@ -1,7 +1,13 @@
 import { isAbsolute, resolve } from "node:path";
 import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { ForgeBroker } from "./forge";
+import {
+	create,
+	ForgeCallRequestSchema,
+	type StackEntryResult,
+	StackStatusRequestSchema,
+} from "./compassv1";
+import { type ForgeBroker, forgeFailure } from "./forge";
 import type { CommandRunner } from "./vcs-runner";
 
 export interface JjResult {
@@ -16,8 +22,8 @@ export interface JjRunner {
 
 export interface VcsDeps {
 	jj: JjRunner;
-	// Runs git in the colocated clone: the pre-push hook and the bundle.
-	git?: CommandRunner;
+	// Runs git in the colocated clone: the origin URL, the pre-push hook, and the bundle.
+	git: CommandRunner;
 	cwd: string;
 	forge: ForgeBroker;
 	readFile?: (path: string) => Promise<string | undefined>;
@@ -532,8 +538,13 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 		description:
 			"Fetch origin, then rebase your own commits onto the stack base. Reports conflicts without pushing.",
 		parameters: vcsSyncParameters,
-		execute: async (_toolCallId, params) => {
-			const synced = await syncOwn(deps, "vcs_sync", params.bookmark);
+		execute: async (toolCallId, params) => {
+			const synced = await syncOwn(
+				deps,
+				toolCallId,
+				"vcs_sync",
+				params.bookmark,
+			);
 			return {
 				content: [
 					{
@@ -559,9 +570,107 @@ export interface Synced {
 	rows: JjRow[];
 }
 
-/** Fetches, then rebases the own commits onto trunk or their foreign base (D4). */
+export interface Remote {
+	repo: string;
+	url: string;
+}
+
+/** Reads `owner/name` and the URL of the origin GitHub remote. */
+export async function originRemote(
+	deps: VcsDeps,
+	toolName: string,
+): Promise<Remote> {
+	// git config gives the URL as configured; jj prints it after insteadOf rewrites.
+	const listed = await deps.git.run(
+		["config", "--get", "remote.origin.url"],
+		deps.cwd,
+	);
+	const url = listed.code === 0 ? listed.stdout.trim() : "";
+	const match = url.match(
+		/^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/,
+	);
+	if (!match)
+		throw new Error(
+			`${toolName}: origin must be a GitHub remote; found ${url || "none"}`,
+		);
+	return { repo: `${match[1]}/${match[2]}`, url };
+}
+
+export async function stackStatus(
+	deps: VcsDeps,
+	toolCallId: string,
+	repo: string,
+	heads: string[],
+	toolName: string,
+): Promise<StackEntryResult[]> {
+	const result = await deps.forge.call(
+		create(ForgeCallRequestSchema, {
+			callId: toolCallId,
+			call: {
+				case: "stackStatus",
+				value: create(StackStatusRequestSchema, { repo, headRefs: heads }),
+			},
+		}),
+	);
+	if (result.result.case !== "stack")
+		throw forgeFailure(result, toolName, "stack");
+	return result.result.value.entries;
+}
+
+/** The untracked `origin` bookmarks on the tip's ancestry above trunk. */
+export async function untrackedBelow(
+	deps: VcsDeps,
+	tip: string,
+	toolName: string,
+): Promise<string[]> {
+	const listed = await runJj(deps, toolName, [
+		...JJ_FLAGS,
+		"bookmark",
+		"list",
+		"--remote",
+		"exact:origin",
+		"-r",
+		`::${quoteRevset(tip)} ~ ::trunk()`,
+		"-T",
+		'if(remote && !tracked, name ++ "\\n")',
+	]);
+	return listed.stdout.split("\n").filter(Boolean);
+}
+
+// A Server push leaves the caller's own remote bookmark untracked, which would read as a foreign base.
+async function trackAuthored(
+	deps: VcsDeps,
+	toolCallId: string,
+	tip: string,
+	toolName: string,
+): Promise<void> {
+	const untracked = await untrackedBelow(deps, tip, toolName);
+	if (untracked.length === 0) return;
+	const { repo } = await originRemote(deps, toolName);
+	const entries = await stackStatus(
+		deps,
+		toolCallId,
+		repo,
+		untracked,
+		toolName,
+	);
+	for (const entry of entries) {
+		if (!entry.authored || !entry.pullRequest) continue;
+		await runJj(deps, toolName, [
+			...JJ_FLAGS,
+			"bookmark",
+			"track",
+			`exact:${entry.headRef}`,
+			"--remote",
+			"exact:origin",
+		]);
+	}
+}
+
+/** Fetches, tracks own remote bookmarks, then rebases the own commits onto trunk or their foreign base (D4). */
 export async function syncOwn(
 	deps: VcsDeps,
+	toolCallId: string,
 	toolName: string,
 	bookmark: string | undefined,
 ): Promise<Synced> {
@@ -574,6 +683,7 @@ export async function syncOwn(
 		"origin",
 	]);
 	const tip = await resolveTip(deps, bookmark, toolName);
+	await trackAuthored(deps, toolCallId, tip, toolName);
 	const own = ownCommits(tip);
 	const rowsResult = await runJj(deps, toolName, argsForLog(own));
 	const rows = parseRows(rowsResult.stdout, toolName);
