@@ -173,6 +173,15 @@ export interface Review {
 	verdict: "approved" | "changes_requested" | "commented";
 	/** The review's summary comment (may be empty). */
 	body: string;
+	/** The PR head commit this review applies to. */
+	commitId?: string;
+}
+
+/** One observed merge-queue entry. */
+export interface MergeQueueEntry {
+	provider: string;
+	state: "queued" | "testing" | "failed" | "removed" | "merged";
+	changedAtMs?: number;
 }
 
 /** A Compass pull request: the forge PR's fields plus the Compass agent
@@ -188,6 +197,12 @@ export interface PullRequest {
 	url: string;
 	headRef: string;
 	baseRef: string;
+	/** The PR head commit. */
+	headSha?: string;
+	/** The forge's mergeability state. */
+	mergeableState?: string;
+	/** Current merge-queue entry, if any. */
+	mergeQueue?: MergeQueueEntry;
 	/** Compass agent attribution; unset for a non-Compass author. */
 	agent?: AgentAttribution;
 	/** The native forge account that opened the PR; always set. */

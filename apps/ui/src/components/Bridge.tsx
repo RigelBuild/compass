@@ -34,6 +34,7 @@ import {
 	issueKey,
 	primaryPr,
 	prLifecycle,
+	queueChip,
 	reviewBadge,
 } from "../board-render";
 import { BOARD_LANES, PR_LANES } from "../constants";
@@ -207,6 +208,13 @@ const PrCard: Component<{
 					<Show when={reviewBadge(pr())}>
 						{(verdict) => (
 							<BadgeGlyph axis="review" status={verdict()} compact />
+						)}
+					</Show>
+					<Show when={queueChip(pr())}>
+						{(s) => (
+							<span class="card-queue" data-state={s()}>
+								{s() === "failed" ? "queue failed" : "queue removed"}
+							</span>
 						)}
 					</Show>
 				</span>

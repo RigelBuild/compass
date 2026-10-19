@@ -31,13 +31,20 @@ export const BOARD_LANES: Lane[] = [
 	{ state: "done", label: "Done", color: "var(--cx-issue-done)" },
 ];
 
-/** PR-lifecycle columns for the Bridge PRs view (design D1; T6). A separate axis
- *  from the issue-lifecycle BOARD_LANES: a PR moves across these as it heads to
- *  merge. Colors reuse the issue-lifecycle namespace + the accent for "ready". */
-export type PrLifecycle = "in_progress" | "in_review" | "ready" | "merged";
+/** PR-lifecycle columns for the Bridge PRs view (design D1; T6, T16). A separate
+ *  axis from the issue-lifecycle BOARD_LANES: a PR moves across these as it heads
+ *  to merge. */
+export type PrLifecycle =
+	| "draft"
+	| "in_progress"
+	| "in_review"
+	| "ready"
+	| "queued"
+	| "merged";
 
 export const PR_LANES: { state: PrLifecycle; label: string; color: string }[] =
 	[
+		{ state: "draft", label: "Draft", color: "var(--cx-pr-draft)" },
 		{
 			state: "in_progress",
 			label: "In progress",
@@ -49,6 +56,7 @@ export const PR_LANES: { state: PrLifecycle; label: string; color: string }[] =
 			color: "var(--cx-issue-in_review)",
 		},
 		{ state: "ready", label: "Ready to merge", color: "var(--cx-accent)" },
+		{ state: "queued", label: "In queue", color: "var(--cx-pr-queued)" },
 		{ state: "merged", label: "Merged", color: "var(--cx-issue-done)" },
 	];
 

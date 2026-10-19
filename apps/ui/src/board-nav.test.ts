@@ -92,19 +92,19 @@ describe("boardStops — issues status (no gutter)", () => {
 describe("boardStops — PRs tab", () => {
 	const prInput: BoardNavInput = {
 		tab: "prs",
-		laneCount: 4,
+		laneCount: 6,
 		groups: [
 			{
 				agentId: "a1",
 				rows: [
-					{ issueId: "RIG-1", repo: "core", prNumber: 10, col: 0 },
+					{ issueId: "RIG-1", repo: "core", prNumber: 10, col: 1 },
 					// Same issue, two non-closed PRs -> two rows, composite ids.
-					{ issueId: "RIG-1", repo: "core", prNumber: 11, col: 1 },
+					{ issueId: "RIG-1", repo: "core", prNumber: 11, col: 2 },
 				],
 			},
 			{
 				agentId: null,
-				rows: [{ issueId: "RIG-9", repo: "ui", prNumber: 3, col: 0 }],
+				rows: [{ issueId: "RIG-9", repo: "ui", prNumber: 3, col: 1 }],
 			},
 		],
 	};
@@ -220,11 +220,11 @@ describe("moveCursor — status mode (no gutter)", () => {
 describe("moveCursor — PRs Unassigned row gutter hole", () => {
 	const stops = boardStops({
 		tab: "prs",
-		laneCount: 4,
+		laneCount: 6,
 		groups: [
 			{
 				agentId: null,
-				rows: [{ issueId: "RIG-9", repo: "ui", prNumber: 3, col: 1 }],
+				rows: [{ issueId: "RIG-9", repo: "ui", prNumber: 3, col: 2 }],
 			},
 		],
 	});

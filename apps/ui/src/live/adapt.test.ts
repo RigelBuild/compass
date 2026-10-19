@@ -903,6 +903,13 @@ describe("adaptPullRequest", () => {
 				url: "https://github.com/x/42",
 				headRef: "feat/x",
 				baseRef: "main",
+				headSha: "head-42",
+				mergeableState: "clean",
+				mergeQueue: {
+					provider: "github",
+					state: "testing",
+					changedAt: { seconds: 1_760_000_000n, nanos: 250_000_000 },
+				},
 				agent: { agentHandle: "cook", ownerHandle: "matt" },
 				forgeAccount: "matt",
 				draft: true,
@@ -913,7 +920,13 @@ describe("adaptPullRequest", () => {
 					checks: [{ name: "ci", state: "success", url: "u", required: true }],
 				},
 				reviews: [
-					{ author: "bot", isBot: true, verdict: "approved", body: "lgtm" },
+					{
+						author: "bot",
+						isBot: true,
+						verdict: "approved",
+						body: "lgtm",
+						commitId: "reviewed-head",
+					},
 				],
 				threads: [
 					{
@@ -932,6 +945,13 @@ describe("adaptPullRequest", () => {
 		expect(r.url).toBe("https://github.com/x/42");
 		expect(r.headRef).toBe("feat/x");
 		expect(r.baseRef).toBe("main");
+		expect(r.headSha).toBe("head-42");
+		expect(r.mergeableState).toBe("clean");
+		expect(r.mergeQueue).toEqual({
+			provider: "github",
+			state: "testing",
+			changedAtMs: 1_760_000_000_250,
+		});
 		// The wire attribution carries both handles; verified remains hedged.
 		expect(r.agent).toEqual({
 			agentHandle: "cook",
@@ -947,7 +967,13 @@ describe("adaptPullRequest", () => {
 			checks: [{ name: "ci", state: "success", url: "u", required: true }],
 		});
 		expect(r.reviews).toEqual([
-			{ author: "bot", isBot: true, verdict: "approved", body: "lgtm" },
+			{
+				author: "bot",
+				isBot: true,
+				verdict: "approved",
+				body: "lgtm",
+				commitId: "reviewed-head",
+			},
 		]);
 		expect(r.threads).toEqual([
 			{
@@ -956,6 +982,23 @@ describe("adaptPullRequest", () => {
 				comments: [{ author: "bot", isBot: true, body: "nit" }],
 			},
 		]);
+	});
+
+	test("empty and unset optional queue fields map to undefined", () => {
+		const r = adaptPullRequest(
+			create(PullRequestSchema, {
+				repo: "r",
+				number: 1,
+				headSha: "",
+				mergeableState: "",
+				mergeQueue: { provider: "github", state: "" },
+				reviews: [{ author: "reviewer", verdict: "commented", commitId: "" }],
+			}),
+		);
+		expect(r.headSha).toBeUndefined();
+		expect(r.mergeableState).toBeUndefined();
+		expect(r.mergeQueue).toBeUndefined();
+		expect(r.reviews[0]?.commitId).toBeUndefined();
 	});
 
 	test("absent optional messages map to absent domain fields", () => {
@@ -967,6 +1010,9 @@ describe("adaptPullRequest", () => {
 		expect(r.agent).toBeUndefined();
 		expect(r.changed).toBeUndefined();
 		expect(r.checks).toBeUndefined();
+		expect(r.headSha).toBeUndefined();
+		expect(r.mergeableState).toBeUndefined();
+		expect(r.mergeQueue).toBeUndefined();
 		expect(r.reviews).toEqual([]);
 		expect(r.threads).toEqual([]);
 	});

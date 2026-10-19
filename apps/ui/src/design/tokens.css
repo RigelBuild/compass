@@ -169,6 +169,8 @@
 	--cx-issue-in_progress: var(--rigel-green);
 	--cx-issue-in_review: var(--rigel-amber);
 	--cx-issue-done: var(--rigel-cyan);
+	--cx-pr-draft: var(--rigel-mute);
+	--cx-pr-queued: var(--rigel-magenta);
 
 	/* --- CI / review --- */
 	--cx-ci-pass: var(--rigel-green);

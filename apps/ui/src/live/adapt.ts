@@ -95,6 +95,7 @@ import type {
 	ForgeRef as DomainForgeRef,
 	Issue as DomainIssue,
 	IssueState as DomainIssueState,
+	MergeQueueEntry as DomainMergeQueueEntry,
 	Priority as DomainPriority,
 	PullRequest as DomainPullRequest,
 	Review as DomainReview,
@@ -622,6 +623,18 @@ function adaptChecksSummary(w: WireChecksSummary): DomainChecksSummary {
 	};
 }
 
+/** Map a wire merge queue entry and normalize its empty state to absent. */
+function adaptMergeQueueEntry(
+	w: NonNullable<WirePullRequest["mergeQueue"]>,
+): DomainMergeQueueEntry | undefined {
+	if (!w.state) return undefined;
+	return {
+		provider: w.provider,
+		state: w.state as DomainMergeQueueEntry["state"],
+		changedAtMs: w.changedAt ? timestampMs(w.changedAt) : undefined,
+	};
+}
+
 /** Map a wire Review to the domain one, narrowing the forge `verdict` string to
  *  the domain union. Structurally identical otherwise. */
 function adaptReview(w: WireReview): DomainReview {
@@ -630,6 +643,7 @@ function adaptReview(w: WireReview): DomainReview {
 		isBot: w.isBot,
 		verdict: w.verdict as DomainReview["verdict"],
 		body: w.body,
+		commitId: optionalText(w.commitId),
 	};
 }
 
@@ -673,6 +687,9 @@ export function adaptPullRequest(w: WirePullRequest): DomainPullRequest {
 		url: w.url,
 		headRef: w.headRef,
 		baseRef: w.baseRef,
+		headSha: optionalText(w.headSha),
+		mergeableState: optionalText(w.mergeableState),
+		mergeQueue: w.mergeQueue ? adaptMergeQueueEntry(w.mergeQueue) : undefined,
 		agent: w.agent ? adaptAgentAttribution(w.agent) : undefined,
 		forgeAccount: w.forgeAccount,
 		draft: w.draft,
