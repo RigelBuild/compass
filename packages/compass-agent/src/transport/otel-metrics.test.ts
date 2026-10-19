@@ -17,8 +17,8 @@ import {
 	batchSizeBy,
 	durableAttempts,
 	durableGiveUps,
-	priorityBatchRetries,
-	priorityFramesLost,
+	priorityBatchRetriesCounter,
+	priorityFramesLostCounter,
 	priorityRetryDepthGauge,
 	traceFramesLostFailedBatch,
 	traceFramesLostOverflow,
@@ -145,12 +145,13 @@ test("trace_queue_depth samples the backlog at the take, before draining it", as
 test("a priority give-up increments priority_frames_lost, additive to failedPriorityCount", async () => {
 	// A single priority frame against a persistently-dead socket: after the bounded
 	// ladder is exhausted the frame is a definitive never-drop loss.
+	// A unique namespace gives this spine private counters and gauge: bun runs files
+	// concurrently, so even a delta on the shared key picks up a sibling's give-ups.
+	const namespace = `${crypto.randomUUID()}.`;
+	const priorityFramesLost = priorityFramesLostCounter(namespace);
+	const priorityBatchRetries = priorityBatchRetriesCounter(namespace);
 	const before = counterCount(priorityFramesLost);
 	const retriesBefore = counterCount(priorityBatchRetries);
-	// A unique namespace isolates the absolute retry-depth read from the shared
-	// registry key: only the gauge is namespaced; the counters stay on
-	// the shared key and are read as deltas, which are race-safe.
-	const namespace = `${crypto.randomUUID()}.`;
 	const spine = createPublishSpine(
 		() => Promise.reject(new Error("dead socket")),
 		undefined,
@@ -177,12 +178,12 @@ test("a priority give-up increments priority_frames_lost, additive to failedPrio
 test("a delivered priority batch resets priority_retry_depth to 0 after its retries", async () => {
 	// Fail once, then deliver: one bounded retry, then a successful send resets the
 	// pump-scoped depth level. Distinct from the give-up path — no frame is lost.
-	const retriesBefore = counterCount(priorityBatchRetries);
+	const namespace = `${crypto.randomUUID()}.`;
+	const retriesBefore = counterCount(priorityBatchRetriesCounter(namespace));
 	// Unique namespace: the retry path first sets the gauge to 1, then the
 	// successful send resets it to 0 — both writes land on this private key, so the
 	// mutation check (drop the reset → gauge stuck at 1) stays non-vacuous while
 	// the read is immune to the cross-file race.
-	const namespace = `${crypto.randomUUID()}.`;
 	let attempt = 0;
 	const spine = createPublishSpine(
 		() => {
@@ -196,7 +197,9 @@ test("a delivered priority batch resets priority_retry_depth to 0 after its retr
 	);
 	spine.enqueuePriority(traceFrame());
 	await spine.drain();
-	expect(counterCount(priorityBatchRetries) - retriesBefore).toBe(1);
+	expect(
+		counterCount(priorityBatchRetriesCounter(namespace)) - retriesBefore,
+	).toBe(1);
 	// Reset to 0 on the successful send; read synchronously after drain.
 	expect(gaugeValue(priorityRetryDepthGauge(namespace))).toBe(0);
 	expect(spine.failedPriorityCount()).toBe(0);

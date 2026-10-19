@@ -32,16 +32,23 @@ export const traceFramesLostFailedBatch = Metric.tagged(
 // Priority frames (lifecycle/STOPPED, control acks) lost after a failed batch
 // exhausted the bounded priority retry. A never-drop loss is a contract breach,
 // kept a SEPARATE metric mirroring the source's separate `failedPriorityFrames`.
-export const priorityFramesLost = Metric.counter(
-	"compass_agent.transport.publish.priority_frames_lost",
-	{ incremental: true },
-);
+// Namespaced like the gauges: a concurrent file's give-up would race a test's delta.
+export const priorityFramesLostCounter = (
+	namespace = "",
+): Metric.Metric.Counter<number> =>
+	Metric.counter(
+		`${namespace}compass_agent.transport.publish.priority_frames_lost`,
+		{ incremental: true },
+	);
 
 // Every priority-batch retry attempt (monotone).
-export const priorityBatchRetries = Metric.counter(
-	"compass_agent.transport.publish.priority_batch_retries",
-	{ incremental: true },
-);
+export const priorityBatchRetriesCounter = (
+	namespace = "",
+): Metric.Metric.Counter<number> =>
+	Metric.counter(
+		`${namespace}compass_agent.transport.publish.priority_batch_retries`,
+		{ incremental: true },
+	);
 
 // Flush shape: why each cycled batch was sent. `reason` is a static set, so the
 // arms are pre-tagged like trace_frames_lost. The namespace defaults to "" —
