@@ -37,14 +37,14 @@ const schemas: Record<string, JsonSchema> = Object.fromEntries(
 	]),
 );
 
-// Field names in `{ a, b: { c } }` or `{ a: "x", b: <y> }`, each with its nested names.
-function fieldsOf(body: string): [string, string[]][] {
-	const out: [string, string[]][] = [];
+// Field names in `{ a, b: { c } }` or `{ a: "x", b: <y> }`; an object value carries its nested names, even when empty.
+function fieldsOf(body: string): [string, string[] | undefined][] {
+	const out: [string, string[] | undefined][] = [];
 	const re = /([a-z_]+)(?:\s*:\s*(\{[^}]*\}|"[^"]*"|<[^>]*>|[^,}]+))?/g;
 	for (const m of body.matchAll(re)) {
 		const nested = m[2]?.startsWith("{")
 			? [...m[2].slice(1, -1).matchAll(/([a-z_]+)/g)].map((n) => n[1] ?? "")
-			: [];
+			: undefined;
 		out.push([m[1] ?? "", nested]);
 	}
 	return out;
@@ -79,11 +79,15 @@ function callProblems(tool: string, body: string): string[] {
 			schema,
 			fields.map(([field]) => field),
 		),
-		...fields
-			.filter(([, nested]) => nested.length > 0)
-			.flatMap(([field, nested]) =>
-				shapeProblems(`${tool}.${field}`, schema?.properties?.[field], nested),
-			),
+		...fields.flatMap(([field, nested]) =>
+			nested === undefined
+				? []
+				: shapeProblems(
+						`${tool}.${field}`,
+						schema?.properties?.[field],
+						nested,
+					),
+		),
 	];
 }
 
@@ -143,6 +147,21 @@ describe("shipped VCS guidance", () => {
 		expect(calls.length).toBeGreaterThan(10);
 		expect(
 			calls.flatMap(([, tool = "", body = ""]) => callProblems(tool, body)),
+		).toEqual([]);
+	});
+
+	test("the call checker flags bad shapes and accepts map keys", () => {
+		expect(callProblems("vcs_submit", "text: {}")).toEqual([
+			"vcs_submit.text: needs bookmark",
+			"vcs_submit.text: needs subject",
+			"vcs_submit.text: needs sections",
+		]);
+		expect(callProblems("vcs_commit", "bookmark, title")).toEqual([
+			"vcs_commit.title: unknown",
+			"vcs_commit: needs subject",
+		]);
+		expect(
+			callProblems("vcs_submit", 'issues: { <bookmark>: "#12" }, ready: true'),
 		).toEqual([]);
 	});
 
