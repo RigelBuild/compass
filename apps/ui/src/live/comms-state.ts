@@ -207,9 +207,8 @@ export type CommsEvent =
 /** Apply one decoded event to the state, returning the next state. Pure: upserts
  *  the entity by id (dedup — a redelivered post or an update never duplicates a
  *  row) into its collection, or drops it (channelRemoved — the caller's own
- *  ejection), leaving the others untouched. The stream cursor is not advanced
- *  here — that is the driver's transport bookkeeping, kept out of the reduced
- *  domain state (see ./stream). */
+ *  ejection). Account changes also refresh channel flags derived from agent home
+ *  ids. The stream cursor stays in the driver (see ./stream). */
 export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 	switch (event.kind) {
 		case "messagePosted":
@@ -225,12 +224,23 @@ export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 				...state,
 				channelGroups: upsertById(state.channelGroups, event.group),
 			};
-		// accountChanged updates only `accounts`; it does not re-derive channels'
-		// `alwaysSubscribed` (an adapt-time projection). Sound because home_channel_id is
-		// server-set and immutable, so the flag can't go stale. The one residual — a new
-		// agent whose channelChanged(home) decodes before its accountChanged — self-heals.
-		case "accountChanged":
-			return { ...state, accounts: upsertById(state.accounts, event.account) };
+		case "accountChanged": {
+			const accounts = upsertById(state.accounts, event.account);
+			const homeIds = agentHomeChannelIds(accounts);
+			let channels: Channel[] | undefined;
+			for (let i = 0; i < state.channels.length; i++) {
+				const channel = state.channels[i];
+				if (!channel) continue;
+				const alwaysSubscribed =
+					channel.membership === "subscribed" && homeIds.has(channel.id)
+						? true
+						: undefined;
+				if (channel.alwaysSubscribed === alwaysSubscribed) continue;
+				channels ??= [...state.channels];
+				channels[i] = { ...channel, alwaysSubscribed };
+			}
+			return { ...state, accounts, channels: channels ?? state.channels };
+		}
 		// A topic created/renamed/merged/archived: upsert by id, keeping the topic
 		// index live without a refetch. Order within `topics` is server order; the
 		// pure `topicsOf` re-sorts by last activity, so append-on-new is fine.

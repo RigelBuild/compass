@@ -240,6 +240,29 @@ describe("applyEvent — per-collection upsert", () => {
 		expect(next.channels).toBe(base.channels);
 	});
 
+	test("accountChanged re-derives alwaysSubscribed for an earlier home channel", () => {
+		const homeId = "chan-home-agent";
+		const base: CommsState = {
+			...baseState(),
+			channels: [
+				chan(homeId, {
+					memberAccountIds: [CALLER, "acc-agent"],
+					membership: "subscribed",
+				}),
+			],
+		};
+		const next = applyEvent(base, {
+			kind: "accountChanged",
+			account: account("acc-agent", {
+				kind: "agent",
+				ownerUserId: CALLER,
+				homeChannelId: homeId,
+			}),
+		});
+
+		expect(next.channels[0]?.alwaysSubscribed).toBe(true);
+	});
+
 	test("accountChanged upserts into accounts only", () => {
 		const base = baseState();
 		const next = applyEvent(base, {
