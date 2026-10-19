@@ -91,7 +91,7 @@ func stripStackPair(body, startMarker, endMarker string) (string, bool) {
 			start = offset
 		case endMarker:
 			if start >= 0 {
-				end = offset + len(strings.TrimRight(body[offset:next], " \t\r\n"))
+				end = next
 			}
 		}
 		if end >= 0 {

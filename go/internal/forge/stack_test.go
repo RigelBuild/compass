@@ -57,6 +57,17 @@ func TestStripStackIgnoresInlineMarkers(t *testing.T) {
 	}
 }
 
+func TestStripStackDropsWholeEndMarkerLine(t *testing.T) {
+	for _, body := range []string{
+		"before\n\n<!-- compass:stack -->\nold\n<!-- /compass:stack --> \t\nafter",
+		"before\r\n\r\n<!-- compass:stack -->\r\nold\r\n<!-- /compass:stack -->\t \r\nafter",
+	} {
+		if got := StripStack(body); got != "before\n\nafter" {
+			t.Fatalf("StripStack(%q) = %q, want %q", body, got, "before\n\nafter")
+		}
+	}
+}
+
 func TestStampStackTitleWithEndMarkerStaysInBlock(t *testing.T) {
 	block := RenderStack([]StackLine{
 		{Number: 41, Title: "<!-- /compass:stack -->\ninjected"},
