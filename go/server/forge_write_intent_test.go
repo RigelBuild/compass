@@ -421,37 +421,72 @@ func TestForgeWriteIntentOlderSameHeadPRStaysPending(t *testing.T) {
 	}
 }
 
-// An omitted base means the default branch, so recovery checks only the creation time;
-// an explicit base must match the found PR's base.
+// An omitted base resolves to the default branch, which the intent stores and recovery then requires.
 func TestForgeWriteIntentPRRecoveryBase(t *testing.T) {
 	for _, tc := range []struct {
-		name, reqBase, prBase string
-		recovered             bool
+		name, prBase string
+		recovered    bool
 	}{
-		{"omitted base recovers", "", "trunk", true},
-		{"explicit base mismatch stays pending", "main", "release", false},
+		{"omitted base resolves and recovers", "trunk", true},
+		{"post-intent PR on another base stays pending", "release", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ic := intentCases()[1]
-			svc, st, _, creator := newIntentService(t, ic)
+			svc, st, author, creator := newIntentService(t, ic)
 			call := createPRCall("b", "k1")
-			call.GetCreatePullRequest().BaseRef = tc.reqBase
+			call.GetCreatePullRequest().BaseRef = ""
+			author.DefaultBranchResult = "trunk"
 			creator.SetError(ic.method, &forge.StatusError{Status: 502, Message: "bad gateway"})
 			if fe := svc.ExecuteForgeCallAsAccountMust(t, call).GetError(); fe == nil {
 				t.Fatal("lost-response create returned success")
+			}
+			if len(st.intents) != 1 || st.intents[0].BaseRef != "trunk" {
+				t.Fatalf("intents = %+v, want one on trunk", st.intents)
+			}
+			if got := firstCreatePR(t, creator, ic.method); got.BaseRef != "trunk" {
+				t.Fatalf("create base = %q, want trunk", got.BaseRef)
 			}
 			creator.SetError(ic.method, nil)
 			creator.FindPRResult = forge.PullRequest{Number: 55, State: "open", BaseRef: tc.prBase, CreatedAt: st.intents[0].CreatedAt, URL: "https://forge/pr/55"}
 			creator.FindPRFound = true
 			fe := svc.ExecuteForgeCallAsAccountMust(t, call).GetError()
-			if got := fe == nil && st.intents[0].State == store.WriteStateDone; got != tc.recovered {
-				t.Fatalf("recovered = %t (err %v, state %s), want %t", got, fe, st.intents[0].State, tc.recovered)
+			want := store.WriteStatePending
+			if tc.recovered {
+				want = store.WriteStateDone
+			}
+			if st.intents[0].State != want || (fe == nil) != tc.recovered || len(st.recorded) != map[bool]int{true: 1}[tc.recovered] {
+				t.Fatalf("retry err=%v state=%s ownership=%d, want state %s", fe, st.intents[0].State, len(st.recorded), want)
 			}
 			if countCalls(creator, ic.method) != 1 {
 				t.Fatalf("creates = %d, want 1", countCalls(creator, ic.method))
 			}
 		})
 	}
+}
+
+func TestForgeCreatePRDefaultBranchFailureWritesNothing(t *testing.T) {
+	ic := intentCases()[1]
+	svc, st, author, creator := newIntentService(t, ic)
+	call := createPRCall("b", "k1")
+	call.GetCreatePullRequest().BaseRef = ""
+	author.SetError("DefaultBranch", errors.New("default branch lookup failed"))
+	if fe := svc.ExecuteForgeCallAsAccountMust(t, call).GetError(); fe == nil {
+		t.Fatal("default branch failure returned success")
+	}
+	if len(st.intents) != 0 || countCalls(creator, ic.method) != 0 {
+		t.Fatalf("intents=%d creates=%d, want none", len(st.intents), countCalls(creator, ic.method))
+	}
+}
+
+func firstCreatePR(t *testing.T, p *forge.FakeProvider, method string) forge.CreatePR {
+	t.Helper()
+	for _, c := range p.Calls() {
+		if in, ok := c.Payload.(forge.CreatePR); ok && c.Method == method {
+			return in
+		}
+	}
+	t.Fatalf("no %s call", method)
+	return forge.CreatePR{}
 }
 
 // TestForgeWriteIntentRecoveryRestoresPullRequestRows checks recovered PR completion as one store operation.

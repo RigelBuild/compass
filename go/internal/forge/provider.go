@@ -308,6 +308,8 @@ type Provider interface { //nolint:interfacebloat // one method per forge operat
 	ListCommentsSince(ctx context.Context, repo string, number uint64, since time.Time) ([]Comment, error)
 	GetIssue(ctx context.Context, repo string, number uint64) (Issue, error)
 	ListIssues(ctx context.Context, repo string, f IssueFilter) ([]Issue, error)
+	// DefaultBranch returns the repository's default branch.
+	DefaultBranch(ctx context.Context, repo string) (string, error)
 	CreatePullRequest(ctx context.Context, repo string, in CreatePR) (PullRequest, error)
 	// UpdatePullRequest changes the text/base of a pull request and may leave draft.
 	UpdatePullRequest(ctx context.Context, repo string, number uint64, u UpdatePR) (PullRequest, error)

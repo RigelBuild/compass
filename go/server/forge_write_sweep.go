@@ -211,10 +211,11 @@ func (s *forgeService) findWrite(ctx context.Context, in store.WriteIntent) (for
 		if err != nil || !found {
 			return forge.WrittenRef{}, nil, false, err
 		}
-		// A reused head can carry an older PR, so adopt only one created after the intent.
-		// An empty base asked for the default branch, which is not resolved here, so only an explicit base is compared.
-		if (in.BaseRef != "" && pr.BaseRef != in.BaseRef) ||
-			pr.CreatedAt.IsZero() || pr.CreatedAt.Before(in.CreatedAt.Add(-writePRClockSkew)) {
+		// A reused head is ambiguous without the intent's base, so recover only a newer PR with that base.
+		baseMatches := in.BaseRef != "" && pr.BaseRef == in.BaseRef
+		createdAfterIntent := !pr.CreatedAt.IsZero() &&
+			!pr.CreatedAt.Before(in.CreatedAt.Add(-writePRClockSkew))
+		if !baseMatches || !createdAfterIntent {
 			return forge.WrittenRef{}, nil, false, nil
 		}
 		return forge.WrittenRef{Number: pr.Number, URL: pr.URL}, &pr, true, nil

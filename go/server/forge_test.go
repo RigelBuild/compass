@@ -951,27 +951,45 @@ func TestForgeF1DispatchReviewerVsAuthorClient(t *testing.T) {
 
 // --- tests: create_pull_request arm (M2) ------------------------------------
 
-// The PR-create path must stamp the author body once and record a PullRequest
-// row with its returned coordinate and kind.
+// TestForgeCreatePullRequestStampsAndRecordsPRKind covers PR creation and base resolution.
 func TestForgeCreatePullRequestStampsAndRecordsPRKind(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
 	reviewer := forge.NewFakeProvider("gh-reviewer")
 	svc, st := newForgeServiceForTest(t, author, reviewer)
+	author.DefaultBranchResult = "trunk"
 	author.CreatePRResult = forge.PullRequest{Number: 55, URL: "u"}
+	call := createPRCall("body", "k-811")
+	call.GetCreatePullRequest().BaseRef = ""
 
-	res := svc.ExecuteForgeCallAsAccountMust(t, createPRCall("body", "k-811"))
+	res := svc.ExecuteForgeCallAsAccountMust(t, call)
 	if res.GetError() != nil {
 		t.Fatalf("create_pull_request errored: %v", res.GetError())
 	}
 	if res.GetPullRequest() == nil {
 		t.Fatalf("create_pull_request returned no PR arm: %v", res)
 	}
-	if len(author.Calls()) != 1 || len(reviewer.Calls()) != 0 {
-		t.Fatalf("PR-create dispatch: author=%d reviewer=%d, want author=1 reviewer=0", len(author.Calls()), len(reviewer.Calls()))
+	calls := author.Calls()
+	baseResolved := len(calls) == 2 && calls[0].Method == "DefaultBranch" && calls[1].Method == "CreatePullRequest"
+	if !baseResolved || len(reviewer.Calls()) != 0 {
+		t.Fatalf(
+			"PR-create dispatch: author=%+v reviewer=%d, want DefaultBranch then create on author",
+			calls,
+			len(reviewer.Calls()),
+		)
 	}
-	body := author.Calls()[0].Payload.(forge.CreatePR).Body
+	create, ok := calls[1].Payload.(forge.CreatePR)
+	if !ok {
+		t.Fatalf("create payload has type %T, want forge.CreatePR", calls[1].Payload)
+	}
+	if create.BaseRef != "trunk" {
+		t.Fatalf("created PR base = %q, want trunk", create.BaseRef)
+	}
+	body := create.Body
 	if n := strings.Count(body, ownerHeaderSentinel); n != 1 {
 		t.Fatalf("PR body carries %d owner headers, want exactly 1:\n%s", n, body)
+	}
+	if len(st.intents) != 1 || st.intents[0].BaseRef != "trunk" {
+		t.Fatalf("write intents = %+v, want one intent with base trunk", st.intents)
 	}
 	if len(st.recorded) != 1 {
 		t.Fatalf("recorded rows = %d, want 1", len(st.recorded))

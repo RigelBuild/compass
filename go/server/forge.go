@@ -443,9 +443,17 @@ func (s *forgeService) createPullRequest(ctx context.Context, caller store.Accou
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
+	baseRef := req.GetBaseRef()
+	if baseRef == "" {
+		var err error
+		baseRef, err = rf.author.DefaultBranch(ctx, req.GetRepo())
+		if err != nil {
+			return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "get_default_branch"}))
+		}
+	}
 	intent, prior, fe := s.beginWrite(ctx, call.GetClientRequestId(), writeTarget{
 		rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), kind: forge.WriteKindPullRequest,
-		headRef: req.GetHeadRef(), baseRef: req.GetBaseRef(), issueLink: link,
+		headRef: req.GetHeadRef(), baseRef: baseRef, issueLink: link,
 	})
 	if fe != nil {
 		return forgeErrorResult(fe)
@@ -462,7 +470,7 @@ func (s *forgeService) createPullRequest(ctx context.Context, caller store.Accou
 		Title:   req.GetTitle(),
 		Body:    body,
 		HeadRef: req.GetHeadRef(),
-		BaseRef: req.GetBaseRef(),
+		BaseRef: baseRef,
 		Draft:   req.GetDraft(),
 	})
 	if err != nil {

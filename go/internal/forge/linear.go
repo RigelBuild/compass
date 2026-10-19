@@ -600,6 +600,11 @@ func (l *Linear) TransitionPullRequestState(ctx context.Context, repo string, nu
 	return PullRequest{}, ErrUnsupported
 }
 
+// DefaultBranch is unsupported because Linear has no pull requests or branches.
+func (l *Linear) DefaultBranch(context.Context, string) (string, error) {
+	return "", ErrUnsupported
+}
+
 // CreatePullRequest is unsupported: Linear has no pull-request concept
 // (design.md §5). The Service maps ErrUnsupported to the in-band `unimplemented`.
 func (l *Linear) CreatePullRequest(ctx context.Context, repo string, in CreatePR) (PullRequest, error) {
