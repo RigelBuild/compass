@@ -164,6 +164,7 @@ type Querier interface {
 	DeleteComputeUsageIntervalsBefore(ctx context.Context, arg DeleteComputeUsageIntervalsBeforeParams) (int64, error)
 	// DeleteComputeUsageRollupsFrom clears rows the rebuild can reconstruct.
 	DeleteComputeUsageRollupsFrom(ctx context.Context, horizon pgtype.Timestamptz) error
+	// The outer predicate rechecks state, so a row promoted to pending meanwhile survives.
 	DeleteExpiredHeldWriteIntents(ctx context.Context, arg DeleteExpiredHeldWriteIntentsParams) (int64, error)
 	DeleteForgeMirrorSetting(ctx context.Context, arg DeleteForgeMirrorSettingParams) error
 	// Delete marks the row as unconfigured while retaining its monotonic version.

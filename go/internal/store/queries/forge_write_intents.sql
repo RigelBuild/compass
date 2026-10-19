@@ -92,8 +92,10 @@ ORDER BY created_at ASC, id ASC
 LIMIT sqlc.arg(query_limit);
 
 -- name: DeleteExpiredHeldWriteIntents :execrows
+-- The outer predicate rechecks state, so a row promoted to pending meanwhile survives.
 DELETE FROM forge_write_intents
-WHERE (tenant_id, id) IN (
+WHERE state = 'held' AND created_at < sqlc.arg(older_than)::timestamptz
+  AND (tenant_id, id) IN (
     SELECT tenant_id, id FROM forge_write_intents
     WHERE state = 'held' AND created_at < sqlc.arg(older_than)::timestamptz
     ORDER BY created_at ASC, id ASC

@@ -406,6 +406,70 @@ func TestDeleteExpiredHeldWriteIntentsDropsOnlyOldHeldRows(t *testing.T) {
 	}
 }
 
+// A promote committed while the expiry DELETE waits on the row must keep the now-pending intent.
+func TestDeleteExpiredHeldWriteIntentsSparesRowPromotedMidDelete(t *testing.T) {
+	s := newTestStore(t)
+	held, err := s.HoldWriteIntent(t.Context(), writeIntentFixture(t, s, "expire-race", "key-expire-race", "feature/expire-race"))
+	if err != nil {
+		t.Fatalf("HoldWriteIntent: %v", err)
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	if _, err := s.pool.Exec(t.Context(), "UPDATE forge_write_intents SET created_at = $2 WHERE id = $1", held.ID, cutoff.Add(-time.Hour)); err != nil {
+		t.Fatalf("age held intent: %v", err)
+	}
+	// The promote holds the row lock until commit, so the DELETE must wait and then recheck.
+	promote, err := s.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin promote: %v", err)
+	}
+	defer func() { _ = promote.Rollback(t.Context()) }()
+	if _, err := promote.Exec(t.Context(), "UPDATE forge_write_intents SET state = 'pending' WHERE id = $1 AND state = 'held'", held.ID); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	done := make(chan error, 1)
+	var deleted int64
+	go func() {
+		var err error
+		deleted, err = s.DeleteExpiredHeldWriteIntents(WithSystemRole(t.Context()), cutoff, 10)
+		done <- err
+	}()
+	waitForExpiryDeleteLockWait(t, s, done)
+	if err := promote.Commit(t.Context()); err != nil {
+		t.Fatalf("commit promote: %v", err)
+	}
+	if err := <-done; err != nil || deleted != 0 {
+		t.Fatalf("DeleteExpiredHeldWriteIntents = %d, %v; want 0 deleted", deleted, err)
+	}
+	var state string
+	if err := s.pool.QueryRow(t.Context(), "SELECT state FROM forge_write_intents WHERE id = $1", held.ID).Scan(&state); err != nil || state != string(WriteStatePending) {
+		t.Fatalf("promoted intent state = %q, %v; want pending", state, err)
+	}
+}
+
+// waitForExpiryDeleteLockWait returns once the expiry DELETE waits on a row lock.
+func waitForExpiryDeleteLockWait(t *testing.T, s *Store, done <-chan error) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		var waiting int
+		if err := s.pool.QueryRow(t.Context(), "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%DELETE FROM forge_write_intents%' AND pid <> pg_backend_pid()").Scan(&waiting); err != nil {
+			t.Fatalf("read lock waits: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("expiry DELETE finished before the promote committed: %v", err)
+		case <-deadline:
+			t.Fatal("expiry DELETE never waited on the promoted row")
+		case <-tick.C:
+		}
+	}
+}
+
 // Two holds on one key with different targets race from a shared start: one
 // target is kept and both calls get that row back.
 func TestHoldWriteIntentConcurrentTargetsKeepOne(t *testing.T) {
