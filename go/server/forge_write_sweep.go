@@ -291,14 +291,18 @@ func (s *forgeService) runWriteSweep(ctx context.Context) error {
 	}
 }
 
-// sweepWriteIntents runs each minute and resolves pending intents (D2).
+// sweepWriteIntents runs each minute: it resolves pending intents (D2) and drops
+// held keys past the idempotency window, as a pending one turns lost there.
 func (s *forgeService) sweepWriteIntents(ctx context.Context) error {
 	now := s.now()
+	var errs []error
+	if _, err := s.store.DeleteExpiredHeldWriteIntents(store.WithSystemRole(ctx), now.Add(-writeLostAfter), writeSweepLimit); err != nil {
+		errs = append(errs, fmt.Errorf("forge: delete expired held write intents: %w", err))
+	}
 	pending, err := s.store.PendingWriteIntents(store.WithSystemRole(ctx), now.Add(-writeSweepMinAge), writeSweepLimit)
 	if err != nil {
-		return fmt.Errorf("forge: list pending write intents: %w", err)
+		return errors.Join(append(errs, fmt.Errorf("forge: list pending write intents: %w", err))...)
 	}
-	var errs []error
 	for _, in := range pending {
 		tctx := store.WithTenant(store.WithoutSystemRole(ctx), in.TenantID)
 		ref, found, err := s.findWrite(tctx, in)

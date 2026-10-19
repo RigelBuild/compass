@@ -5,6 +5,7 @@ package server
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -184,5 +185,25 @@ func TestSubmitStackPreflightFailureOnSecondEntryStatusesEveryEntry(t *testing.T
 	}
 	if len(m.applied)+len(m.pushes) != 0 || p.count("create")+p.count("update") != 0 {
 		t.Fatalf("applied=%v pushes=%v events=%v, want no writes", m.applied, m.pushes, *p.events)
+	}
+}
+
+// The sweep keeps a held key for a day, then deletes it; an own PR's claim
+// leaves nothing behind after the idempotency window.
+func TestWriteSweepDeletesHeldClaimAfterADay(t *testing.T) {
+	svc, st, p, _ := newStackServiceForTest(t)
+	p.prs["a"] = &forge.PullRequest{Number: 900, Title: "mine", State: "open", HeadRef: "a", BaseRef: "main"}
+	seedOwnPR(st, 900, testAgentID)
+	stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall("k", "", nil, stackEntry("a", ""))))
+	if len(st.intents) != 1 || st.intents[0].State != store.WriteStateHeld {
+		t.Fatalf("intents = %+v, want one held claim", st.intents)
+	}
+	svc.now = func() time.Time { return st.intents[0].CreatedAt.Add(23 * time.Hour) }
+	if err := svc.sweepWriteIntents(t.Context()); err != nil || len(st.intents) != 1 {
+		t.Fatalf("sweep within a day = %v, intents %+v; want the claim kept", err, st.intents)
+	}
+	svc.now = func() time.Time { return st.intents[0].CreatedAt.Add(25 * time.Hour) }
+	if err := svc.sweepWriteIntents(t.Context()); err != nil || len(st.intents) != 0 {
+		t.Fatalf("sweep after a day = %v, intents %+v; want the claim deleted", err, st.intents)
 	}
 }

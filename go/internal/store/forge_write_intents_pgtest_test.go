@@ -4,7 +4,9 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -340,5 +342,102 @@ func TestAuthoredArtifactByCoordinateFoldReturnsOldestCaseVariant(t *testing.T) 
 	}
 	if got.AgentAccountID != firstAgent || got.Repo != first.Repo {
 		t.Fatalf("folded lookup = %+v, want oldest case variant by agent %q repo %q", got, firstAgent, first.Repo)
+	}
+}
+
+// Only held rows past the cutoff go; fresh held rows and every other state stay.
+func TestDeleteExpiredHeldWriteIntentsDropsOnlyOldHeldRows(t *testing.T) {
+	s := newTestStore(t)
+	record := func(handle, state string) WriteIntent {
+		t.Helper()
+		in := writeIntentFixture(t, s, "expire-"+handle, "key-"+handle, "feature/"+handle)
+		var (
+			got WriteIntent
+			err error
+		)
+		if state == "held" {
+			got, err = s.HoldWriteIntent(t.Context(), in)
+		} else {
+			got, err = s.RecordWriteIntent(t.Context(), in)
+		}
+		if err != nil {
+			t.Fatalf("record %s: %v", handle, err)
+		}
+		if state == "done" || state == "lost" {
+			if _, err := s.pool.Exec(t.Context(), "UPDATE forge_write_intents SET state = $2, forge_key = '1' WHERE id = $1", got.ID, state); err != nil {
+				t.Fatalf("set %s state: %v", handle, err)
+			}
+		}
+		return got
+	}
+	oldHeld, freshHeld := record("old-held", "held"), record("fresh-held", "held")
+	others := []WriteIntent{record("old-pending", "pending"), record("old-done", "done"), record("old-lost", "lost")}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, in := range append([]WriteIntent{oldHeld}, others...) {
+		if _, err := s.pool.Exec(t.Context(), "UPDATE forge_write_intents SET created_at = $2 WHERE id = $1", in.ID, cutoff.Add(-time.Hour)); err != nil {
+			t.Fatalf("age %s: %v", in.ID, err)
+		}
+	}
+
+	n, err := s.DeleteExpiredHeldWriteIntents(WithSystemRole(t.Context()), cutoff, 10)
+	if err != nil || n != 1 {
+		t.Fatalf("DeleteExpiredHeldWriteIntents = %d, %v; want 1 deleted", n, err)
+	}
+	var ids []string
+	rows, err := s.pool.Query(t.Context(), "SELECT id FROM forge_write_intents ORDER BY id")
+	if err != nil {
+		t.Fatalf("list intents: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate intents: %v", err)
+	}
+	want := []string{freshHeld.ID, others[0].ID, others[1].ID, others[2].ID}
+	slices.Sort(want)
+	if !slices.Equal(ids, want) {
+		t.Fatalf("rows left = %v, want %v (old held %s deleted)", ids, want, oldHeld.ID)
+	}
+}
+
+// Two holds on one key with different targets race from a shared start: one
+// target is kept and both calls get that row back.
+func TestHoldWriteIntentConcurrentTargetsKeepOne(t *testing.T) {
+	s := newTestStore(t)
+	agent, owner := seedAgent(t, s, "intent-hold-race")
+	for i := range 40 {
+		key := fmt.Sprintf("race-%d", i)
+		target := func(repo string) WriteIntent {
+			return WriteIntent{Provider: ForgeProviderGitHub, Host: "github.com", Repo: repo, Kind: forge.WriteKindPullRequest, HeadRef: "feature/race",
+				AgentAccountID: agent, OwnerUserID: owner, SessionID: "s", RequestKey: key}
+		}
+		start := make(chan struct{})
+		got := make([]WriteIntent, 2)
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		for j, repo := range []string{"owner/a", "owner/b"} {
+			wg.Go(func() {
+				<-start
+				got[j], errs[j] = s.HoldWriteIntent(t.Context(), target(repo))
+			})
+		}
+		close(start)
+		wg.Wait()
+		if errs[0] != nil || errs[1] != nil {
+			t.Fatalf("round %d holds: %v, %v", i, errs[0], errs[1])
+		}
+		if got[0].ID != got[1].ID || got[0].Repo != got[1].Repo {
+			t.Fatalf("round %d holds = %+v and %+v, want one row returned to both", i, got[0], got[1])
+		}
+		var count int
+		if err := s.pool.QueryRow(t.Context(), "SELECT count(*) FROM forge_write_intents WHERE client_request_id = $1", key).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("round %d rows = %d, %v; want 1", i, count, err)
+		}
 	}
 }

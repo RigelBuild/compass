@@ -130,6 +130,7 @@ type forgeStore interface { //nolint:interfacebloat // the forge write path's wh
 	PromoteWriteIntent(ctx context.Context, id string) error
 	CompleteWriteIntent(ctx context.Context, id string, artifact *store.AuthoredArtifact, forgeKey string) error
 	EndWriteIntent(ctx context.Context, id string, state store.WriteState) error
+	DeleteExpiredHeldWriteIntents(ctx context.Context, olderThan time.Time, limit int) (int64, error)
 	PendingWriteIntents(ctx context.Context, olderThan time.Time, limit int) ([]store.WriteIntent, error)
 	AuthoredArtifactByCoordinateFold(ctx context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64) (store.AuthoredArtifact, error)
 }

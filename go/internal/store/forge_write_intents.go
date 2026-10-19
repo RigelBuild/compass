@@ -290,6 +290,22 @@ func (s *Store) EndWriteIntent(ctx context.Context, id string, state WriteState)
 	return fmt.Errorf("%w: write intent %q is no longer pending", ErrConflict, id)
 }
 
+// DeleteExpiredHeldWriteIntents removes up to limit held keys older than
+// olderThan, oldest first; past that age a same-key retry is outside the idempotency window.
+func (s *Store) DeleteExpiredHeldWriteIntents(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
+	if limit < 1 || int64(limit) > math.MaxInt32 {
+		return 0, fmt.Errorf("%w: held write intent limit must be between 1 and %d", ErrInvalidArgument, math.MaxInt32)
+	}
+	n, err := s.q.DeleteExpiredHeldWriteIntents(ctx, db.DeleteExpiredHeldWriteIntentsParams{
+		OlderThan:  pgtype.Timestamptz{Time: olderThan, Valid: true},
+		QueryLimit: int32(limit),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("store: delete expired held forge write intents: %w", err)
+	}
+	return n, nil
+}
+
 // PendingWriteIntents returns pending intents older than olderThan, oldest first.
 func (s *Store) PendingWriteIntents(ctx context.Context, olderThan time.Time, limit int) ([]WriteIntent, error) {
 	if limit < 1 || int64(limit) > math.MaxInt32 {

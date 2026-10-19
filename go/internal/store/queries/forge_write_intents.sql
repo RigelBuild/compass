@@ -91,6 +91,15 @@ WHERE state = 'pending' AND created_at < sqlc.arg(older_than)::timestamptz
 ORDER BY created_at ASC, id ASC
 LIMIT sqlc.arg(query_limit);
 
+-- name: DeleteExpiredHeldWriteIntents :execrows
+DELETE FROM forge_write_intents
+WHERE (tenant_id, id) IN (
+    SELECT tenant_id, id FROM forge_write_intents
+    WHERE state = 'held' AND created_at < sqlc.arg(older_than)::timestamptz
+    ORDER BY created_at ASC, id ASC
+    LIMIT sqlc.arg(query_limit)
+);
+
 -- name: AuthoredArtifactByCoordinateFold :one
 SELECT forge_provider, forge_host, repo, kind, number,
        agent_account_id, owner_user_id, session_id, client_request_id,

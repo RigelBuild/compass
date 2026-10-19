@@ -271,6 +271,22 @@ func (f *fakeForgeStore) PendingWriteIntents(_ context.Context, olderThan time.T
 	return out, nil
 }
 
+// DeleteExpiredHeldWriteIntents drops held keys created before olderThan; the
+// fake keeps insertion order, which is oldest first.
+func (f *fakeForgeStore) DeleteExpiredHeldWriteIntents(_ context.Context, olderThan time.Time, limit int) (int64, error) {
+	var n int64
+	kept := f.intents[:0]
+	for _, w := range f.intents {
+		if w.State == store.WriteStateHeld && w.CreatedAt.Before(olderThan) && n < int64(limit) {
+			n++
+			continue
+		}
+		kept = append(kept, w)
+	}
+	f.intents = kept
+	return n, nil
+}
+
 func (f *fakeForgeStore) AuthoredArtifactByCoordinateFold(_ context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64) (store.AuthoredArtifact, error) {
 	for _, r := range f.recorded {
 		if r.Provider == provider && r.Host == host && strings.EqualFold(r.Repo, repo) && r.Kind == kind && r.Number == number {

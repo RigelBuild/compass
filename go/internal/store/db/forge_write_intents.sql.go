@@ -77,6 +77,29 @@ func (q *Queries) CompleteForgeWriteIntent(ctx context.Context, arg CompleteForg
 	return result.RowsAffected(), nil
 }
 
+const deleteExpiredHeldWriteIntents = `-- name: DeleteExpiredHeldWriteIntents :execrows
+DELETE FROM forge_write_intents
+WHERE (tenant_id, id) IN (
+    SELECT tenant_id, id FROM forge_write_intents
+    WHERE state = 'held' AND created_at < $1::timestamptz
+    ORDER BY created_at ASC, id ASC
+    LIMIT $2
+)
+`
+
+type DeleteExpiredHeldWriteIntentsParams struct {
+	OlderThan  pgtype.Timestamptz
+	QueryLimit int32
+}
+
+func (q *Queries) DeleteExpiredHeldWriteIntents(ctx context.Context, arg DeleteExpiredHeldWriteIntentsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredHeldWriteIntents, arg.OlderThan, arg.QueryLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const endForgeWriteIntent = `-- name: EndForgeWriteIntent :execrows
 UPDATE forge_write_intents
 SET state = $1
