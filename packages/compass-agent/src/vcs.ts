@@ -589,9 +589,10 @@ export async function originRemote(
 	const match = url.match(
 		/^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/,
 	);
+	// The URL is never echoed: a remote outside these forms can embed a credential.
 	if (!match)
 		throw new Error(
-			`${toolName}: origin must be a GitHub remote; found ${url || "none"}`,
+			`${toolName}: origin must be a github.com https or ssh remote (owner/name)`,
 		);
 	return { repo: `${match[1]}/${match[2]}`, url };
 }
@@ -655,7 +656,18 @@ async function trackAuthored(
 		toolName,
 	);
 	for (const entry of entries) {
-		if (!entry.authored || !entry.pullRequest) continue;
+		if (entry.error)
+			throw new Error(
+				`${toolName}: stack_status for ${entry.headRef}: ${entry.error.message}`,
+			);
+		// A head with no PR is a push whose create failed; a local bookmark of that name marks it as ours.
+		if (
+			entry.pullRequest
+				? !entry.authored
+				: !(await hasLocal(deps, entry.headRef, toolName))
+		)
+			continue;
+		await requireNotDiverged(deps, entry.headRef, toolName);
 		await runJj(deps, toolName, [
 			...JJ_FLAGS,
 			"bookmark",
@@ -665,6 +677,38 @@ async function trackAuthored(
 			"exact:origin",
 		]);
 	}
+}
+
+async function hasLocal(
+	deps: VcsDeps,
+	name: string,
+	toolName: string,
+): Promise<boolean> {
+	const found = await runJj(
+		deps,
+		toolName,
+		argsForLog(`bookmarks(exact:${quoteRevset(name)})`),
+	);
+	return found.stdout.trim().length > 0;
+}
+
+// Tracking a bookmark whose local and remote targets diverged leaves it conflicted, which blocks every later call.
+async function requireNotDiverged(
+	deps: VcsDeps,
+	name: string,
+	toolName: string,
+): Promise<void> {
+	const local = `bookmarks(exact:${quoteRevset(name)})`;
+	const remote = `remote_bookmarks(exact:${quoteRevset(name)}, remote=exact:"origin")`;
+	const diverged = await runJj(
+		deps,
+		toolName,
+		argsForLog(`${local} ~ ::${remote} ~ ${remote}::`),
+	);
+	if (diverged.stdout.trim())
+		throw new Error(
+			`${toolName}: ${name} and ${name}@origin have diverged; run jj bookmark set ${name} -r ${name}@origin --allow-backwards to take the pushed head, then sync again`,
+		);
 }
 
 /** Fetches, tracks own remote bookmarks, then rebases the own commits onto trunk or their foreign base (D4). */

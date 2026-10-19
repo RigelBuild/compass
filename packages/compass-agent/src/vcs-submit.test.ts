@@ -54,6 +54,7 @@ class Jj {
 		readonly above: Row[] = [],
 		readonly forks: Row[] = [],
 		readonly untracked = "",
+		readonly diverged: Row[] = [],
 	) {}
 	async run(args: readonly string[]): Promise<JjResult> {
 		this.calls.push([...args]);
@@ -65,8 +66,19 @@ class Jj {
 			return ok(line({ id: "base", remote: ["main@origin"], parents: [] }));
 		if (revset.startsWith("(descendants"))
 			return ok(this.forks.map(line).join(""));
-		if (revset.endsWith(':: ~ "b"')) return ok(this.above.map(line).join(""));
+		if (revset.startsWith('"b":: ~ "b"'))
+			return ok(this.above.map(line).join(""));
 		if (revset === "@ | @-") return ok(line({ id: "c3", bookmarks: ["b"] }));
+		if (revset.startsWith("bookmarks(exact:")) {
+			const name = revset.match(/^bookmarks\(exact:"([^"]+)"\)/)?.[1] ?? "";
+			if (revset.includes(" ~ ::remote_bookmarks("))
+				return ok(this.diverged.map(line).join(""));
+			return ok(
+				this.own.some((r) => r.bookmarks?.includes(name))
+					? line({ id: name })
+					: "",
+			);
+		}
 		return ok(this.own.map(line).join(""));
 	}
 }
@@ -266,6 +278,82 @@ describe("vcs_submit", () => {
 		expect(req.call.value.entries[0]?.baseRef).toBe("main");
 	});
 
+	const statusOf = (entry: {
+		head: string;
+		authored?: boolean;
+		number?: number;
+		error?: string;
+	}) =>
+		create(ForgeCallResultSchema, {
+			result: {
+				case: "stack",
+				value: create(StackResultSchema, {
+					entries: [
+						create(StackEntryResultSchema, {
+							headRef: entry.head,
+							authored: entry.authored ?? false,
+							error: entry.error
+								? { code: "unavailable", message: entry.error }
+								: undefined,
+							pullRequest: entry.number
+								? create(PullRequestSchema, { number: entry.number })
+								: undefined,
+						}),
+					],
+				}),
+			},
+		});
+	const tracked = (jj: Jj) =>
+		jj.calls.filter((c) => c[2] === "bookmark" && c[3] === "track");
+
+	test("a pushed own head whose PR create failed is tracked; another agent's PR head is not", async () => {
+		const own = setup({
+			jj: new Jj(stack, [], [], "a\n"),
+			results: [statusOf({ head: "a" }), noPrs, submitted],
+		});
+		await exec(own.tool("vcs_submit"), { issues });
+		expect(tracked(own.jj)).toHaveLength(1);
+
+		const foreign = setup({
+			jj: new Jj(stack, [], [], "a\n"),
+			results: [statusOf({ head: "a", number: 9 }), noPrs, submitted],
+		});
+		await exec(foreign.tool("vcs_submit"), { issues });
+		expect(tracked(foreign.jj)).toHaveLength(0);
+	});
+
+	test("a diverged own head refuses before tracking, naming the recovery", async () => {
+		const s = setup({
+			jj: new Jj(stack, [], [], "a\n", [{ id: "c2", bookmarks: ["a"] }]),
+			results: [statusOf({ head: "a", authored: true, number: 11 })],
+		});
+		await expect(exec(s.tool("vcs_submit"), { issues })).rejects.toThrow(
+			/a and a@origin have diverged; run jj bookmark set a -r a@origin/,
+		);
+		expect(tracked(s.jj)).toHaveLength(0);
+		expect(s.transport.requests).toHaveLength(1);
+	});
+
+	test("a stack_status entry error stops sync before any rebase", async () => {
+		const s = setup({
+			jj: new Jj(stack, [], [], "a\n"),
+			results: [statusOf({ head: "a", error: "provider down" })],
+		});
+		await expect(exec(s.tool("vcs_submit"), { issues })).rejects.toThrow(
+			"vcs_submit: stack_status for a: provider down",
+		);
+		expect(s.jj.calls.some((c) => c[2] === "rebase")).toBe(false);
+	});
+
+	test("the above-tip check excludes other agents' remote heads", async () => {
+		const s = setup();
+		await exec(s.tool("vcs_submit"), { issues });
+		const above = s.jj.calls.find(
+			(c) => c[2] === "log" && c[5]?.startsWith('"b":: ~ "b"'),
+		);
+		expect(above?.[5]).toBe('"b":: ~ "b" ~ ::untracked_remote_bookmarks()');
+	});
+
 	test("the hook gets origin, the URL, and one stdin line per own bookmark", async () => {
 		const s = setup();
 		await exec(s.tool("vcs_submit"), { issues });
@@ -435,8 +523,8 @@ describe("vcs_retire", () => {
 		if (req?.call.case !== "retireHead") throw new Error("arm");
 		expect(req.call.value).toMatchObject({ repo: "octo/repo", headRef: "a" });
 		expect(s.jj.calls.slice(-2).map((c) => c.slice(2))).toEqual([
-			["bookmark", "delete", "a"],
-			["git", "fetch", "--remote", "origin"],
+			["bookmark", "delete", "exact:a"],
+			["git", "fetch", "--remote", "origin", "--branch", "exact:a"],
 		]);
 	});
 

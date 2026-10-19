@@ -78,9 +78,11 @@ Both tools render names/handles only — never account, container, or session id
 
 ## The forge toolset
 
-Fourteen native forge tools ship (`src/forge.ts`), one per registered tool,
-over a thin `ForgeBroker` on the `RunnerTransport.forge()` seam — the same
-broker/identity/registration shape as comms:
+Thirteen native forge tools ship (`src/forge.ts`) for issue and PR artifact
+work, over a thin `ForgeBroker` on the `RunnerTransport.forge()` seam — the
+same broker/identity/registration shape as comms. The stack arms
+(`submitStack`, `stackStatus`, `retireHead`) have no forge tool; they back the
+`vcs_*` tools.
 
 - Reads (`approval: "read"`): `forge_get_issue`, `forge_get_pull_request`,
   `forge_list_issues`.

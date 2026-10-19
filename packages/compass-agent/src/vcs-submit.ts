@@ -121,7 +121,10 @@ async function checkAbove(
 			await runJj(
 				deps,
 				toolName,
-				argsForLog(`${quoteRevset(tip)}:: ~ ${quoteRevset(tip)}`),
+				// Untracked remote heads above the tip are other agents' PRs, not this agent's unpublished work.
+				argsForLog(
+					`${quoteRevset(tip)}:: ~ ${quoteRevset(tip)} ~ ::untracked_remote_bookmarks()`,
+				),
 			)
 		).stdout,
 		toolName,
@@ -466,14 +469,17 @@ export function createSubmitTools(deps: VcsDeps): AgentTool[] {
 				...JJ_FLAGS,
 				"bookmark",
 				"delete",
-				params.bookmark,
+				`exact:${params.bookmark}`,
 			]);
+			// Fetch only this branch: a full fetch would bring in other own heads untracked, and only sync tracks them.
 			await runJj(deps, name, [
 				...JJ_FLAGS,
 				"git",
 				"fetch",
 				"--remote",
 				"origin",
+				"--branch",
+				`exact:${params.bookmark}`,
 			]);
 			return {
 				content: [

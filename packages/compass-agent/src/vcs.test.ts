@@ -576,9 +576,11 @@ describe("local VCS tools", () => {
 
 	test("sync tracks an untracked remote bookmark only when the caller authored its PR", async () => {
 		const stack = ownStackRows({ trunk: true, remoteBookmarks: [] });
+		// fetch, untracked list, divergence check (empty), track, rows, rebase, rows.
 		const jj = new FakeJj(
 			ok(),
 			ok("topic\nother\n"),
+			ok(),
 			ok(),
 			ok(stack),
 			ok(),
@@ -627,9 +629,11 @@ describe("local VCS tools", () => {
 		if (req?.call.case !== "stackStatus") throw new Error("arm");
 		expect(req.call.value.repo).toBe("octo/repo");
 		expect(req.call.value.headRefs).toEqual(["topic", "other"]);
-		expect(jj.calls.slice(0, 3)).toEqual([
+		const remote = 'remote_bookmarks(exact:"topic", remote=exact:"origin")';
+		expect(jj.calls.slice(0, 4)).toEqual([
 			call([...flags, "git", "fetch", "--remote", "origin"]),
 			call(untrackedArgs('"topic"')),
+			call(logArgs(`bookmarks(exact:"topic") ~ ::${remote} ~ ${remote}::`)),
 			call([
 				...flags,
 				"bookmark",
@@ -639,7 +643,7 @@ describe("local VCS tools", () => {
 				"exact:origin",
 			]),
 		]);
-		expect(jj.calls[3]).toEqual(call(logArgs(ownRevset)));
+		expect(jj.calls[4]).toEqual(call(logArgs(ownRevset)));
 	});
 
 	test("update-stale lists workspaces without snapshotting a stale caller", async () => {

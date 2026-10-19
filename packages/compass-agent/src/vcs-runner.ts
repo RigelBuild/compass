@@ -54,7 +54,12 @@ export async function runCommand(
 		const result = await Promise.race([done, expired]);
 		if (result) return result;
 		// The negative pid names the group this call created; nothing else is in it.
-		process.kill(-proc.pid, "SIGKILL");
+		try {
+			process.kill(-proc.pid, "SIGKILL");
+		} catch (error) {
+			// The group can exit between the timeout and the kill; that is still a timeout.
+			if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+		}
 		// Children can hold the pipes open past the kill, so the output is not awaited.
 		return { stdout: "", stderr: "", code: -1, timedOut: true };
 	} finally {
