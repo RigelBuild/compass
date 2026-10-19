@@ -404,9 +404,12 @@ func TestSeedSetupThreadPublishesOneMessagePosted(t *testing.T) {
 		t.Fatalf("AgentByHandle(supervisor) after seed = %v, want the seeded root", err)
 	}
 
-	// Exactly one MessagePosted for the Setup post. The first event off Live must
-	// be a MessagePosted authored by @compass; then no further MessagePosted
-	// arrives (a short drain window bounds the "exactly one").
+	// Exactly one MessagePosted for the Setup post. Creating the Setup topic fans
+	// its TopicUpserted first; the next event must be a MessagePosted authored by
+	// @compass, then no further MessagePosted arrives (a short drain bounds it).
+	if tu := awaitCommsEvent(t, sub.Live).GetTopicUpserted(); tu.GetTopic().GetName() != setupTopicName {
+		t.Fatalf("first comms event = TopicUpserted %v, want the %q topic create", tu, setupTopicName)
+	}
 	first := awaitCommsEvent(t, sub.Live)
 	mp := first.GetMessagePosted()
 	if mp == nil {

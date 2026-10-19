@@ -305,7 +305,7 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (I
 	return i, err
 }
 
-const insertTopicIgnore = `-- name: InsertTopicIgnore :exec
+const insertTopicIgnore = `-- name: InsertTopicIgnore :execrows
 INSERT INTO topics (id, channel_id, name, created_by_account_id, created_at_unix_ms)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (channel_id, lower(name)) DO NOTHING
@@ -319,15 +319,18 @@ type InsertTopicIgnoreParams struct {
 	CreatedAtUnixMs    int64
 }
 
-func (q *Queries) InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnoreParams) error {
-	_, err := q.db.Exec(ctx, insertTopicIgnore,
+func (q *Queries) InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnoreParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertTopicIgnore,
 		arg.ID,
 		arg.ChannelID,
 		arg.Name,
 		arg.CreatedByAccountID,
 		arg.CreatedAtUnixMs,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listMessages = `-- name: ListMessages :many

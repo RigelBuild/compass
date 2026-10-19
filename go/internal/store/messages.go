@@ -30,18 +30,25 @@ import (
 // revoked between them cannot slip a message into a channel the author can no
 // longer read, and a get-or-created topic never outlives a rolled-back insert.
 func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, topic TopicRef, clientRequestID string) (Message, bool, error) {
+	msg, _, inserted, err := s.AppendMessageTopic(ctx, m, channelID, topic, clientRequestID)
+	return msg, inserted, err
+}
+
+// AppendMessageTopic is AppendMessage that also returns the topic when this
+// append created or revived it, so the caller can announce it; nil otherwise.
+func (s *Store) AppendMessageTopic(ctx context.Context, m Message, channelID string, topic TopicRef, clientRequestID string) (Message, *Topic, bool, error) {
 	if channelID == "" {
-		return Message{}, false, fmt.Errorf("%w: message channel is required", ErrInvalidArgument)
+		return Message{}, nil, false, fmt.Errorf("%w: message channel is required", ErrInvalidArgument)
 	}
 	if m.TurnSequence > math.MaxInt64 {
-		return Message{}, false, fmt.Errorf("%w: turn_sequence %d exceeds signed BIGINT range", ErrInvalidArgument, m.TurnSequence)
+		return Message{}, nil, false, fmt.Errorf("%w: turn_sequence %d exceeds signed BIGINT range", ErrInvalidArgument, m.TurnSequence)
 	}
 	if len(m.Blocks) == 0 {
-		return Message{}, false, fmt.Errorf("%w: message has no blocks", ErrInvalidArgument)
+		return Message{}, nil, false, fmt.Errorf("%w: message has no blocks", ErrInvalidArgument)
 	}
 	// Exactly one of id / name identifies the target topic.
 	if (topic.ID == "") == (topic.Name == "") {
-		return Message{}, false, fmt.Errorf("%w: exactly one of topic id or name is required", ErrInvalidArgument)
+		return Message{}, nil, false, fmt.Errorf("%w: exactly one of topic id or name is required", ErrInvalidArgument)
 	}
 	// Mint ask ids before the insert so the returned (and stored) message
 	// carries the ids RespondToAsk correlates against; insertMessageTx
@@ -50,7 +57,7 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 
 	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
-		return Message{}, false, fmt.Errorf("store: begin append message: %w", err)
+		return Message{}, nil, false, fmt.Errorf("store: begin append message: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
@@ -59,26 +66,26 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	// the channel exists. Checked in the insert tx so a concurrent removal or
 	// tree move cannot race the gate.
 	if err := requireChannelMember(ctx, tx, m.AuthorAccountID, ChannelID(channelID)); err != nil {
-		return Message{}, false, err
+		return Message{}, nil, false, err
 	}
 
 	// A member can already see the channel, so this distinct denial leaks nothing.
 	policy, err := db.New(tx).GetChannelPostPolicy(ctx, channelID)
 	if err != nil {
 		if noRows(err) {
-			return Message{}, false, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+			return Message{}, nil, false, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
 		}
-		return Message{}, false, fmt.Errorf("store: read channel post policy: %w", err)
+		return Message{}, nil, false, fmt.Errorf("store: read channel post policy: %w", err)
 	}
 	if ChannelPostPolicy(policy.PostPolicy) == ChannelPostPolicyOwnerOnly &&
 		string(m.AuthorAccountID) != policy.OwnerAccountID {
-		return Message{}, false, fmt.Errorf("%w: channel %q is owner-only: only its owner can post", ErrPermissionDenied, policy.Name)
+		return Message{}, nil, false, fmt.Errorf("%w: channel %q is owner-only: only its owner can post", ErrPermissionDenied, policy.Name)
 	}
 
 	at := time.Now().UTC()
-	topicID, err := resolveTopicForAppend(ctx, tx, channelID, topic, m.AuthorAccountID, at.UnixMilli())
+	topicID, topicChanged, err := resolveTopicForAppend(ctx, tx, channelID, topic, m.AuthorAccountID, at.UnixMilli())
 	if err != nil {
-		return Message{}, false, err
+		return Message{}, nil, false, err
 	}
 
 	inserted, err := insertMessageTx(ctx, tx, m, topicID, clientRequestID)
@@ -87,24 +94,34 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 		// On an idempotency conflict, roll back before the pool re-read; otherwise a
 		// one-connection pool could not serve the read.
 		if err := tx.Rollback(ctx); err != nil {
-			return Message{}, false, fmt.Errorf("store: roll back deduped append: %w", err)
+			return Message{}, nil, false, fmt.Errorf("store: roll back deduped append: %w", err)
 		}
 		stored, err := s.getMessageByRequestID(ctx, m.AuthorAccountID, clientRequestID)
-		return stored, false, err
+		return stored, nil, false, err
 	case pgErrIs(err, pgForeignKeyViolation):
-		return Message{}, false, fmt.Errorf("%w: unknown author %q", ErrInvalidArgument, m.AuthorAccountID)
+		return Message{}, nil, false, fmt.Errorf("%w: unknown author %q", ErrInvalidArgument, m.AuthorAccountID)
 	case err != nil:
-		return Message{}, false, err
+		return Message{}, nil, false, err
 	}
 
 	if err := insertAskMirrors(ctx, db.New(tx), inserted, m.AuthorAccountID); err != nil {
-		return Message{}, false, err
+		return Message{}, nil, false, err
+	}
+
+	var changed *Topic
+	if topicChanged {
+		row, err := db.New(tx).GetTopic(ctx, topicID)
+		if err != nil {
+			return Message{}, nil, false, fmt.Errorf("store: read appended topic: %w", err)
+		}
+		t := topicFromRow(row)
+		changed = &t
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return Message{}, false, fmt.Errorf("store: commit append message: %w", err)
+		return Message{}, nil, false, fmt.Errorf("store: commit append message: %w", err)
 	}
-	return inserted, true, nil
+	return inserted, changed, true, nil
 }
 
 // errMessageInsertConflict signals a duplicate idempotency key to AppendMessage.
@@ -154,40 +171,44 @@ func insertMessageTx(ctx context.Context, tx pgx.Tx, m Message, topicID string, 
 
 // resolveTopicForAppend rejects foreign or unknown ids alike. Names are only
 // created when requested; concurrent creates converge on one row, and resolving
-// an archived topic revives it in the same transaction.
-func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, topic TopicRef, author AccountID, atMS int64) (string, error) {
+// an archived topic revives it in the same transaction. changed reports that
+// this call created or revived the topic.
+func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, topic TopicRef, author AccountID, atMS int64) (id string, changed bool, err error) {
 	q := db.New(tx)
 	if topic.ID != "" {
 		topicChannelID, err := q.GetTopicChannel(ctx, topic.ID)
 		switch {
 		case noRows(err):
-			return "", fmt.Errorf("%w: topic %q is not in this channel", ErrInvalidArgument, topic.ID)
+			return "", false, fmt.Errorf("%w: topic %q is not in this channel", ErrInvalidArgument, topic.ID)
 		case err != nil:
-			return "", fmt.Errorf("store: resolve topic: %w", err)
+			return "", false, fmt.Errorf("store: resolve topic: %w", err)
 		}
 		if topicChannelID != channelID {
-			return "", fmt.Errorf("%w: topic %q is not in this channel", ErrInvalidArgument, topic.ID)
+			return "", false, fmt.Errorf("%w: topic %q is not in this channel", ErrInvalidArgument, topic.ID)
 		}
-		return topic.ID, nil
+		return topic.ID, false, nil
 	}
 
 	// Get-or-create is gated on Create (R5). When set, settle a concurrent
 	// create by the unique index, never a naive SELECT-then-INSERT: a concurrent
 	// inserter's row makes this INSERT block, then DO NOTHING fires and the
 	// re-SELECT reads it. When unset, no row below is ErrNotFound.
+	created := false
 	if topic.Create {
-		if err := q.InsertTopicIgnore(ctx, db.InsertTopicIgnoreParams{
+		n, err := q.InsertTopicIgnore(ctx, db.InsertTopicIgnoreParams{
 			ID:                 newID(),
 			ChannelID:          channelID,
 			Name:               topic.Name,
 			CreatedByAccountID: string(author),
 			CreatedAtUnixMs:    atMS,
-		}); err != nil {
+		})
+		if err != nil {
 			if pgErrIs(err, pgForeignKeyViolation) {
-				return "", fmt.Errorf("%w: unknown channel %q or author %q", ErrInvalidArgument, channelID, author)
+				return "", false, fmt.Errorf("%w: unknown channel %q or author %q", ErrInvalidArgument, channelID, author)
 			}
-			return "", fmt.Errorf("store: get-or-create topic: %w", err)
+			return "", false, fmt.Errorf("store: get-or-create topic: %w", err)
 		}
+		created = n > 0
 	}
 	row, err := q.GetTopicByName(ctx, db.GetTopicByNameParams{ChannelID: channelID, Lower: topic.Name})
 	if err != nil {
@@ -195,16 +216,17 @@ func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, top
 			// Create was unset (or a racing delete removed the row) and no topic
 			// carries this name: an in-band ErrNotFound, never a silent mint. The
 			// error names only the topic name, never whether the channel exists.
-			return "", fmt.Errorf("%w: topic %q", ErrNotFound, topic.Name)
+			return "", false, fmt.Errorf("%w: topic %q", ErrNotFound, topic.Name)
 		}
-		return "", fmt.Errorf("store: resolve topic: %w", err)
+		return "", false, fmt.Errorf("store: resolve topic: %w", err)
 	}
 	if row.Archived {
 		if err := q.ReviveTopic(ctx, row.ID); err != nil {
-			return "", fmt.Errorf("store: revive archived topic: %w", err)
+			return "", false, fmt.Errorf("store: revive archived topic: %w", err)
 		}
+		return row.ID, true, nil
 	}
-	return row.ID, nil
+	return row.ID, created, nil
 }
 
 // MessagesHeadSeq returns the current head of the message sequence — the

@@ -254,8 +254,8 @@ func TestSubscribeCommsPrivateTopicUpsertedLeakBlocked(t *testing.T) {
 		t.Fatalf("CreateChannel(private): %v", err)
 	}
 
-	// A posts a message into a named topic, creating the topic (no TopicUpserted
-	// yet — get-or-create does not emit one).
+	// A posts a message into a named topic, creating the topic (its create
+	// TopicUpserted is covered by TestSubscribeCommsTopicCreateUpsertsBeforePost).
 	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}})
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
@@ -284,6 +284,67 @@ func TestSubscribeCommsPrivateTopicUpsertedLeakBlocked(t *testing.T) {
 	outsiderEvts := drainReplayAsActor(t, h, outsiderB.ID, canary)
 	if got := topicUpsertedIDs(outsiderEvts); containsString(got, privTopic) {
 		t.Fatalf("LEAK: non-member received TopicUpserted for a private topic; topic-upserted-ids = %v", got)
+	}
+}
+
+// A post that creates a topic must announce the topic before its first message,
+// or a live topic index holds a message whose topic it has never seen.
+func TestSubscribeCommsTopicCreateUpsertsBeforePost(t *testing.T) {
+	h := newStreamHarness(t)
+	ctx := context.Background()
+
+	memberA := mustUser(t, h.store, "member-a")
+	outsiderB := mustUser(t, h.store, "outsider-b")
+	priv, err := h.store.CreateChannel(ctx, memberA.ID, store.NewChannel{Name: "private", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel(private): %v", err)
+	}
+	post := func(create bool) string {
+		t.Helper()
+		resp, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: create, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hi"}}}})
+		if err != nil {
+			t.Fatalf("PostMessage(create=%v): %v", create, err)
+		}
+		return resp.GetMessage().GetTopicId()
+	}
+	topicID := post(true)
+	// Posting again to the existing topic, even with create set, adds no new topic.
+	post(true)
+	post(false)
+	// A post by name revives an archived topic, which must be announced too.
+	archived := true
+	if _, err := h.svc.UpdateTopic(WithActor(ctx, memberA.ID), &compassv1.UpdateTopicRequest{TopicId: topicID, Archived: &archived}); err != nil {
+		t.Fatalf("UpdateTopic(archive): %v", err)
+	}
+	post(false)
+
+	canary := mkCanary(t, h, "canary")
+
+	var order []string
+	var revived bool
+	for _, e := range drainReplayAsActor(t, h, memberA.ID, canary) {
+		switch {
+		case e.GetTopicUpserted().GetTopic().GetId() == topicID:
+			order = append(order, "upsert")
+			revived = !e.GetTopicUpserted().GetTopic().GetArchived()
+		case e.GetMessagePosted().GetMessage().GetTopicId() == topicID:
+			order = append(order, "post")
+		}
+	}
+	// create, three posts, archive, revive, post.
+	if want := []string{"upsert", "post", "post", "post", "upsert", "upsert", "post"}; fmt.Sprint(order) != fmt.Sprint(want) {
+		t.Fatalf("member events for the new topic = %v, want %v", order, want)
+	}
+	if !revived {
+		t.Fatal("last TopicUpserted still shows the topic archived; want the revived state")
+	}
+
+	outsiderEvts := drainReplayAsActor(t, h, outsiderB.ID, canary)
+	if got := topicUpsertedIDs(outsiderEvts); containsString(got, topicID) {
+		t.Fatalf("LEAK: non-member received TopicUpserted for a created topic; topic-upserted-ids = %v", got)
+	}
+	if got := messagePostedTopics(outsiderEvts); containsString(got, topicID) {
+		t.Fatalf("LEAK: non-member received MessagePosted for a created topic; posted-topics = %v", got)
 	}
 }
 
@@ -583,8 +644,8 @@ func TestSubscribeCommsPrivateMessageLeakBlockedLiveTail(t *testing.T) {
 	// the mutations that follow). No event is in the ring yet — CreateChannel
 	// runs on the store directly, off the bus — so each stream's first event is
 	// the first bus post it is entitled to.
-	memberEvents := firstEventAfterBoundary(t, h, memberA.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
-	outsiderEvents := firstEventAfterBoundary(t, h, outsiderB.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	memberEvents := firstPostAfterBoundary(t, h, memberA.ID)
+	outsiderEvents := firstPostAfterBoundary(t, h, outsiderB.ID)
 
 	// The private post: member entitled, non-member not.
 	privPosted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: testTopic}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}})
