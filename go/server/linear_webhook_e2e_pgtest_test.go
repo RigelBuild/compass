@@ -470,8 +470,9 @@ func (w *linE2EWire) scenarioCreatedRecordedOwner(t *testing.T) {
 	}
 }
 
-// assertTopicAnnouncedFirst checks the bus carried the topic's TopicUpserted
-// before any MessagePosted in it, so a live topic index never misses it.
+// assertTopicAnnouncedFirst checks the bus carries the topic's TopicUpserted
+// and then a MessagePosted in it, so a live topic index never misses the topic.
+// The post may still be publishing after its commit, so it also reads Live.
 func (w *linE2EWire) assertTopicAnnouncedFirst(t *testing.T, topicID string) {
 	t.Helper()
 	sub, err := w.commsBus.Subscribe(0, 0)
@@ -479,15 +480,38 @@ func (w *linE2EWire) assertTopicAnnouncedFirst(t *testing.T, topicID string) {
 		t.Fatalf("commsBus.Subscribe: %v", err)
 	}
 	defer sub.Cancel()
-	for _, ev := range sub.Replay {
-		if ev.Payload.GetTopicUpserted().GetTopic().GetId() == topicID {
-			return
+	announced := false
+	check := func(p *compassv1.SubscribeCommsResponse) bool {
+		if p.GetTopicUpserted().GetTopic().GetId() == topicID {
+			announced = true
 		}
-		if ev.Payload.GetMessagePosted().GetMessage().GetTopicId() == topicID {
+		if p.GetMessagePosted().GetMessage().GetTopicId() != topicID {
+			return false
+		}
+		if !announced {
 			t.Fatalf("MessagePosted in topic %s arrived before its TopicUpserted", topicID)
 		}
+		return true
 	}
-	t.Fatalf("no TopicUpserted for topic %s on the comms bus", topicID)
+	for _, ev := range sub.Replay {
+		if check(ev.Payload) {
+			return
+		}
+	}
+	deadline := timeAfter()
+	for {
+		select {
+		case ev, ok := <-sub.Live:
+			if !ok {
+				t.Fatal("comms bus closed before the topic's MessagePosted")
+			}
+			if check(ev.Payload) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("no MessagePosted for topic %s on the comms bus (announced=%v)", topicID, announced)
+		}
+	}
 }
 
 // scenarioSessionLinkFollowsOwnership: the one stored link points at the routing
