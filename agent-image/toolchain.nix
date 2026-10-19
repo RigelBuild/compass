@@ -6,6 +6,7 @@
   pkgs,
   lib,
   compassAgent,
+  compassForgeCredential,
   jjVineSrc,
   sourceFingerprint,
 }:
@@ -68,6 +69,7 @@ pkgs.buildEnv {
     # The entrypoint and its interpreter.
     bun
     compassAgent
+    compassForgeCredential
 
     # The agent clones and drives its own repos.
     pkgs.git
@@ -81,7 +83,6 @@ pkgs.buildEnv {
     pkgs.getent
     pkgs.gawk
 
-
     # The resume path expands a streamed archive into the private blob directory.
     pkgs.gnutar
     # A usable base environment.
@@ -90,19 +91,21 @@ pkgs.buildEnv {
     pkgs.cacert
 
     nixConf
-    # jj-vine asks gh for the resolved host's token; a host gh lacks fails closed.
+    # jj-vine passes the target project to select its installation token.
     (pkgs.writeTextDir "etc/jj/conf.d/compass-agent.toml" ''
       [jj-vine]
       forge = "github"
       openAsDraft = true
       [jj-vine.github]
       host = "https://api.github.com"
-      tokenCommand = ["${pkgs.gh}/bin/gh", "auth", "token", "--hostname", "{host}"]
+      tokenCommand = ["${compassForgeCredential}/bin/compass-forge-credential", "token", "--host", "{host}", "--repo", "{project}"]
     '')
-    # Git asks gh for any host's token; gh answers only for hosts it holds.
+    # Owner-aware credential lookup runs before gh, the default-installation fallback.
     (pkgs.writeTextDir "etc/gitconfig" ''
       [credential]
+          useHttpPath = true
           helper =
+          helper = !${compassForgeCredential}/bin/compass-forge-credential git-credential
           helper = !${pkgs.gh}/bin/gh auth git-credential
     '')
     caCertificates

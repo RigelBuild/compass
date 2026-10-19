@@ -1057,6 +1057,7 @@ type ResolvedSecret struct {
 	Kind          v1.SecretKind          `protobuf:"varint,5,opt,name=kind,proto3,enum=compass.v1.SecretKind" json:"kind,omitempty"`
 	Host          string                 `protobuf:"bytes,6,opt,name=host,proto3" json:"host,omitempty"`         // set only for SECRET_KIND_GH
 	Provider      string                 `protobuf:"bytes,7,opt,name=provider,proto3" json:"provider,omitempty"` // set only for SECRET_KIND_PROVIDER
+	Owner         string                 `protobuf:"bytes,8,opt,name=owner,proto3" json:"owner,omitempty"`       // set only for brokered SECRET_KIND_GH: login of the installation that minted it
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1136,6 +1137,13 @@ func (x *ResolvedSecret) GetHost() string {
 func (x *ResolvedSecret) GetProvider() string {
 	if x != nil {
 		return x.Provider
+	}
+	return ""
+}
+
+func (x *ResolvedSecret) GetOwner() string {
+	if x != nil {
+		return x.Owner
 	}
 	return ""
 }
@@ -2496,7 +2504,7 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\"\x16\n" +
-	"\x14BindLifetimeResponse\"\xf2\x01\n" +
+	"\x14BindLifetimeResponse\"\x88\x02\n" +
 	"\x0eResolvedSecret\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n" +
 	"\x05value\x18\x02 \x01(\tB\x03\x80\x01\x01R\x05value\x12\x1d\n" +
@@ -2504,7 +2512,8 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\bdelivery\x18\x04 \x01(\x0e2\x1a.compass.v1.SecretDeliveryR\bdelivery\x12*\n" +
 	"\x04kind\x18\x05 \x01(\x0e2\x16.compass.v1.SecretKindR\x04kind\x12\x12\n" +
 	"\x04host\x18\x06 \x01(\tR\x04host\x12\x1a\n" +
-	"\bprovider\x18\a \x01(\tR\bprovider\"I\n" +
+	"\bprovider\x18\a \x01(\tR\bprovider\x12\x14\n" +
+	"\x05owner\x18\b \x01(\tR\x05owner\"I\n" +
 	"\x0eSecretsVersion\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x18\n" +

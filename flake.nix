@@ -80,6 +80,12 @@
               doCheck = false;
             };
 
+          # The dedicated static helper shares the same module source and vendor closure.
+          compassForgeCredential = import ./tools/toolchain/compass-forge-credential.nix {
+            inherit pkgs;
+            src = goSrc;
+          };
+
           # The web UI built to a static dist (apps/ui/dist.nix). Bound in the
           # `let` because it has two consumers: its own package output and
           # compass-app's bin/dist staging.
@@ -94,6 +100,7 @@
         in
         {
           compass = goBin "compass";
+          compass-forge-credential = compassForgeCredential;
           # Boot spawns secretspec by name for the master key. The pin comes from
           # devenv.lock (this nixpkgs has 0.14.0), and it wins over a host copy.
           compass-server = (goBin "compass-server").overrideAttrs (old: {

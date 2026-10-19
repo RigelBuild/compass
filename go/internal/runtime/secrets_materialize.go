@@ -85,10 +85,11 @@ func (s ProviderSeed) String() string {
 // GoString redacts under %#v as well.
 func (s ProviderSeed) GoString() string { return s.String() }
 
-// GHCredentials is a gh forge credential routed to ~/.config/gh/hosts.yml
-// (design §414-419). Token is the secret and redacts.
+// GHCredentials is a gh forge credential routed to hosts.yml and an owner file.
+// Token is the secret and redacts.
 type GHCredentials struct {
 	Host  string
+	Owner string
 	Token string
 }
 
@@ -359,6 +360,7 @@ func (m *SecretMaterializer) Install(ctx context.Context, id WorkloadID, homeDir
 	seed := ProviderSeed{Entries: map[string]ProviderSeedEntry{}}
 	var files []SecretFile
 	var ghCreds []GHCredentials
+	var ghOwnerCreds []GHCredentials
 	var envs []SecretEnv
 
 	for _, s := range resolved {
@@ -374,6 +376,9 @@ func (m *SecretMaterializer) Install(ctx context.Context, id WorkloadID, homeDir
 			seed.Entries[s.Provider] = ProviderSeedEntry{Type: providerCredentialAPIKey, Key: s.Value}
 		case secrets.SecretGH:
 			ghCreds = append(ghCreds, GHCredentials{Host: s.Host, Token: s.Value})
+			if s.Owner != "" {
+				ghOwnerCreds = append(ghOwnerCreds, GHCredentials{Host: s.Host, Owner: s.Owner, Token: s.Value})
+			}
 		default:
 			if err := secrets.ValidateName(s.Name); err != nil {
 				return fmt.Errorf("generic secret name %q: %w", s.Name, err)
@@ -405,6 +410,15 @@ func (m *SecretMaterializer) Install(ctx context.Context, id WorkloadID, homeDir
 		}
 	} else {
 		if err := m.runScript(ctx, id, homeDir, uid, "remove stale gh credentials", removeGHHostsScript(homeDir)); err != nil {
+			return err
+		}
+	}
+	if len(ghOwnerCreds) > 0 {
+		ownerScript, err := GHOwnerTokensScript(homeDir, ghOwnerCreds)
+		if err != nil {
+			return fmt.Errorf("building gh owner credential script: %w", err)
+		}
+		if err := m.runScript(ctx, id, homeDir, uid, "install gh owner credentials", ownerScript); err != nil {
 			return err
 		}
 	}

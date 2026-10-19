@@ -32,63 +32,57 @@ func TestAgentImageVCSTools(t *testing.T) {
 	}
 }
 
-// TestAgentImageGHTokenAuth installs tokens with the production GHHostsScript and
-// checks Git and jj-vine get only the requested host's token, never another's.
+// TestAgentImageGHTokenAuth verifies owner-aware Git and jj-vine credential routing.
 func TestAgentImageGHTokenAuth(t *testing.T) {
 	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the image toolchain check")
 	}
-	const tok = "ghs_fixture"
-	// tokenCommand is a TOML string array; $argv is unquoted so it splits into argv.
-	// $host stands in for jj-vine's {host} substitution.
-	const tokenCommand = `argv=$(jj config get jj-vine.github.tokenCommand | tr -d '[],"' | sed "s/{host}/$host/")
-got=$($argv 2>/dev/null || true)
-`
-	// gitPassword prints the password Git's credential helpers return for $host.
-	const gitPassword = `pw=$(printf 'protocol=https\nhost=%s\n\n' "$host" | GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null | sed -n 's/^password=//p' || true)
-`
-	for _, tc := range []struct {
+	tokenA, tokenB := "owner-a-token", "owner-b-token"
+	ownerFiles, err := runtime.GHOwnerTokensScript("/home/agent", []runtime.GHCredentials{
+		{Host: "github.com", Owner: "owner-a", Token: tokenA},
+		{Host: "github.com", Owner: "owner-b", Token: tokenB},
+	})
+	if err != nil {
+		t.Fatalf("GHOwnerTokensScript: %v", err)
+	}
+	defaultHosts, err := runtime.GHHostsScript("/home/agent", []runtime.GHCredentials{{Host: "github.com", Owner: "owner-a", Token: tokenA}})
+	if err != nil {
+		t.Fatalf("GHHostsScript: %v", err)
+	}
+	checks := []struct {
 		name  string
-		creds []runtime.GHCredentials
+		setup string
 		check string
 	}{
-		{
-			name:  "github token",
-			creds: []runtime.GHCredentials{{Host: "github.example.com", Token: "ghs_other"}, {Host: "github.com", Token: tok}},
-			check: `host=github.com
-` + gitPassword + `test "$pw" = "` + tok + `" || { echo "git credential returned $pw"; exit 1; }
-` + tokenCommand + `test "$got" = "` + tok + `" || { echo "tokenCommand returned $got"; exit 1; }
-`,
-		},
-		{
-			name:  "other host only",
-			creds: []runtime.GHCredentials{{Host: "github.example.com", Token: "ghs_other"}},
-			check: `host=github.com
-` + gitPassword + `test -z "$pw" || { echo "git credential returned $pw"; exit 1; }
-` + tokenCommand + `test -z "$got" || { echo "tokenCommand returned $got"; exit 1; }
-host=github.example.com
-` + gitPassword + `test "$pw" = ghs_other || { echo "git credential for GHE returned $pw"; exit 1; }
-`,
-		},
-		{
-			// jj-vine derives the GHE host from origin; the github.com token must not reach it.
-			name:  "ghe remote with only a github token",
-			creds: []runtime.GHCredentials{{Host: "github.com", Token: tok}},
-			check: `cd "$(mktemp -d)" && jj git init . >/dev/null 2>&1 && jj git remote add origin https://github.example.com/owner/repo.git
-out=$(jj-vine status 2>&1) && { echo "jj-vine status succeeded: $out"; exit 1; }
-case "$out" in *"tokenCommand failed"*) ;; *) echo "jj-vine status: $out"; exit 1 ;; esac
-`,
-		},
-	} {
+		{name: "owner tokens", check: `for pair in owner-a/one:owner-a-token owner-b/two:owner-b-token; do
+  repo=${pair%%:*}; want=${pair#*:}
+  got=$(printf 'protocol=https\nhost=github.com\npath=%s\n\n' "$repo" | git credential fill | sed -n 's/^password=//p')
+  test "$got" = "$want" || { echo "credential mismatch for $repo"; exit 1; }
+done`},
+		{name: "unknown owner refused", check: `out=$(printf 'protocol=https\nhost=github.com\npath=owner-c/three\n\n' | git credential fill 2>&1) && { echo "unexpected credential for owner-c"; exit 1; }
+case "$out" in *"no credential for owner owner-c"*) ;; *) echo "$out"; exit 1 ;; esac`},
+		{name: "default owner falls through; unknown owner refused", setup: `rm -f /home/agent/.compass/forge/github.com/owner-a
+`, check: `got=$(printf 'protocol=https\nhost=github.com\npath=owner-a/one\n\n' | git credential fill | sed -n 's/^password=//p')
+test "$got" = owner-a-token || { echo "default fallback mismatch"; exit 1; }
+out=$(printf 'protocol=https\nhost=github.com\npath=owner-c/three\n\n' | git credential fill 2>&1) && { echo "wildcard owner unexpectedly accepted"; exit 1; }
+case "$out" in *"no credential for owner owner-c"*) ;; *) echo "$out"; exit 1 ;; esac`},
+		{name: "jj token command resolves project owner", check: `a=$(compass-forge-credential token --host github.com --repo owner-a/one)
+	b=$(compass-forge-credential token --host github.com --repo owner-b/two)
+	test "$a" = owner-a-token && test "$b" = owner-b-token
+	if compass-forge-credential token --host github.com --repo owner-c/three; then echo "unknown owner token accepted"; exit 1; fi`},
+		{name: "marker-free arbitrary owner falls through", setup: `rm -f /home/agent/.compass/forge/github.com/.default-owner
+			printf '%s\n' fallback-token | gh auth login --with-token
+`, check: `got=$(printf 'protocol=https\nhost=github.com\npath=owner-z/repo\n\n' | git credential fill | sed -n 's/^password=//p')
+test "$got" = fallback-token || { echo "Git marker-free fallback mismatch"; exit 1; }
+got=$(compass-forge-credential token --host github.com --repo owner-z/repo)
+test "$got" = fallback-token || { echo "jj marker-free fallback mismatch"; exit 1; }`},
+	}
+	for _, tc := range checks {
 		t.Run(tc.name, func(t *testing.T) {
-			install, err := runtime.GHHostsScript("/home/agent", tc.creds)
-			if err != nil {
-				t.Fatalf("GHHostsScript: %v", err)
-			}
-			cmd := exec.CommandContext(t.Context(), "podman", "run", "--rm", "-i", "-e", "HOME=/home/agent", agentImage, "sh", "-s")
-			cmd.Stdin = strings.NewReader(install + "set -eu\n" + tc.check)
+			cmd := exec.CommandContext(t.Context(), "podman", "run", "--rm", "-i", "-e", "HOME=/home/agent", "-e", "GH_TOKEN=fallback-token", agentImage, "sh", "-s")
+			cmd.Stdin = strings.NewReader(ownerFiles + defaultHosts + "set -eu\n" + tc.setup + tc.check)
 			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("GitHub token auth smoke in %s: %v\n%s", agentImage, err, out)
+				t.Fatalf("owner credential check in %s: %v\n%s", agentImage, err, out)
 			}
 		})
 	}

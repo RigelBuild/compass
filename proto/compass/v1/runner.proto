@@ -358,6 +358,7 @@ message ResolvedSecret {
   SecretKind kind = 5;
   string host = 6;      // set only for SECRET_KIND_GH
   string provider = 7;  // set only for SECRET_KIND_PROVIDER
+  string owner = 8;     // set only for brokered SECRET_KIND_GH: login of the installation that minted it
 }
 // SecretsVersion: a Server->Runner signal that a session's secret set changed.
 // Signal only — carries no values; the Runner re-fetches on it.
