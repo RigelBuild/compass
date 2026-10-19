@@ -210,6 +210,14 @@ func (r *OwnerRoutedGitHub) FindPullRequestByHead(ctx context.Context, repo, hea
 	return client.FindPullRequestByHead(ctx, repo, headRef)
 }
 
+func (r *OwnerRoutedGitHub) DefaultBranch(ctx context.Context, repo string) (string, error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	return client.DefaultBranch(ctx, repo)
+}
+
 func (r *OwnerRoutedGitHub) FindByWriteMarker(ctx context.Context, repo string, kind WriteKind, parent uint64, intentID string, since time.Time) (WrittenRef, bool, error) {
 	client, err := r.clientFor(ctx, repo)
 	if err != nil {
