@@ -23,8 +23,8 @@ import {
 } from "@compass/client";
 
 /** One recorded PostMessage — the fields the UI is contractually required to
- *  set. `topic` is the topic oneof (post into an existing topic by id, or
- *  get-or-create by name). */
+ *  set. `topic` is the topic oneof (post into an existing topic by id, or by
+ *  name); a name-miss creates the topic only when `createTopic` is set. */
 export interface RecordedPost {
 	readonly channelId: string;
 	readonly text: string;
