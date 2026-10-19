@@ -97,6 +97,46 @@ func TestInstallationResolverUnknownOwnerAndCachedHit(t *testing.T) {
 	}
 }
 
+func TestInstallationResolverDefaultOwner(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if _, err := fmt.Fprint(w, `[{"id":2,"account":{"login":"Owner-A"}},{"id":3,"account":{"login":"owner-b"}}]`); err != nil {
+			t.Errorf("write installation response: %v", err)
+		}
+	}))
+	defer server.Close()
+	key := testAppKey(t)
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	newResolver := func(installationID int64) *InstallationResolver {
+		return newTestInstallationResolver(t, server, GitHubAppConfig{
+			AppID: 1, InstallationID: installationID,
+			PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+			Clock:      func() time.Time { return now },
+		})
+	}
+
+	resolver := newResolver(2)
+	for range 2 {
+		if owner, err := resolver.DefaultOwner(t.Context()); err != nil || owner != "owner-a" {
+			t.Fatalf("DefaultOwner() = (%q, %v), want (owner-a, nil)", owner, err)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("installation requests = %d, want one cached snapshot", got)
+	}
+	if owner, err := newResolver(99).DefaultOwner(t.Context()); !errors.Is(err, ErrNoInstallation) {
+		t.Fatalf("DefaultOwner(absent installation) = (%q, %v), want ErrNoInstallation", owner, err)
+	}
+	before := requests.Load()
+	if owner, err := newResolver(0).DefaultOwner(t.Context()); !errors.Is(err, ErrNoInstallation) {
+		t.Fatalf("DefaultOwner(no default) = (%q, %v), want ErrNoInstallation", owner, err)
+	}
+	if got := requests.Load(); got != before {
+		t.Fatalf("installation requests without a default = %d, want %d", got, before)
+	}
+}
+
 func TestInstallationResolverCachedMissRefreshesAfterFloor(t *testing.T) {
 	var requests atomic.Int64
 	var installed atomic.Bool
