@@ -108,11 +108,9 @@ const secretspecCLI = "secretspec"
 // TestBuildBoardWebhookWiringArmedWithRealResolver drives the armed boot path
 // against the REAL SpecResolver. It declares the App secrets through the
 // production declareServerSecretNames, derives the dotenv fixture from the
-// declared rows, and calls buildBoardWebhookWiring: it asserts the wiring arms
-// (both lanes + sink + GitHub client non-nil, NOT merely err == nil), and that
-// the returned webhook-secret closure returns exactly the fixture value — the
-// assertion that proves the value flowed from the provider through the real
-// resolver rather than the path merely not erroring.
+// declared rows, and calls the wiring: it asserts both lanes, sink, router,
+// and webhook-secret closure are assembled, and the closure resolves the
+// exact fixture value through the real resolver.
 func TestBuildBoardWebhookWiringArmedWithRealResolver(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root
@@ -158,7 +156,7 @@ func TestBuildBoardWebhookWiringArmedWithRealResolver(t *testing.T) {
 	t.Cleanup(bus.Close)
 	issueBrd := board.NewIssueProjection(bus, st)
 
-	lane, notifyLane, sink, webhookSecret, client, router, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, nil, resolver, slog.New(slog.DiscardHandler))
+	lane, notifyLane, sink, webhookSecret, router, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, nil, resolver, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("buildBoardWebhookWiring armed with the real resolver = %v, want nil", err)
 	}
@@ -174,11 +172,8 @@ func TestBuildBoardWebhookWiringArmedWithRealResolver(t *testing.T) {
 	if sink == nil {
 		t.Error("fan-out sink is nil; the armed path must build it")
 	}
-	if client == nil {
-		t.Error("shared GitHub client is nil; the armed path must build it")
-	}
 	if router == nil {
-		t.Error("owner router is nil; the armed path must build it")
+		t.Error("shared owner router is nil; the armed path must build it")
 	}
 	if webhookSecret == nil {
 		t.Fatal("webhook-secret closure is nil; the armed path must build it")

@@ -2,16 +2,16 @@
 
 package server
 
-// Unit proof for RIG-2991: the board-ingest and agent-notification lanes ride ONE
-// shared forge.GitHub client, so the rate-budget gate is a SINGLE gate across both.
-// LANE-dependent: it reads the client each lane recorded, so a builder that minted
-// its own would record a different pointer and fail. No Postgres.
-
+// Unit proof for RIG-2991: board ingestion, notify, and author calls for the
+// default installation share the primary client's rate gate through the router.
+// No Postgres.
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,11 +29,17 @@ type budgetRoundTripper struct {
 }
 
 func (rt *budgetRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && req.URL.Path == "/app/installations" {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`[{"id":7,"account":{"login":"owner-a"}}]`)),
+			Request:    req,
+		}, nil
+	}
 	rt.calls++
 	if rt.calls == 1 {
-		// A 403 rate-limit signal with a Retry-After arms the client's resetAt
-		// gate ~60s out (github.go mapErrorResponse), so the NEXT call on the
-		// same client fails fast with no request.
+		// A 403 with Retry-After arms the client's resetAt gate, so its next call fails fast.
 		return &http.Response{
 			StatusCode: http.StatusForbidden,
 			Header:     http.Header{"Retry-After": {"60"}},
@@ -41,8 +47,7 @@ func (rt *budgetRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 			Request:    req,
 		}, nil
 	}
-	// A shared+armed gate must short-circuit before here; reaching this on call 2
-	// is the two-independent-gates regression the test catches.
+	// Reaching this on call 2 means a second, independent gate let the request through.
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"X-RateLimit-Remaining": {"5000"}},
@@ -58,31 +63,20 @@ type staticTokenSource struct{}
 func (staticTokenSource) Token(context.Context) (string, error) { return "t", nil }
 func (staticTokenSource) Invalidate()                           {}
 
-// TestForgeLanesShareOneBudgetGate proves the board-ingest lane and the
-// agent-notification lane ride ONE shared forge.GitHub — so the client-side
-// budget gate they ride is a single gate. It builds one forge.GitHub over a
-// scripted transport, hands it to BOTH buildBoardIngestLane and
-// buildForgeNotifyLane, then reads the client EACH LANE RECORDED
-// (boardLane.client, notifyLane.reader — the exact object each builder threaded
-// into its arm/reconciler) and (1) asserts both are the one client passed in,
-// (2) arms the gate through the board lane's recorded client
-// (ListUpdatedIssues), and (3) asserts the notify lane's recorded reader
-// (ListNewArtifacts) fast-fails with ErrBudgetExhausted and issues NO second
-// request. The pre-RIG-2991 shape — each builder minting its own client — would
-// record a different pointer per lane: the identity assertion would fail, and the
-// notify reader's independent, unarmed gate would issue a live request instead of
-// fast-failing.
+// TestForgeLanesShareOneBudgetGate proves the board-ingest and agent-notification
+// lanes share their default installation's primary rate gate through one router.
+// It observes both lanes' reader wiring, arms the gate through board reconciliation,
+// and confirms a notify read is rejected without issuing another HTTP request.
 func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 	ctx := context.Background() // test root
 	const host = "github.com"
-
 	rt := &budgetRoundTripper{}
-	client := forge.NewGitHub(forge.GitHubConfig{
+	httpClient := &http.Client{Transport: rt}
+	primary := forge.NewGitHub(forge.GitHubConfig{
 		Host:   host,
 		Token:  staticTokenSource{},
-		Client: &http.Client{Transport: rt},
+		Client: httpClient,
 	})
-
 	cfg := ServeConfig{Forge: ForgeConfig{
 		Host: host,
 		App: ForgeAppConfig{
@@ -93,41 +87,44 @@ func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 		},
 	}}
 
-	// Both lanes are built over the SAME client (nil store is safe: an empty seed
-	// means reconcileForgeSeed never touches it, and this test never sweeps).
-	boardLane, err := buildBoardIngestLane(ctx, cfg, nil, nil, client, nil, slog.Default())
+	appConfig := forge.GitHubAppConfig{
+		AppID:          42,
+		InstallationID: 7,
+		PrivateKey:     func(context.Context) ([]byte, error) { return testForgeAppKey(t), nil },
+		Host:           host,
+		Client:         httpClient,
+	}
+	installationResolver, err := forge.NewInstallationResolver(appConfig)
+	if err != nil {
+		t.Fatalf("NewInstallationResolver: %v", err)
+	}
+	router := forge.NewOwnerRoutedGitHub(primary, installationResolver, appConfig, httpClient)
+	boardLane, err := buildBoardIngestLane(ctx, cfg, nil, nil, router, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("buildBoardIngestLane: %v", err)
 	}
 	if boardLane == nil {
 		t.Fatal("buildBoardIngestLane returned nil, want an assembled lane")
 	}
-	notifyLane := buildForgeNotifyLane(cfg, nil, nil, client, slog.Default())
+	notifyLane := buildForgeNotifyLane(cfg, nil, nil, router, slog.Default())
 	if notifyLane == nil {
 		t.Fatal("buildForgeNotifyLane returned nil, want an assembled lane")
 	}
-
-	// (1) Each lane recorded the ONE client it was handed: a builder that minted
-	// its own would record a different pointer here.
-	if boardLane.client != client {
-		t.Fatal("board lane recorded a different *forge.GitHub than the one passed in")
+	if boardLane.router != router || notifyLane.reader != forge.NotifyReader(router) {
+		t.Fatal("board and notify lanes do not record the same owner router")
 	}
-	if notifyLane.reader != forge.NotifyReader(client) {
-		t.Fatal("notify lane recorded a different client than the one passed in")
-	}
-
-	// (2) Arm the gate through the BOARD LANE's recorded client: a 403 +
-	// Retry-After arms that client's resetAt.
-	if _, err := boardLane.client.ListUpdatedIssues(ctx, "owner/repo", time.Time{}, ""); err == nil {
-		t.Fatal("first read (board lane's client): err = nil, want the 403 rate-limit signal to arm the gate")
+	// The first primary-client read arms the shared default-installation gate.
+	if _, err := primary.ListUpdatedIssues(ctx, "owner-a/repo", time.Time{}, ""); err == nil {
+		t.Fatal("primary read: err = nil, want the 403 rate-limit signal to arm the gate")
 	}
 	if rt.calls != 1 {
-		t.Fatalf("after arming: transport calls = %d, want 1 (the single 403)", rt.calls)
+		t.Fatalf("after arming primary: transport calls = %d, want 1 (the single 403)", rt.calls)
+	}
+	if _, err := boardLane.router.ListUpdatedIssues(ctx, "owner-a/repo", time.Time{}, ""); !errors.Is(err, forge.ErrBudgetExhausted) {
+		t.Fatalf("board lane default-owner read error = %v, want ErrBudgetExhausted from primary gate", err)
 	}
 
-	// (3) The NOTIFY LANE's recorded reader now rides the SAME armed gate: it
-	// must fast-fail with ErrBudgetExhausted and issue NO request.
-	_, err = notifyLane.reader.ListNewArtifacts(ctx, "owner/repo", compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, 0, "")
+	_, err = notifyLane.reader.ListNewArtifacts(ctx, "owner-a/repo", compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, 0, "")
 	if err == nil {
 		t.Fatal("notify lane's reader after arming: err = nil, want ErrBudgetExhausted (the shared gate is armed)")
 	}
@@ -135,25 +132,22 @@ func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 		t.Fatalf("notify lane's reader err = %v, want ErrBudgetExhausted", err)
 	}
 	if rt.calls != 1 {
-		t.Fatalf("notify lane's reader issued a request through an armed shared gate: transport calls = %d, want 1 "+
-			"(two independent gates would let it through as call 2)", rt.calls)
+		t.Fatalf("notify lane's reader issued a request through an armed shared gate: transport calls = %d, want 1", rt.calls)
 	}
 
-	// Author writes must share the primary client's budget gate; a new client would
-	// have an independent gate and allow another request.
 	reg := newForgeProviderRegistry()
 	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: host, Token: staticTokenSource{}})
-	if err := registerGitHubForgeCoordinate(reg, cfg.Forge.resolved(), client, reviewerClient); err != nil {
+	if err := registerGitHubForgeCoordinate(reg, cfg.Forge.resolved(), router, reviewerClient); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	resolved, ok := reg.resolve(nil)
 	if !ok {
 		t.Fatal("registry did not resolve the default GitHub coordinate")
 	}
-	if resolved.author != forge.Provider(client) {
-		t.Fatal("author role is not the shared primary client (a fresh client would carry a separate budget gate)")
+	if resolved.author != forge.Provider(router) {
+		t.Fatal("author role is not the shared owner router")
 	}
-	_, err = resolved.author.CommentOnIssue(ctx, "owner/repo", 1, "body", "")
+	_, err = resolved.author.CommentOnIssue(ctx, "owner-a/repo", 1, "body", "")
 	if err == nil {
 		t.Fatal("author write after arming: err = nil, want ErrBudgetExhausted (the shared gate is armed)")
 	}
@@ -161,8 +155,7 @@ func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 		t.Fatalf("author write err = %v, want ErrBudgetExhausted", err)
 	}
 	if rt.calls != 1 {
-		t.Fatalf("author write issued a request through an armed shared gate: transport calls = %d, want 1 "+
-			"(a separate author-client gate would let it through as call 2)", rt.calls)
+		t.Fatalf("author write issued a request through an armed shared gate: transport calls = %d, want 1", rt.calls)
 	}
 }
 
@@ -181,10 +174,11 @@ func TestForgeNotifyLaneWiresPullNumberResolver(t *testing.T) {
 	const host = "github.com"
 
 	rt := &budgetRoundTripper{}
+	httpClient := &http.Client{Transport: rt}
 	client := forge.NewGitHub(forge.GitHubConfig{
 		Host:   host,
 		Token:  staticTokenSource{},
-		Client: &http.Client{Transport: rt},
+		Client: httpClient,
 	})
 	cfg := ServeConfig{Forge: ForgeConfig{
 		Host: host,
@@ -196,7 +190,20 @@ func TestForgeNotifyLaneWiresPullNumberResolver(t *testing.T) {
 		},
 	}}
 
-	notifyLane := buildForgeNotifyLane(cfg, nil, nil, client, slog.Default())
+	appHTTP := httpClient
+	appConfig := forge.GitHubAppConfig{
+		AppID:          42,
+		InstallationID: 7,
+		PrivateKey:     func(context.Context) ([]byte, error) { return testForgeAppKey(t), nil },
+		Host:           host,
+		Client:         appHTTP,
+	}
+	installationResolver, err := forge.NewInstallationResolver(appConfig)
+	if err != nil {
+		t.Fatalf("NewInstallationResolver: %v", err)
+	}
+	router := forge.NewOwnerRoutedGitHub(client, installationResolver, appConfig, appHTTP)
+	notifyLane := buildForgeNotifyLane(cfg, nil, nil, router, slog.Default())
 	if notifyLane == nil {
 		t.Fatal("buildForgeNotifyLane returned nil, want an assembled lane")
 	}
@@ -209,7 +216,7 @@ func TestForgeNotifyLaneWiresPullNumberResolver(t *testing.T) {
 	}
 
 	// (2) Arm the shared gate through the lane's own recorded read client.
-	if _, err := client.ListUpdatedIssues(ctx, "owner/repo", time.Time{}, ""); err == nil {
+	if _, err := router.ListUpdatedIssues(ctx, "owner-a/repo", time.Time{}, ""); err == nil {
 		t.Fatal("first read: err = nil, want the 403 rate-limit signal to arm the gate")
 	}
 	if rt.calls != 1 {
@@ -219,7 +226,7 @@ func TestForgeNotifyLaneWiresPullNumberResolver(t *testing.T) {
 	// (3) The recorded resolver rides that SAME armed gate: it fast-fails and
 	// issues no request. A resolver over a separately-minted client would carry
 	// its own unarmed gate and let this through as call 2.
-	_, err := notifyLane.pulls.PullNumberForSHA(ctx, "owner/repo", "abc123headsha")
+	_, err = notifyLane.pulls.PullNumberForSHA(ctx, "owner-a/repo", "abc123headsha")
 	if err == nil {
 		t.Fatal("resolver after arming: err = nil, want ErrBudgetExhausted (the shared gate is armed)")
 	}
@@ -255,7 +262,21 @@ func TestNotifyLanesWireIdentityResolver(t *testing.T) {
 		AppWebhookSecretName: "APP_WEBHOOK",
 	}}}
 
-	ghLane := buildForgeNotifyLane(cfg, nil, nil, nil, slog.Default())
+	appHTTP := &http.Client{Transport: &budgetRoundTripper{}}
+	appConfig := forge.GitHubAppConfig{
+		AppID:          42,
+		InstallationID: 7,
+		PrivateKey:     func(context.Context) ([]byte, error) { return testForgeAppKey(t), nil },
+		Host:           "github.com",
+		Client:         appHTTP,
+	}
+	installationResolver, err := forge.NewInstallationResolver(appConfig)
+	if err != nil {
+		t.Fatalf("NewInstallationResolver: %v", err)
+	}
+	primary := forge.NewGitHub(forge.GitHubConfig{Host: "github.com", Token: staticTokenSource{}, Client: appHTTP})
+	router := forge.NewOwnerRoutedGitHub(primary, installationResolver, appConfig, appHTTP)
+	ghLane := buildForgeNotifyLane(cfg, nil, nil, router, slog.Default())
 	if ghLane == nil {
 		t.Fatal("buildForgeNotifyLane returned nil, want an assembled lane")
 	}

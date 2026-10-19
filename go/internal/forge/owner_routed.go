@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // ErrInstallationLookup marks a failure to resolve a repository owner's App installation.
@@ -103,6 +105,87 @@ func (r *OwnerRoutedGitHub) ListIssues(ctx context.Context, repo string, filter 
 	return client.ListIssues(ctx, repo, filter)
 }
 
+// GetIssueConditional reads issue details through the repository owner's installation.
+func (r *OwnerRoutedGitHub) GetIssueConditional(ctx context.Context, repo string, number uint64, etag string) (ConditionalResult[Issue], error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return ConditionalResult[Issue]{}, err
+	}
+	return client.GetIssueConditional(ctx, repo, number, etag)
+}
+
+// GetPullRequestConditional reads pull request details through the owner's installation.
+func (r *OwnerRoutedGitHub) GetPullRequestConditional(ctx context.Context, repo string, number uint64, etag string) (ConditionalResult[PullRequest], error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return ConditionalResult[PullRequest]{}, err
+	}
+	return client.GetPullRequestConditional(ctx, repo, number, etag)
+}
+
+// ListComments reads artifact comments through the repository owner's installation.
+func (r *OwnerRoutedGitHub) ListComments(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, number uint64, etag string) (ConditionalResult[[]Comment], error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return ConditionalResult[[]Comment]{}, err
+	}
+	return client.ListComments(ctx, repo, kind, number, etag)
+}
+
+// ChecksConditional reads the pull request check roll-up through the owner's installation.
+func (r *OwnerRoutedGitHub) ChecksConditional(ctx context.Context, repo string, number uint64, headSHA, etag string) (ConditionalResult[Checks], error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return ConditionalResult[Checks]{}, err
+	}
+	return client.ChecksConditional(ctx, repo, number, headSHA, etag)
+}
+
+// ListNewArtifacts reads container additions through the repository owner's installation.
+func (r *OwnerRoutedGitHub) ListNewArtifacts(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, sinceNumber uint64, etag string) (ConditionalResult[[]Issue], error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return ConditionalResult[[]Issue]{}, err
+	}
+	return client.ListNewArtifacts(ctx, repo, kind, sinceNumber, etag)
+}
+
+// ListUpdatedIssues reads changed issues through the repository owner's installation.
+func (r *OwnerRoutedGitHub) ListUpdatedIssues(ctx context.Context, repo string, since time.Time, etag string) (ConditionalResult[UpdatedRows], error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return ConditionalResult[UpdatedRows]{}, err
+	}
+	return client.ListUpdatedIssues(ctx, repo, since, etag)
+}
+
+// PullRequestForSHA resolves a commit through the repository owner's installation.
+func (r *OwnerRoutedGitHub) PullRequestForSHA(ctx context.Context, repo, sha string) (uint64, error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return 0, err
+	}
+	return client.PullRequestForSHA(ctx, repo, sha)
+}
+
+// GetPullRequest reads pull request details through the repository owner's installation.
+func (r *OwnerRoutedGitHub) GetPullRequest(ctx context.Context, repo string, number uint64) (PullRequest, error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return PullRequest{}, err
+	}
+	return client.GetPullRequest(ctx, repo, number)
+}
+
+// ListOpenPullRequests reads open pull requests through the owner's installation.
+func (r *OwnerRoutedGitHub) ListOpenPullRequests(ctx context.Context, repo string) ([]UpdatedPull, error) {
+	client, err := r.clientFor(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	return client.ListOpenPullRequests(ctx, repo)
+}
+
 func (r *OwnerRoutedGitHub) CreatePullRequest(ctx context.Context, repo string, in CreatePR) (PullRequest, error) {
 	client, err := r.clientFor(ctx, repo)
 	if err != nil {
@@ -149,14 +232,6 @@ func (r *OwnerRoutedGitHub) SubmitReview(ctx context.Context, repo string, numbe
 		return SubmittedReview{}, err
 	}
 	return client.SubmitReview(ctx, repo, number, in)
-}
-
-func (r *OwnerRoutedGitHub) GetPullRequest(ctx context.Context, repo string, number uint64) (PullRequest, error) {
-	client, err := r.clientFor(ctx, repo)
-	if err != nil {
-		return PullRequest{}, err
-	}
-	return client.GetPullRequest(ctx, repo, number)
 }
 
 func (r *OwnerRoutedGitHub) Checks(ctx context.Context, repo string, number uint64) (Checks, error) {
@@ -215,4 +290,8 @@ func (r *OwnerRoutedGitHub) clientFor(ctx context.Context, repo string) (*GitHub
 	return client, nil
 }
 
-var _ Provider = (*OwnerRoutedGitHub)(nil)
+var (
+	_ Provider            = (*OwnerRoutedGitHub)(nil)
+	_ NotifyReader        = (*OwnerRoutedGitHub)(nil)
+	_ PullRequestResolver = (*OwnerRoutedGitHub)(nil)
+)
