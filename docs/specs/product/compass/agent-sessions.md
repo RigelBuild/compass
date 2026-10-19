@@ -141,3 +141,33 @@ re-provision the agent and retry the start.
   `resume_session_id`
 - **Then** the Runner launches a replacement container instead of rejecting
   the provision as already provisioned, and the resumed session starts on it.
+
+## Requirement: Agent repository credentials follow each owner's App installation
+
+The Server SHALL mint an agent's GitHub credential separately for each repository owner the agent
+is granted, on that owner's GitHub App installation. The agent's git and jj-vine SHALL each use
+the credential for the repository they act on. Every forge call, including subscriptions and
+reviews, SHALL use that owner's installation. Granting a repository whose owner lacks an
+installation of a configured App SHALL fail with `FAILED_PRECONDITION`. A wildcard grant SHALL
+cover the default installation; repositories under other owners SHALL need exact grants.
+
+### Scenario: Agent holds repositories under two owners
+
+- **Given** the GitHub App is installed on owners A and B
+- **And** an agent is granted `A/one` and `B/two`
+- **When** the agent pushes to each repository and opens a pull request on `B/two`
+- **Then** each push and the pull request use a credential minted on that owner's installation
+- **And** the credential for `A/one` does not reach `B/two`
+
+### Scenario: Owner without an installation
+
+- **Given** the GitHub App has no installation for owner C
+- **When** a user grants an agent `C/three`
+- **Then** the grant fails with `FAILED_PRECONDITION`
+- **And** the agent's other credentials are unchanged
+
+### Scenario: Forge tools use the owner's installation
+
+- **Given** an agent granted `B/two`, where B is not the default installation's owner
+- **When** the agent creates, edits, subscribes to, or reviews on `B/two` with the forge tools
+- **Then** the Server makes each call with a credential for owner B's installation

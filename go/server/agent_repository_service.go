@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 
 	"connectrpc.com/connect/v2"
@@ -24,22 +23,17 @@ type agentSecretsSignaler interface {
 	SignalSecretsVersionFor(ctx context.Context, account store.AccountID) error
 }
 
-type agentRepositoryScopeLister interface {
-	ListForgeScopeRepos(ctx context.Context, accountID store.AccountID, provider store.ForgeProvider, host string) ([]string, error)
-}
-
 type agentInstallationResolver interface {
 	InstallationFor(ctx context.Context, owner string) (int64, error)
-	DefaultInstallation() int64
 }
 
 type agentRepositoryService struct {
-	store         *store.Store
-	scopes        agentRepositoryScopeLister
-	host          string
-	broker        *gitCredentialBroker
-	signal        agentSecretsSignaler
-	installations agentInstallationResolver
+	store                 *store.Store
+	host                  string
+	broker                *gitCredentialBroker
+	signal                agentSecretsSignaler
+	installations         agentInstallationResolver
+	reviewerInstallations agentInstallationResolver
 }
 
 func newAgentRepositoryService(
@@ -48,11 +42,10 @@ func newAgentRepositoryService(
 	signal agentSecretsSignaler,
 	installations *forge.InstallationResolver,
 ) *agentRepositoryService {
-	var installationResolver agentInstallationResolver
+	svc := &agentRepositoryService{store: st, broker: broker, signal: signal}
 	if installations != nil {
-		installationResolver = installations
+		svc.installations = installations
 	}
-	svc := &agentRepositoryService{store: st, scopes: st, broker: broker, signal: signal, installations: installationResolver}
 	if broker != nil {
 		svc.host = broker.host
 	}
@@ -280,65 +273,37 @@ func (s *agentRepositoryService) requireHost() error {
 	return nil
 }
 
-// checkOrg requires the requested owner to match the agent's grants and have
-// an App installation. A wildcard grant mints on the default installation, so
-// it admits only that installation's owner.
-func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.AccountID, repo string) error {
+// checkOrg requires an installation of every configured App; reviews use a separate App.
+func (s *agentRepositoryService) checkOrg(ctx context.Context, _ store.AccountID, repo string) error {
 	org, _, _ := strings.Cut(repo, "/")
-	scopes := s.scopes
-	if scopes == nil {
-		scopes = s.store
+	if s.installations != nil {
+		if _, err := s.checkInstallation(ctx, org); err != nil {
+			return err
+		}
 	}
-	grants, err := scopes.ListForgeScopeRepos(ctx, agent, store.ForgeProviderGitHub, s.host)
-	if err != nil {
-		wrappedErr := fmt.Errorf("checking agent credential org: %w", err)
-		return connect.NewError(connect.CodeInternal, wrappedErr.Error()).WithCause(wrappedErr)
-	}
-	if err := s.checkOrgFromGrants(grants, org); err != nil {
-		return err
-	}
-	if s.installations == nil {
-		return nil
-	}
-	installation, err := s.checkInstallation(ctx, org)
-	if err != nil {
-		return err
-	}
-	if slices.Contains(grants, "*") && installation != s.installations.DefaultInstallation() {
-		return connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Sprintf("a wildcard grant covers only the default GitHub App installation, not owner %q", org))
+	if s.reviewerInstallations != nil {
+		if _, err := s.checkInstallationForApp(ctx, org, s.reviewerInstallations, "reviewer GitHub App"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func (s *agentRepositoryService) checkInstallation(ctx context.Context, org string) (int64, error) {
-	installation, err := s.installations.InstallationFor(ctx, org)
-	if err != nil {
-		if errors.Is(err, forge.ErrNoInstallation) {
-			return 0, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("the GitHub App has no installation for owner %q", org)).WithCause(err)
-		}
-		return 0, connect.NewError(installationErrorCode(err), fmt.Sprintf("resolving GitHub App installation for owner %q failed", org)).WithCause(err)
-	}
-	return installation, nil
+	return s.checkInstallationForApp(ctx, org, s.installations, "GitHub App")
 }
 
-func (s *agentRepositoryService) checkOrgFromGrants(grants []string, org string) error {
-	wildcard := false
-	mismatch := false
-	for _, grant := range grants {
-		if grant == "*" {
-			wildcard = true
-			continue
+func (s *agentRepositoryService) checkInstallationForApp(ctx context.Context, org string, resolver agentInstallationResolver, app string) (int64, error) {
+	installation, err := resolver.InstallationFor(ctx, org)
+	if err != nil {
+		if errors.Is(err, forge.ErrNoInstallation) {
+			return 0, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Sprintf("the %s has no installation for owner %q", app, org)).WithCause(err)
 		}
-		grantOrg, _, ok := strings.Cut(strings.ToLower(grant), "/")
-		if ok && grantOrg != org {
-			mismatch = true
-		}
+		return 0, connect.NewError(installationErrorCode(err),
+			fmt.Sprintf("resolving %s installation for owner %q failed", app, org)).WithCause(err)
 	}
-	if mismatch && !wildcard {
-		return connect.NewError(connect.CodeFailedPrecondition, "repository org differs from the agent's credential org")
-	}
-	return nil
+	return installation, nil
 }
 
 func (s *agentRepositoryService) mapStoreError(operation string, err error) error {

@@ -1036,6 +1036,34 @@ func buildRepoInstallationResolver(cfg ServeConfig, resolver secrets.Resolver) (
 	return installations, nil
 }
 
+// buildReviewerInstallationResolver resolves owners through the reviewer App.
+func buildReviewerInstallationResolver(cfg ForgeConfig, resolver secrets.Resolver) (*forge.InstallationResolver, error) {
+	rc := cfg.resolved()
+	client, err := forgeHTTPClient(rc.ForgeCAPath)
+	if err != nil {
+		return nil, fmt.Errorf("GitHub reviewer installation HTTP client: %w", err)
+	}
+	installations, err := forge.NewInstallationResolver(forge.GitHubAppConfig{
+		AppID:          rc.ReviewerApp.AppID,
+		InstallationID: rc.ReviewerApp.InstallationID,
+		PrivateKey:     newDeclaredSecretResolver(resolver, rc.ReviewerApp.AppPrivateKeySecret),
+		Host:           rc.Host,
+		Client:         client,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("GitHub reviewer installation resolver: %w", err)
+	}
+	return installations, nil
+}
+
+// buildConfiguredReviewerInstallationResolver leaves the lookup off when the reviewer App is unset.
+func buildConfiguredReviewerInstallationResolver(cfg ForgeConfig, resolver secrets.Resolver) (*forge.InstallationResolver, error) {
+	if cfg.ReviewerApp.AppID == 0 {
+		return nil, nil //nolint:nilnil // nil resolver means reviewer App not configured
+	}
+	return buildReviewerInstallationResolver(cfg, resolver)
+}
+
 // startGitCredentialRefresh refreshes brokered App tokens on the serve group;
 // a nil broker (no GitHub App) starts nothing.
 func startGitCredentialRefresh(ctx context.Context, group *errgroup.Group, broker *gitCredentialBroker) {

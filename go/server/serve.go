@@ -1125,7 +1125,14 @@ func buildDoors(
 	if hub != nil {
 		repoSignal = hub
 	}
+	reviewerInstallations, err := buildConfiguredReviewerInstallationResolver(cfg.Forge, serverResolver)
+	if err != nil {
+		return serveDoors{}, err
+	}
 	agentRepositorySvc := newAgentRepositoryService(st, gitCredentials, repoSignal, repoInstallations)
+	if reviewerInstallations != nil {
+		agentRepositorySvc.reviewerInstallations = reviewerInstallations
+	}
 
 	// CommsService rides the socket + dev doors and the network shared chain with
 	// no auth pair of its own here: comms attributes every RPC to the bootstrap admin.
