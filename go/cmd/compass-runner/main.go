@@ -182,7 +182,7 @@ func runnerHTTPClient(caPath, serverName string) (connecthttp.HTTPClient, error)
 	ca := orEnv(caPath, "COMPASS_RUNNER_CA")
 	name := orEnv(serverName, "COMPASS_SERVER_NAME")
 	if ca == "" && name == "" {
-		return http.DefaultClient, nil
+		return http.DefaultClient, nil //nolint:forbidigo // runner.Dial adds the Connect interceptor that carries the trace
 	}
 	return runner.NewServerClient(ca, name)
 }

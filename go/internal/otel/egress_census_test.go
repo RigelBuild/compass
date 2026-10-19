@@ -31,6 +31,7 @@ type egressSite struct {
 
 var egressSites = map[string]egressSite{
 	"cmd/compass-app/bridge_service.go:probe:compassv1connect.NewCompassServiceClient":                {class: noProvider, count: 1, reason: "the app installs no provider"},
+	"cmd/compass-runner/main.go:runnerHTTPClient:http.DefaultClient":                                  {class: traced, count: 1, reason: "runner.Dial wraps it with the Connect interceptor"},
 	"cmd/compass/client.go:httpClientFor:http.DefaultClient":                                          {class: noProvider, count: 1, reason: "the CLI has no provider; tracing is disabled by design"},
 	"cmd/compass/client.go:newAgentRepositoryClient:compassv1connect.NewAgentRepositoryServiceClient": {class: noProvider, count: 1, reason: "the CLI installs no provider"},
 	"cmd/compass/client.go:newClient:compassv1connect.NewCompassServiceClient":                        {class: noProvider, count: 1, reason: "the CLI installs no provider"},
@@ -58,7 +59,7 @@ var egressSites = map[string]egressSite{
 	"internal/pgshare/pgshare.go:waitSuiteReady:pgx.Connect":                                          {class: testHelper, count: 1, reason: "test-only database readiness probe"},
 	"internal/runner/runner.go:Dial:compassv1internalconnect.NewRunnerServiceClient":                  {class: traced, count: 1, reason: "Connect interceptor records client spans"},
 	"internal/runner/runner.go:Dial:http.DefaultClient":                                               {class: traced, count: 1, reason: "the Connect interceptor carries the trace"},
-	"internal/runner/tls.go:NewCATrustClient:http.Client":                                             {class: noProvider, count: 1, reason: "runner client can be used without an installed provider"},
+	"internal/runner/tls.go:newTLSTransportClient:http.Client":                                        {class: noProvider, count: 1, reason: "runner client can be used without an installed provider"},
 	"internal/runnertest/socket.go:DialAgentSocket:compassv1internalconnect.NewAgentGatewayClient":    {class: testHelper, count: 1, reason: "test-only generated client helper"},
 	"internal/runnertest/socket.go:DialAgentSocket:http.Client":                                       {class: testHelper, count: 1, reason: "test-only local socket helper"},
 	"internal/runnertest/socket.go:H2CClient:http.Client":                                             {class: testHelper, count: 1, reason: "test-only local socket helper"},
