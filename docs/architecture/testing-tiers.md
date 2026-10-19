@@ -14,9 +14,11 @@ The exact commands and flags are in the `pgtest` and `e2e` jobs of
 
 ## UI-inclusive tier
 
-The `podman uitier` scenario drives the real Vite UI in headless Chromium against
-an H1 fixture and checks that the agent reply renders in the topic. Run it with
-`cd go && direnv exec .. go test -tags 'podman uitier' -count=1 -p 1 -v -run '^TestUITierPostAndReply$' ./e2e/`.
+The `podman uitier` scenarios drive the real Vite UI in headless Chromium against
+an H1 fixture. One checks that the agent reply renders in a topic started from the
+UI. The other checks that a channel joined while the page is open shows its earlier
+messages. Run them with
+`cd go && direnv exec .. go test -tags 'podman uitier' -count=1 -p 1 -v -run '^TestUITier' ./e2e/`.
 It runs on pushes to `main` and nightly, not on pull requests.
 
 ## Which tier
