@@ -6,6 +6,29 @@
 import { AgentSessionState } from "@compass/client";
 import type { AgentState } from "./stub-data";
 
+/** The Session Log header's label for a session state; READY is idle, not running. */
+export function agentSessionStateLabel(state: AgentSessionState): string {
+	switch (state) {
+		case AgentSessionState.UNSPECIFIED:
+		case AgentSessionState.READY:
+			return "idle";
+		case AgentSessionState.STARTING:
+			return "starting";
+		case AgentSessionState.WORKING:
+			return "running";
+		case AgentSessionState.STOPPED:
+			return "stopped";
+		case AgentSessionState.ERRORED:
+			return "errored";
+		case AgentSessionState.DISCONNECTED:
+			return "disconnected";
+		default: {
+			const _exhaustive: never = state;
+			throw new Error(`Unhandled AgentSessionState: ${_exhaustive}`);
+		}
+	}
+}
+
 /**
  * The client-observed refinements the coarse `AgentSessionState` doesn't carry,
  * derived from the agent session event stream (design D9). All optional: with none
