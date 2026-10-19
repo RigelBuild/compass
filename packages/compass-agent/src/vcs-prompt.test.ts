@@ -16,8 +16,9 @@ describe("shipped VCS guidance", () => {
 		["manager prompt", manager],
 		["jj skill", skill],
 	] as const) {
-		test(`${name} never names jj-vine or jj-hp`, () => {
-			expect(text).not.toContain("jj-vine");
+		test(`${name} never sends the agent to jj-vine or jj-hp`, () => {
+			expect(text).not.toContain("jj-vine submit");
+			expect(text).not.toContain("jj-vine status");
 			expect(text).not.toContain("jj-hp");
 		});
 	}

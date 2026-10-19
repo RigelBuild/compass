@@ -154,6 +154,25 @@ open its replacement and check that every hunk of the old PR is in it (or droppe
 on purpose), then retire the old one with a comment on it that links the
 replacement (`forge_comment_on_pull_request`).
 
+## Moving an older PR onto the tools
+
+A PR opened before the `vcs_*` tools carries a block between
+`<!-- start jj-vine stack -->` and `<!-- end jj-vine stack -->` in its body.
+The Server has no record that you wrote it, so the tools cannot update or close
+it. Move each such line once:
+
+1. Run `vcs_sync`, then `jj bookmark rename <old> <new>` for each bookmark in
+   the line, so every PR gets a new head branch.
+2. Run `vcs_submit` with each bookmark's issue in `issues`. Then, for each new
+   PR, run `vcs_submit` with `text` naming its bookmark and a body line that
+   links the PR it replaces; `text` covers one bookmark per call.
+3. Check that the new line has every change in the old one. Then close each old
+   PR with `gh pr close <number> --comment <new PR URL>`; the `vcs_*` tools
+   cannot close a PR the Server has no record of.
+
+Review history stays on the old PR. The move is done when none of your open
+PRs carries that block.
+
 ## Command reference
 
 | Task | Tool or command |
