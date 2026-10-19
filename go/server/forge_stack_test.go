@@ -97,6 +97,12 @@ type fakeMirror struct {
 	applied [][]string
 	pushes  []map[string]string
 	pushErr error
+	// rebases records each Rebase line and its onto; conflict scripts the result.
+	rebases  [][]string
+	ontos    []string
+	conflict bool
+	// unmoved makes Rebase report that onto is already in the line.
+	unmoved bool
 }
 
 func (m *fakeMirror) ApplyBundle(_ context.Context, _ string, _ []byte, refs []string) error {
@@ -118,8 +124,26 @@ func (m *fakeMirror) Push(_ context.Context, _ string, refs map[string]string) e
 	return nil
 }
 
-func (m *fakeMirror) Rebase(context.Context, string, string, string) (string, bool, error) {
-	return "", false, errors.New("unused")
+func (m *fakeMirror) Rebase(_ context.Context, _ string, refs []string, onto string) (map[string]string, bool, error) {
+	*m.events = append(*m.events, "rebase "+strings.Join(refs, ","))
+	m.rebases = append(m.rebases, refs)
+	m.ontos = append(m.ontos, onto)
+	if m.conflict {
+		return nil, true, nil
+	}
+	heads := map[string]string{}
+	if m.unmoved {
+		return heads, false, nil
+	}
+	for _, ref := range refs {
+		heads[ref] = strings.TrimPrefix(ref, "refs/heads/") + "-new"
+	}
+	return heads, false, nil
+}
+
+func (m *fakeMirror) SeedRef(_ context.Context, _ string, ref string) (string, error) {
+	*m.events = append(*m.events, "seed "+ref)
+	return strings.TrimPrefix(ref, "refs/heads/") + "-old", nil
 }
 
 func newStackServiceForTest(t *testing.T) (*forgeService, *fakeForgeStore, *stackProvider, *fakeMirror) {
@@ -347,26 +371,138 @@ func TestSubmitStackBundleWithoutMirrorFails(t *testing.T) {
 	}
 }
 
-func TestSubmitStackForeignPRInLine(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		owner store.AccountID
-		code  string
-	}{
-		{"same owner", testOwnerID, "failed_precondition"},
-		{"different owner", "acct-other-owner", "permission_denied"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+// A foreign PR as an entry head is never written, whatever its owner.
+func TestSubmitStackForeignHeadRefuses(t *testing.T) {
+	for _, owner := range []store.AccountID{testOwnerID, "acct-other-owner"} {
+		t.Run(string(owner), func(t *testing.T) {
 			svc, st, p, m := newStackServiceForTest(t)
-			seedPR(st, p, "open", "acct-other-agent", tc.owner)
+			seedPR(st, p, "open", "acct-other-agent", owner)
 			got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall("k", "", []byte("bundle"), stackEntry("a", ""), stackEntry("b", "owner/repo#7"))))
-			if s := statuses(got); s[0] != failedStatus || s[1] != skippedStatus || got[0].GetError().GetCode() != tc.code {
-				t.Fatalf("results = %v, want %s then skipped", got, tc.code)
+			if s := statuses(got); s[0] != failedStatus || s[1] != skippedStatus || got[0].GetError().GetCode() != "permission_denied" {
+				t.Fatalf("results = %v, want permission_denied then skipped", got)
 			}
 			if len(m.pushes) != 0 || p.count("update")+p.count("create") != 0 {
 				t.Fatalf("pushes=%d events=%v, want no writes", len(m.pushes), *p.events)
 			}
 		})
+	}
+}
+
+// fakeNotifier records notices as the comms seam would post them.
+type fakeNotifier struct {
+	opened []string
+	posts  []string
+	keys   []string
+}
+
+func (n *fakeNotifier) OpenDMAsAccount(_ context.Context, account store.AccountID, req *compassv1.OpenDMRequest) (*compassv1.OpenDMResponse, error) {
+	n.opened = append(n.opened, string(account)+"->"+req.GetPeerHandle())
+	return &compassv1.OpenDMResponse{Channel: &compassv1.Channel{Id: "dm-1"}}, nil
+}
+
+func (n *fakeNotifier) PostAsAccount(_ context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
+	n.posts = append(n.posts, string(account)+"@"+req.GetChannelId()+": "+req.GetBlocks()[0].GetText())
+	n.keys = append(n.keys, req.GetClientRequestId())
+	return &compassv1.PostMessageResponse{}, nil
+}
+
+// seedForeignBase records "base" as an open PR by a sibling agent of tc's owner, with the caller's line above it.
+func seedForeignBase(t *testing.T, owner store.AccountID) (*forgeService, *stackProvider, *fakeMirror, *fakeNotifier) {
+	t.Helper()
+	svc, st, p, m := newStackServiceForTest(t)
+	const sibling = store.AccountID("acct-sibling")
+	st.accounts[sibling] = store.Account{ID: sibling, Handle: "sibling", Agent: &store.AgentAccount{OwnerUserID: owner}}
+	p.prs["base"] = &forge.PullRequest{Number: 9, Title: "sibling work", Body: "sibling text", State: "open", HeadRef: "base", BaseRef: "main"}
+	st.recordArtifact(store.AuthoredArtifact{Provider: store.ForgeProviderGitHub, Host: testHost, Repo: testRepo, Kind: store.ForgeArtifactKindPullRequest, Number: 9, AgentAccountID: sibling, OwnerUserID: owner})
+	n := &fakeNotifier{}
+	svc.notifier = n
+	return svc, p, m, n
+}
+
+func foreignLineCall() *compassv1internal.ForgeCallRequest {
+	a := stackEntry("a", "owner/repo#7")
+	a.BaseRef = "base"
+	return stackCall("k", "", []byte("bundle"), a, stackEntry("b", "owner/repo#7"))
+}
+
+func TestSubmitStackSameOwnerForeignBaseIsRebasedPushedAndRestamped(t *testing.T) {
+	svc, p, m, n := seedForeignBase(t, testOwnerID)
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, foreignLineCall()))
+	if s := statuses(got); s[0] != doneStatus || s[1] != doneStatus {
+		t.Fatalf("results = %v, want both done", got)
+	}
+	line := []string{"refs/heads/base", "refs/heads/a", "refs/heads/b"}
+	if len(m.rebases) != 1 || strings.Join(m.rebases[0], ",") != strings.Join(line, ",") || m.ontos[0] != "refs/remotes/origin/main" {
+		t.Fatalf("rebases = %v onto %v, want one replay of %v onto origin/main", m.rebases, m.ontos, line)
+	}
+	if len(m.pushes) != 1 || len(m.pushes[0]) != 3 || m.pushes[0]["refs/heads/base"] != "base-new" {
+		t.Fatalf("pushes = %v, want one leased push of the whole moved line", m.pushes)
+	}
+	base := p.prs["base"]
+	if base.Title != "sibling work" || base.BaseRef != "main" || !strings.HasPrefix(base.Body, "<!-- compass:stack -->") || !strings.Contains(base.Body, "sibling text") {
+		t.Fatalf("foreign PR = %+v, want only its stack block stamped", base)
+	}
+	for _, head := range []string{"base", "a", "b"} {
+		if !strings.Contains(p.prs[head].Body, "stack containing 3 PRs") {
+			t.Fatalf("%s body = %q, want the whole line in its block", head, p.prs[head].Body)
+		}
+	}
+	if !strings.Contains(p.prs["a"].Body, "#9 ") {
+		t.Fatalf("a body = %q, want the foreign PR in its block", p.prs["a"].Body)
+	}
+	if p.prs["a"].BaseRef != "base" || p.prs["b"].BaseRef != "a" {
+		t.Fatalf("bases = %s, %s, want base, a", p.prs["a"].BaseRef, p.prs["b"].BaseRef)
+	}
+	if len(n.posts) != 1 || n.opened[0] != string(testAgentID)+"->sibling" {
+		t.Fatalf("notices = %v via %v, want one in the caller's DM with sibling", n.posts, n.opened)
+	}
+	for _, want := range []string{"base", "#9", "base-old", "base-new"} {
+		if !strings.Contains(n.posts[0], want) {
+			t.Fatalf("notice %q, want it to name %s", n.posts[0], want)
+		}
+	}
+}
+
+func TestSubmitStackForeignBaseAlreadyCurrentIsNotPushedOrNoticed(t *testing.T) {
+	svc, _, m, n := seedForeignBase(t, testOwnerID)
+	m.unmoved = true
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, foreignLineCall()))
+	if s := statuses(got); s[0] != doneStatus || s[1] != doneStatus {
+		t.Fatalf("results = %v, want both done", got)
+	}
+	for _, push := range m.pushes {
+		if _, ok := push["refs/heads/base"]; ok {
+			t.Fatalf("pushes = %v, want the foreign bookmark untouched", m.pushes)
+		}
+	}
+	if len(n.posts) != 0 {
+		t.Fatalf("notices = %v, want none", n.posts)
+	}
+}
+
+func TestSubmitStackForeignBaseConflictPushesNothingAndAsksToResolve(t *testing.T) {
+	svc, p, m, n := seedForeignBase(t, testOwnerID)
+	m.conflict = true
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, foreignLineCall()))
+	if s := statuses(got); s[0] != failedStatus || s[1] != skippedStatus || got[0].GetError().GetCode() != "failed_precondition" {
+		t.Fatalf("results = %v, want failed_precondition then skipped", got)
+	}
+	if len(m.pushes) != 0 || p.count("update")+p.count("create") != 0 {
+		t.Fatalf("pushes=%v events=%v, want no writes", m.pushes, *p.events)
+	}
+	if len(n.posts) != 1 || !strings.Contains(n.posts[0], "resolve") || !strings.Contains(n.posts[0], "#9") {
+		t.Fatalf("notices = %v, want one resolve request naming #9", n.posts)
+	}
+}
+
+func TestSubmitStackDifferentOwnerForeignBaseRefuses(t *testing.T) {
+	svc, p, m, n := seedForeignBase(t, "acct-other-owner")
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, foreignLineCall()))
+	if s := statuses(got); s[0] != failedStatus || s[1] != skippedStatus || got[0].GetError().GetCode() != "permission_denied" {
+		t.Fatalf("results = %v, want permission_denied then skipped", got)
+	}
+	if len(m.rebases)+len(m.pushes)+len(n.posts) != 0 || p.count("update")+p.count("create") != 0 {
+		t.Fatalf("rebases=%v pushes=%v notices=%v events=%v, want nothing", m.rebases, m.pushes, n.posts, *p.events)
 	}
 }
 

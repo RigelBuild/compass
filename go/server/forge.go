@@ -154,6 +154,8 @@ type forgeService struct {
 	mirrorRecheckRetry  map[string]int
 	// mirror pushes agent bundles for submit_stack and deletes retired branches; nil means off.
 	mirror forge.Mirror
+	// notifier tells an agent when another agent rebased its bookmark; nil logs instead.
+	notifier agentNotifier
 }
 
 type mirrorTimer struct {

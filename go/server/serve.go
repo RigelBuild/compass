@@ -1915,6 +1915,7 @@ func wireForgeWriteCaller(ctx context.Context, cfg ServeConfig, st *store.Store,
 		return nil, failStartup(udsListener, listeners, err)
 	}
 	forgeSvc.publicURL = cfg.PublicURL
+	forgeSvc.notifier = commsSvc
 	hub.SetForgeCaller(forgeSvc)
 	commsSvc.SetMirrorer(forgeSvc, forgeSvc)
 	return forgeSvc, nil

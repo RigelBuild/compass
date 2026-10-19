@@ -20,7 +20,11 @@ import (
 type Mirror interface {
 	ApplyBundle(ctx context.Context, repo string, bundle []byte, refs []string) error
 	Push(ctx context.Context, repo string, refs map[string]string) error
-	Rebase(ctx context.Context, repo, ref, onto string) (newHead string, conflict bool, err error)
+	// Rebase replays a line of refs, bottom to top, onto the given commit in one
+	// replay. It returns each moved ref's new head; none move when refs[0] already contains it.
+	Rebase(ctx context.Context, repo string, refs []string, onto string) (heads map[string]string, conflict bool, err error)
+	// SeedRef points ref at the fetched remote head of the same branch and returns it.
+	SeedRef(ctx context.Context, repo, ref string) (string, error)
 }
 
 type mirrorToken func(ctx context.Context, repo string) (string, error)
@@ -198,7 +202,7 @@ func (m *gitMirror) Push(ctx context.Context, repo string, refs map[string]strin
 	return nil
 }
 
-func (m *gitMirror) Rebase(ctx context.Context, repo, ref, onto string) (string, bool, error) {
+func (m *gitMirror) Rebase(ctx context.Context, repo string, refs []string, onto string) (map[string]string, bool, error) {
 	lock := m.repoLock(repo)
 	lock.Lock()
 	defer lock.Unlock()
@@ -206,50 +210,137 @@ func (m *gitMirror) Rebase(ctx context.Context, repo, ref, onto string) (string,
 	defer m.capMu.Unlock()
 	path, _, normalized, _, err := m.prepare(ctx, repo)
 	if err != nil {
-		return "", false, err
+		return nil, false, err
 	}
-	if !strings.HasPrefix(ref, "refs/heads/") {
-		return "", false, fmt.Errorf("rebase ref %q is not a branch ref", ref)
+	if len(refs) == 0 {
+		return nil, false, errors.New("rebase needs at least one ref")
 	}
-	if _, err := m.run(ctx, path, "", "check-ref-format", ref); err != nil {
-		return "", false, fmt.Errorf("invalid rebase ref %q: %w", ref, err)
+	for _, ref := range refs {
+		if !strings.HasPrefix(ref, "refs/heads/") {
+			return nil, false, fmt.Errorf("rebase ref %q is not a branch ref", ref)
+		}
+		if _, err := m.run(ctx, path, "", "check-ref-format", ref); err != nil {
+			return nil, false, fmt.Errorf("invalid rebase ref %q: %w", ref, err)
+		}
+		if _, err := m.run(ctx, path, "", "cat-file", "-e", ref+"^{commit}"); err != nil {
+			return nil, false, fmt.Errorf("rebase ref %q is unavailable: %w", ref, err)
+		}
 	}
 	if _, err := m.run(ctx, path, "", "cat-file", "-e", onto+"^{commit}"); err != nil {
-		return "", false, fmt.Errorf("rebase target %q is unavailable: %w", onto, err)
+		return nil, false, fmt.Errorf("rebase target %q is unavailable: %w", onto, err)
 	}
-	if _, err := m.run(ctx, path, "", "cat-file", "-e", ref+"^{commit}"); err != nil {
-		return "", false, fmt.Errorf("rebase ref %q is unavailable: %w", ref, err)
+	bottom, top := refs[0], refs[len(refs)-1]
+	if _, err := m.run(ctx, path, "", "merge-base", "--is-ancestor", onto, bottom); err == nil {
+		return map[string]string{}, false, nil
+	} else if exitCode(err) != 1 {
+		return nil, false, fmt.Errorf("check %s against %s in %s: %w", bottom, onto, normalized, err)
 	}
 	refsBefore, err := m.rollbackSnapshotRefs(ctx, path)
 	if err != nil {
-		return "", false, err
+		return nil, false, err
 	}
-	baseOut, err := m.run(ctx, path, "", "merge-base", ref, onto)
+	baseOut, err := m.run(ctx, path, "", "merge-base", bottom, onto)
 	if err != nil {
-		return "", false, fmt.Errorf("find rebase base for %s: %w", normalized, err)
+		return nil, false, fmt.Errorf("find rebase base for %s: %w", normalized, err)
 	}
 	base := strings.TrimSpace(baseOut)
 	if base == "" {
-		return "", false, fmt.Errorf("find rebase base for %s: git returned an empty merge base", normalized)
+		return nil, false, fmt.Errorf("find rebase base for %s: git returned an empty merge base", normalized)
 	}
-	_, err = m.run(ctx, path, "", "replay", "--onto="+onto, "--ref="+ref, "--ref-action=update", base+".."+ref)
+	// Print mode moves no ref, so a conflict or a stray branch in the range changes nothing.
+	out, err := m.run(ctx, path, "", "replay", "--contained", "--onto="+onto, "--ref-action=print", base+".."+top)
 	if err != nil {
 		if isReplayConflict(err) {
-			return "", true, nil
+			return nil, true, nil
 		}
-		return "", false, fmt.Errorf("replay %s onto %s in %s: %w", ref, onto, normalized, err)
+		return nil, false, fmt.Errorf("replay %s onto %s in %s: %w", top, onto, normalized, err)
+	}
+	updates, err := replayUpdates(out, refs)
+	if err != nil {
+		return nil, false, fmt.Errorf("replay %s onto %s in %s: %w", top, onto, normalized, err)
+	}
+	if _, err := m.runInput(ctx, path, updates, "", "update-ref", "--stdin"); err != nil {
+		return nil, false, errors.Join(fmt.Errorf("install rebased refs for %s: %w", normalized, err), m.rollbackRefs(context.WithoutCancel(ctx), path, refsBefore))
 	}
 	if err := m.checkCaps(path); err != nil {
-		return "", false, errors.Join(err, m.rollbackRefs(ctx, path, refsBefore))
+		return nil, false, errors.Join(err, m.rollbackRefs(ctx, path, refsBefore))
 	}
-	out, err := m.run(ctx, path, "", "rev-parse", "--verify", ref)
+	heads := make(map[string]string, len(refs))
+	for _, ref := range refs {
+		out, err := m.run(ctx, path, "", "rev-parse", "--verify", ref)
+		if err != nil {
+			return nil, false, errors.Join(
+				fmt.Errorf("read rebased head for %s: %w", normalized, err),
+				m.rollbackRefs(context.WithoutCancel(ctx), path, refsBefore),
+			)
+		}
+		heads[ref] = strings.TrimSpace(out)
+	}
+	return heads, false, nil
+}
+
+// replayUpdates keeps only the requested refs from replay's printed updates,
+// as one update-ref transaction, and requires each requested ref to be in the line.
+func replayUpdates(out string, refs []string) (string, error) {
+	want := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		want[ref] = true
+	}
+	var b strings.Builder
+	b.WriteString("start\n")
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 4 || fields[0] != "update" || !want[fields[1]] {
+			continue
+		}
+		fmt.Fprintf(&b, "update %s %s %s\n", fields[1], fields[2], fields[3])
+		delete(want, fields[1])
+	}
+	for _, ref := range refs {
+		if want[ref] {
+			return "", fmt.Errorf("ref %s is not in the replayed line", ref)
+		}
+	}
+	b.WriteString("commit\n")
+	return b.String(), nil
+}
+
+func (m *gitMirror) SeedRef(ctx context.Context, repo, ref string) (string, error) {
+	lock := m.repoLock(repo)
+	lock.Lock()
+	defer lock.Unlock()
+	m.capMu.Lock()
+	defer m.capMu.Unlock()
+	path, remote, normalized, _, err := m.prepare(ctx, repo)
 	if err != nil {
-		return "", false, errors.Join(
-			fmt.Errorf("read rebased head for %s: %w", normalized, err),
-			m.rollbackRefs(context.WithoutCancel(ctx), path, refsBefore),
-		)
+		return "", err
 	}
-	return strings.TrimSpace(out), false, nil
+	refsBefore, err := m.rollbackSnapshotRefs(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	if err := m.fetch(ctx, path, remote); err != nil {
+		return "", fmt.Errorf("fetch forge refs for %s: %w", normalized, err)
+	}
+	if err := m.checkCaps(path); err != nil {
+		return "", errors.Join(err, m.rollbackRefs(ctx, path, refsBefore))
+	}
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return "", fmt.Errorf("seed ref %q is not a branch ref", ref)
+	}
+	if _, err := m.run(ctx, path, "", "check-ref-format", ref); err != nil {
+		return "", fmt.Errorf("invalid seed ref %q: %w", ref, err)
+	}
+	tracking := "refs/remotes/origin/" + strings.TrimPrefix(ref, "refs/heads/")
+	out, err := m.run(ctx, path, "", "rev-parse", "--verify", tracking+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("read fetched %s in %s: %w", tracking, normalized, err)
+	}
+	head := strings.TrimSpace(out)
+	if _, err := m.run(ctx, path, "", "update-ref", ref, head); err != nil {
+		return "", fmt.Errorf("seed %s in %s: %w", ref, normalized, err)
+	}
+	return head, nil
 }
 
 func (m *gitMirror) repoLock(repo string) *sync.Mutex {

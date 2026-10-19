@@ -220,15 +220,15 @@ func TestGitMirrorRebaseConflictDoesNotPush(t *testing.T) {
 	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
 		t.Fatalf("ApplyBundle: %v", err)
 	}
-	gotHead, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", mainHead)
+	gotHead, conflict, err := m.Rebase(t.Context(), "owner/repo", []string{"refs/heads/agent"}, mainHead)
 	if err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
 	if !conflict {
 		t.Fatalf("Rebase(%s onto %s) conflict = false, want true (base %s)", featureHead, mainHead, base)
 	}
-	if gotHead != "" {
-		t.Fatalf("Rebase conflict head = %q, want empty", gotHead)
+	if len(gotHead) != 0 {
+		t.Fatalf("Rebase conflict heads = %v, want none", gotHead)
 	}
 	if got := mirrorRef(t, fixture.remote, "refs/heads/agent"); got != featureHead {
 		t.Fatalf("remote agent = %s, want unchanged %s", got, featureHead)
@@ -265,7 +265,7 @@ func TestGitMirrorRebaseRefusesOverCapAndRestoresRef(t *testing.T) {
 		t.Fatalf("measure mirror before rebase: %v", err)
 	}
 	m.perRepoCapBytes = before + 1
-	if _, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", onto); err == nil || conflict || !strings.Contains(strings.ToLower(err.Error()), "per-repository") {
+	if _, conflict, err := m.Rebase(t.Context(), "owner/repo", []string{"refs/heads/agent"}, onto); err == nil || conflict || !strings.Contains(strings.ToLower(err.Error()), "per-repository") {
 		t.Fatalf("Rebase over cap = (conflict %t, err %v), want per-repository cap refusal", conflict, err)
 	}
 	if got := mirrorRef(t, path, "refs/heads/agent"); got != oldHead {
@@ -309,7 +309,7 @@ func TestGitMirrorRebaseRestoresRefWhenReadingHeadIsCancelled(t *testing.T) {
 	defer cancel()
 	rebaseResult := make(chan error, 1)
 	go func() {
-		_, _, err := m.Rebase(ctx, "owner/repo", "refs/heads/agent", onto)
+		_, _, err := m.Rebase(ctx, "owner/repo", []string{"refs/heads/agent"}, onto)
 		rebaseResult <- err
 	}()
 	waitForMirrorTestFile(t, replayEventPath, rebaseResult)
@@ -334,7 +334,8 @@ func TestGitMirrorRebaseSerializesConcurrentApply(t *testing.T) {
 	releaseFile, replayEventPath, _ := gateGitReplay(t)
 	rebaseResult := make(chan error, 1)
 	go func() {
-		newHead, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", onto)
+		heads, conflict, err := m.Rebase(t.Context(), "owner/repo", []string{"refs/heads/agent"}, onto)
+		newHead := heads["refs/heads/agent"]
 		if err != nil {
 			rebaseResult <- err
 			return
@@ -515,7 +516,8 @@ func TestGitMirrorRebaseUpdatesRef(t *testing.T) {
 	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
 		t.Fatalf("ApplyBundle: %v", err)
 	}
-	newHead, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", onto)
+	heads, conflict, err := m.Rebase(t.Context(), "owner/repo", []string{"refs/heads/agent"}, onto)
+	newHead := heads["refs/heads/agent"]
 	if err != nil || conflict {
 		t.Fatalf("Rebase = (%q, %t, %v), want successful rebase", newHead, conflict, err)
 	}
@@ -524,6 +526,69 @@ func TestGitMirrorRebaseUpdatesRef(t *testing.T) {
 	}
 	if got := mirrorRef(t, filepath.Join(fixture.root, "mirrors", "owner", "repo.git"), "refs/heads/agent"); got != newHead {
 		t.Fatalf("mirror agent = %s, want updated head %s", got, newHead)
+	}
+}
+
+func TestGitMirrorRebaseMovesSeededForeignLineInOneReplay(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	mirrorCommit(t, fixture.work, "base.txt", "base\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
+
+	feature := filepath.Join(fixture.root, "feature")
+	mirrorGit(t, fixture.root, "clone", "--branch", "main", fixture.remote, feature)
+	mirrorGit(t, feature, "switch", "-c", "foreign")
+	foreignOld := mirrorCommit(t, feature, "foreign.txt", "foreign\n")
+	mirrorGit(t, feature, "push", "origin", "foreign")
+	mirrorGit(t, feature, "switch", "-c", "own1")
+	own1Old := mirrorCommit(t, feature, "own1.txt", "own1\n")
+	mirrorGit(t, feature, "switch", "-c", "own2")
+	own2Old := mirrorCommit(t, feature, "own2.txt", "own2\n")
+
+	mainline := filepath.Join(fixture.root, "mainline")
+	mirrorGit(t, fixture.root, "clone", "--branch", "main", fixture.remote, mainline)
+	mirrorGit(t, mainline, "config", "user.name", "Owner")
+	mirrorGit(t, mainline, "config", "user.email", "owner@example.test")
+	onto := mirrorCommit(t, mainline, "main.txt", "main\n")
+	mirrorGit(t, mainline, "push", "origin", "main")
+
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30)
+	own := []string{"refs/heads/own1", "refs/heads/own2"}
+	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, feature, own...), own); err != nil {
+		t.Fatalf("ApplyBundle: %v", err)
+	}
+	seeded, err := m.SeedRef(t.Context(), "owner/repo", "refs/heads/foreign")
+	if err != nil || seeded != foreignOld {
+		t.Fatalf("SeedRef = (%q, %v), want fetched head %s", seeded, err, foreignOld)
+	}
+	line := []string{"refs/heads/foreign", "refs/heads/own1", "refs/heads/own2"}
+	heads, conflict, err := m.Rebase(t.Context(), "owner/repo", line, onto)
+	if err != nil || conflict {
+		t.Fatalf("Rebase = (%v, %t, %v), want a moved line", heads, conflict, err)
+	}
+	mirror := filepath.Join(fixture.root, "mirrors", "owner", "repo.git")
+	for _, ref := range line {
+		if got := mirrorRef(t, mirror, ref); got != heads[ref] {
+			t.Fatalf("mirror %s = %s, want rebased %s", ref, got, heads[ref])
+		}
+	}
+	for ref, old := range map[string]string{line[0]: foreignOld, line[1]: own1Old, line[2]: own2Old} {
+		if heads[ref] == old {
+			t.Fatalf("%s did not move from %s", ref, old)
+		}
+	}
+	// The line stays chained: each rebased ref's parent is the one below it.
+	if got := mirrorRef(t, mirror, line[0]+"^"); got != onto {
+		t.Fatalf("foreign parent = %s, want onto %s", got, onto)
+	}
+	if got := mirrorRef(t, mirror, line[1]+"^"); got != heads[line[0]] {
+		t.Fatalf("own1 parent = %s, want rebased foreign %s", got, heads[line[0]])
+	}
+	if got := mirrorRef(t, mirror, line[2]+"^"); got != heads[line[1]] {
+		t.Fatalf("own2 parent = %s, want rebased own1 %s", got, heads[line[1]])
+	}
+	again, conflict, err := m.Rebase(t.Context(), "owner/repo", line, onto)
+	if err != nil || conflict || len(again) != 0 {
+		t.Fatalf("second Rebase = (%v, %t, %v), want no move", again, conflict, err)
 	}
 }
 
@@ -537,7 +602,7 @@ func TestGitMirrorReplayFailureIsNotConflict(t *testing.T) {
 	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, fixture.work, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
 		t.Fatalf("ApplyBundle: %v", err)
 	}
-	_, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", "refs/heads/unknown")
+	_, conflict, err := m.Rebase(t.Context(), "owner/repo", []string{"refs/heads/agent"}, "refs/heads/unknown")
 	if err == nil || conflict {
 		t.Fatalf("Rebase with unknown target = (%t, %v), want non-conflict error", conflict, err)
 	}
@@ -549,6 +614,10 @@ func TestGitMirrorReplayCommandFailureIsNotConflict(t *testing.T) {
 	mirrorGit(t, fixture.work, "push", "origin", "main")
 	mirrorGit(t, fixture.work, "switch", "-c", "agent")
 	mirrorCommit(t, fixture.work, "agent.txt", "agent\n")
+	// Advance main before the fetch so the line is behind and replay actually runs.
+	mirrorGit(t, fixture.work, "switch", "main")
+	mirrorCommit(t, fixture.work, "main2.txt", "main2\n")
+	mirrorGit(t, fixture.work, "push", "origin", "main")
 	m := newTestGitMirror(t, fixture, 1<<30, 1<<30).(*gitMirror)
 	if err := m.ApplyBundle(t.Context(), "owner/repo", mirrorBundle(t, fixture.work, "refs/heads/agent"), []string{"refs/heads/agent"}); err != nil {
 		t.Fatalf("ApplyBundle: %v", err)
@@ -572,7 +641,7 @@ func TestGitMirrorReplayCommandFailureIsNotConflict(t *testing.T) {
 	}
 	t.Setenv("MIRROR_TEST_REAL_GIT", realGit)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	_, conflict, err := m.Rebase(t.Context(), "owner/repo", "refs/heads/agent", "refs/remotes/origin/main")
+	_, conflict, err := m.Rebase(t.Context(), "owner/repo", []string{"refs/heads/agent"}, "refs/remotes/origin/main")
 	if err == nil || conflict || !strings.Contains(err.Error(), "injected replay failure") {
 		t.Fatalf("Rebase with replay command failure = (%t, %v), want non-conflict command error", conflict, err)
 	}
