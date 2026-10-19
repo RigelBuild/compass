@@ -421,6 +421,39 @@ func TestForgeWriteIntentOlderSameHeadPRStaysPending(t *testing.T) {
 	}
 }
 
+// An omitted base means the default branch, so recovery checks only the creation time;
+// an explicit base must match the found PR's base.
+func TestForgeWriteIntentPRRecoveryBase(t *testing.T) {
+	for _, tc := range []struct {
+		name, reqBase, prBase string
+		recovered             bool
+	}{
+		{"omitted base recovers", "", "trunk", true},
+		{"explicit base mismatch stays pending", "main", "release", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ic := intentCases()[1]
+			svc, st, _, creator := newIntentService(t, ic)
+			call := createPRCall("b", "k1")
+			call.GetCreatePullRequest().BaseRef = tc.reqBase
+			creator.SetError(ic.method, &forge.StatusError{Status: 502, Message: "bad gateway"})
+			if fe := svc.ExecuteForgeCallAsAccountMust(t, call).GetError(); fe == nil {
+				t.Fatal("lost-response create returned success")
+			}
+			creator.SetError(ic.method, nil)
+			creator.FindPRResult = forge.PullRequest{Number: 55, State: "open", BaseRef: tc.prBase, CreatedAt: st.intents[0].CreatedAt, URL: "https://forge/pr/55"}
+			creator.FindPRFound = true
+			fe := svc.ExecuteForgeCallAsAccountMust(t, call).GetError()
+			if got := fe == nil && st.intents[0].State == store.WriteStateDone; got != tc.recovered {
+				t.Fatalf("recovered = %t (err %v, state %s), want %t", got, fe, st.intents[0].State, tc.recovered)
+			}
+			if countCalls(creator, ic.method) != 1 {
+				t.Fatalf("creates = %d, want 1", countCalls(creator, ic.method))
+			}
+		})
+	}
+}
+
 // TestForgeWriteIntentRecoveryRestoresPullRequestRows checks recovered PR completion as one store operation.
 func TestForgeWriteIntentRecoveryRestoresPullRequestRows(t *testing.T) {
 	tc := intentCases()[1]

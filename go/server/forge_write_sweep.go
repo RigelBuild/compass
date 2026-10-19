@@ -211,8 +211,9 @@ func (s *forgeService) findWrite(ctx context.Context, in store.WriteIntent) (for
 		if err != nil || !found {
 			return forge.WrittenRef{}, nil, false, err
 		}
-		// A reused head can carry an older PR; adopt only one on our base created after the intent.
-		if in.BaseRef == "" || pr.BaseRef != in.BaseRef ||
+		// A reused head can carry an older PR, so adopt only one created after the intent.
+		// An empty base asked for the default branch, which is not resolved here, so only an explicit base is compared.
+		if (in.BaseRef != "" && pr.BaseRef != in.BaseRef) ||
 			pr.CreatedAt.IsZero() || pr.CreatedAt.Before(in.CreatedAt.Add(-writePRClockSkew)) {
 			return forge.WrittenRef{}, nil, false, nil
 		}
