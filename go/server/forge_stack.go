@@ -233,7 +233,7 @@ func (r *stackRun) preflight(ctx context.Context, entries []*compassv1internal.S
 // claim holds the entry's derived key for this target and refuses one already
 // used for another. A held row sends nothing; create promotes it before the write.
 func (r *stackRun) claim(ctx context.Context, head string) *compassv1internal.ForgeCallError {
-	t := r.target(head)
+	t := r.target(head, "", nil)
 	in, err := r.s.store.HoldWriteIntent(ctx, t.intent(uuid.NewString(), r.intentKey(head)))
 	if err != nil {
 		return storeForgeError(err)
@@ -428,7 +428,7 @@ func (r *stackRun) requireOwn(ctx context.Context, pr forge.PullRequest, head st
 
 // adopt records an unrecorded PR an earlier attempt of this call created.
 func (r *stackRun) adopt(ctx context.Context, pr forge.PullRequest, head string) *compassv1internal.ForgeCallError {
-	in, ref, fe := r.s.beginWrite(ctx, r.intentKey(head), r.target(head))
+	in, ref, fe := r.s.beginWrite(ctx, r.intentKey(head), r.target(head, "", nil))
 	if fe != nil {
 		return fe
 	}
@@ -459,7 +459,7 @@ func (r *stackRun) create(ctx context.Context, e *compassv1internal.StackEntry, 
 	if fe != nil {
 		return forge.PullRequest{}, false, fe
 	}
-	intent, prior, fe := r.s.beginWrite(ctx, r.intentKey(head), r.target(head))
+	intent, prior, fe := r.s.beginWrite(ctx, r.intentKey(head), r.target(head, base, link))
 	if fe != nil {
 		return forge.PullRequest{}, false, fe
 	}
@@ -491,10 +491,7 @@ func (r *stackRun) create(ctx context.Context, e *compassv1internal.StackEntry, 
 		return forge.PullRequest{}, false, r.s.failWrite(ctx, intent.ID, err, op).GetError()
 	}
 	a := r.s.authoredArtifact(r.rf, r.id, r.caller, r.session, r.repo, store.ForgeArtifactKindPullRequest, pr.Number)
-	if fe := r.s.recordPullRequest(ctx, a, pr, translatePR(pr, r.rf, r.repo), link); fe != nil {
-		return forge.PullRequest{}, false, fe
-	}
-	if fe := r.s.completeWrite(ctx, intent.ID, &a, ""); fe != nil {
+	if fe := r.s.recordPullRequest(ctx, intent.ID, a, pr, link); fe != nil {
 		return forge.PullRequest{}, false, fe
 	}
 	return pr, true, nil
@@ -607,8 +604,8 @@ func (r *stackRun) op(bodyLen int) forgeOp {
 	return forgeOp{provider: r.rf.author.Name(), op: "submit_stack", bodyLen: bodyLen, bodyLimit: r.rf.bodyLimit}
 }
 
-func (r *stackRun) target(head string) writeTarget {
-	return writeTarget{rf: r.rf, id: r.id, caller: r.caller, session: r.session, repo: r.repo, kind: forge.WriteKindPullRequest, headRef: head}
+func (r *stackRun) target(head, base string, issue *store.ForgeCoord) writeTarget {
+	return writeTarget{rf: r.rf, id: r.id, caller: r.caller, session: r.session, repo: r.repo, kind: forge.WriteKindPullRequest, headRef: head, baseRef: base, issueLink: issue}
 }
 
 func failedEntry(head string, fe *compassv1internal.ForgeCallError) *compassv1internal.StackEntryResult {

@@ -394,21 +394,27 @@ type ForgeStateTransition struct {
 }
 
 type ForgeWriteIntent struct {
-	ID              string
-	ForgeProvider   int16
-	ForgeHost       string
-	Repo            string
-	Kind            int16
-	ParentNumber    int64
-	HeadRef         string
-	AgentAccountID  string
-	OwnerUserID     string
-	SessionID       string
-	ClientRequestID string
-	ForgeKey        string
-	State           string
-	CreatedAt       pgtype.Timestamptz
-	TenantID        string
+	ID                     string
+	ForgeProvider          int16
+	ForgeHost              string
+	Repo                   string
+	Kind                   int16
+	ParentNumber           int64
+	HeadRef                string
+	AgentAccountID         string
+	OwnerUserID            string
+	SessionID              string
+	ClientRequestID        string
+	ForgeKey               string
+	State                  string
+	CreatedAt              pgtype.Timestamptz
+	TenantID               string
+	BaseRef                pgtype.Text
+	ForgeUrl               string
+	IssueLinkForgeProvider pgtype.Int2
+	IssueLinkForgeHost     pgtype.Text
+	IssueLinkRepo          pgtype.Text
+	IssueLinkNumber        pgtype.Int8
 }
 
 type GatewayCredential struct {

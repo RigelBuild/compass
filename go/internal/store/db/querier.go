@@ -120,6 +120,7 @@ type Querier interface {
 	CloseOrphanedComputeIntervals(ctx context.Context) (int64, error)
 	CollectSegment(ctx context.Context, arg CollectSegmentParams) ([]CollectSegmentRow, error)
 	CompleteForgeWriteIntent(ctx context.Context, arg CompleteForgeWriteIntentParams) (int64, error)
+	CompletePullRequestWriteIntent(ctx context.Context, arg CompletePullRequestWriteIntentParams) (int64, error)
 	// ComputeUsagePruneHorizon pins the horizon while the rebuild replaces newer rows.
 	ComputeUsagePruneHorizon(ctx context.Context) (pgtype.Timestamptz, error)
 	// ComputeUsageSeries sums matching rows at one pre-aggregated granularity.
@@ -313,7 +314,7 @@ type Querier interface {
 	// Feeds requireGroupCreateAuthz: owner, agent-owner, same namespace, or SHARED-visibility group.
 	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
 	HasForgeScope(ctx context.Context, arg HasForgeScopeParams) (bool, error)
-	HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIntentParams) (ForgeWriteIntent, error)
+	HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIntentParams) (HoldForgeWriteIntentRow, error)
 	// HotTailBytes and HotTailSizes derive the checkpoint inside the statement, so
 	// a checkpoint committed between the valve's reads cannot shift its window.
 	HotTailBytes(ctx context.Context, sessionID string) (int64, error)
@@ -565,7 +566,7 @@ type Querier interface {
 	// LockTokenUsage serializes one tenant's appends and rebuilds. A rebuild beside
 	// an append would count the append's events twice or lose them.
 	LockTokenUsage(ctx context.Context) error
-	LockWriteIntent(ctx context.Context, id string) (ForgeWriteIntent, error)
+	LockWriteIntent(ctx context.Context, id string) (LockWriteIntentRow, error)
 	MarkForgeMirror(ctx context.Context, arg MarkForgeMirrorParams) (int64, error)
 	MarkForgeNoticeDelivered(ctx context.Context, id pgtype.UUID) (int64, error)
 	MarkMentionsRouted(ctx context.Context, arg MarkMentionsRoutedParams) error
@@ -590,11 +591,11 @@ type Querier interface {
 	OwnerSetLostChannelVisibility(ctx context.Context, arg OwnerSetLostChannelVisibilityParams) ([]string, error)
 	OwnersPeered(ctx context.Context, arg OwnersPeeredParams) (bool, error)
 	OwnersPeeredRowsForShare(ctx context.Context, arg OwnersPeeredRowsForShareParams) ([]OwnersPeeredRowsForShareRow, error)
-	PRWriteIntentByHead(ctx context.Context, arg PRWriteIntentByHeadParams) (ForgeWriteIntent, error)
-	PendingForgeWriteIntents(ctx context.Context, arg PendingForgeWriteIntentsParams) ([]ForgeWriteIntent, error)
+	PRWriteIntentByHead(ctx context.Context, arg PRWriteIntentByHeadParams) (PRWriteIntentByHeadRow, error)
+	PendingForgeWriteIntents(ctx context.Context, arg PendingForgeWriteIntentsParams) ([]PendingForgeWriteIntentsRow, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
 	PlacementForAgent(ctx context.Context, agentAccountID string) (PlacementForAgentRow, error)
-	PromoteForgeWriteIntent(ctx context.Context, id string) (int64, error)
+	PromoteForgeWriteIntent(ctx context.Context, arg PromoteForgeWriteIntentParams) (int64, error)
 	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) (int64, error)
 	PullRequestForgeUpdatedAt(ctx context.Context, arg PullRequestForgeUpdatedAtParams) (pgtype.Timestamptz, error)
 	PullRequestLinks(ctx context.Context, arg PullRequestLinksParams) ([]PullRequestLinksRow, error)
@@ -633,7 +634,7 @@ type Querier interface {
 	RecordForgeNotice(ctx context.Context, arg RecordForgeNoticeParams) (RecordForgeNoticeRow, error)
 	// Durable create attempts. Failed attempts may reuse a request key; pending,
 	// done, and lost attempts retain it as the idempotency result.
-	RecordForgeWriteIntent(ctx context.Context, arg RecordForgeWriteIntentParams) (ForgeWriteIntent, error)
+	RecordForgeWriteIntent(ctx context.Context, arg RecordForgeWriteIntentParams) (RecordForgeWriteIntentRow, error)
 	// Runs under the BYPASSRLS system role (delivery consumer, no tenant GUC), so
 	// tenant_id is stamped explicitly from the owning account's FK rather than the
 	// column DEFAULT (which would NULL-violate with no GUC). The INSERT..SELECT
@@ -846,7 +847,7 @@ type Querier interface {
 	// fires on the ON CONFLICT DO UPDATE path — never set here.
 	UpsertSecret(ctx context.Context, arg UpsertSecretParams) error
 	UserPeerPair(ctx context.Context, arg UserPeerPairParams) (UserPeerPairRow, error)
-	WriteIntentByID(ctx context.Context, id string) (ForgeWriteIntent, error)
+	WriteIntentByID(ctx context.Context, id string) (WriteIntentByIDRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

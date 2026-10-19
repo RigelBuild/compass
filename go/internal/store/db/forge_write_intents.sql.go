@@ -60,17 +60,114 @@ func (q *Queries) AuthoredArtifactByCoordinateFold(ctx context.Context, arg Auth
 
 const completeForgeWriteIntent = `-- name: CompleteForgeWriteIntent :execrows
 UPDATE forge_write_intents
-SET state = 'done', forge_key = $1
-WHERE id = $2 AND state = 'pending'
+SET state = 'done', forge_key = $1, forge_url = $2
+WHERE id = $3 AND state = 'pending'
 `
 
 type CompleteForgeWriteIntentParams struct {
 	ForgeKey string
+	ForgeUrl string
 	ID       string
 }
 
 func (q *Queries) CompleteForgeWriteIntent(ctx context.Context, arg CompleteForgeWriteIntentParams) (int64, error) {
-	result, err := q.db.Exec(ctx, completeForgeWriteIntent, arg.ForgeKey, arg.ID)
+	result, err := q.db.Exec(ctx, completeForgeWriteIntent, arg.ForgeKey, arg.ForgeUrl, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const completePullRequestWriteIntent = `-- name: CompletePullRequestWriteIntent :execrows
+WITH intent AS (
+    SELECT tenant_id, forge_provider, forge_host, repo, agent_account_id,
+           owner_user_id, session_id, issue_link_forge_provider,
+           issue_link_forge_host, issue_link_repo, issue_link_number
+    FROM forge_write_intents
+    WHERE id = $2 AND state = 'pending' AND kind = 2
+    FOR UPDATE
+), artifact AS (
+    SELECT $3::bigint AS number
+    WHERE EXISTS (SELECT 1 FROM intent)
+), owned AS (
+    INSERT INTO forge_authored_artifacts (
+        forge_provider, forge_host, repo, kind, number, agent_account_id,
+        owner_user_id, session_id, client_request_id, created_at_unix_ms
+    )
+    SELECT i.forge_provider, i.forge_host, i.repo, 2, a.number,
+           i.agent_account_id, i.owner_user_id, i.session_id, '',
+           $4::bigint
+    FROM intent i CROSS JOIN artifact a
+    ON CONFLICT (tenant_id, forge_provider, forge_host, repo, kind, number) DO UPDATE
+       SET session_id = EXCLUDED.session_id,
+           client_request_id = EXCLUDED.client_request_id,
+           created_at_unix_ms = EXCLUDED.created_at_unix_ms
+    RETURNING number
+), pull_request AS (
+    INSERT INTO pull_requests (
+        forge_provider, forge_host, repo, number, forge_state,
+        forge_created_at, forge_updated_at, pr
+    )
+    SELECT $5::smallint, $6::text,
+           $7::text, a.number,
+           $8::text, $9::timestamptz,
+           $10::timestamptz, $11::jsonb
+    FROM artifact a
+    ON CONFLICT (tenant_id, forge_provider, forge_host, repo, number) DO NOTHING
+    RETURNING number
+), issue_link AS (
+    INSERT INTO pull_request_issue_links (
+        pr_forge_provider, pr_forge_host, pr_repo, pr_number,
+        issue_forge_provider, issue_forge_host, issue_repo, issue_number, source
+    )
+    SELECT $5::smallint, $6::text,
+           $7::text, a.number,
+           i.issue_link_forge_provider, i.issue_link_forge_host,
+           i.issue_link_repo, i.issue_link_number, 1
+    FROM intent i CROSS JOIN artifact a
+    WHERE i.issue_link_forge_provider IS NOT NULL
+    ON CONFLICT (tenant_id, pr_forge_provider, pr_forge_host, pr_repo, pr_number,
+                 issue_forge_provider, issue_forge_host, issue_repo, issue_number)
+    DO UPDATE SET source = 1
+    RETURNING pr_number
+)
+UPDATE forge_write_intents
+SET state = 'done', forge_key = (SELECT number::text FROM artifact),
+    forge_url = $1::text
+WHERE forge_write_intents.id = $2 AND forge_write_intents.state = 'pending'
+  AND EXISTS (SELECT 1 FROM owned)
+  AND (NOT EXISTS (SELECT 1 FROM intent WHERE issue_link_forge_provider IS NOT NULL)
+       OR EXISTS (SELECT 1 FROM issue_link))
+`
+
+type CompletePullRequestWriteIntentParams struct {
+	ForgeUrl        string
+	ID              string
+	Number          int64
+	CreatedAtUnixMs int64
+	PrForgeProvider int16
+	PrForgeHost     string
+	PrRepo          string
+	ForgeState      string
+	ForgeCreatedAt  pgtype.Timestamptz
+	ForgeUpdatedAt  pgtype.Timestamptz
+	Pr              []byte
+}
+
+func (q *Queries) CompletePullRequestWriteIntent(ctx context.Context, arg CompletePullRequestWriteIntentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completePullRequestWriteIntent,
+		arg.ForgeUrl,
+		arg.ID,
+		arg.Number,
+		arg.CreatedAtUnixMs,
+		arg.PrForgeProvider,
+		arg.PrForgeHost,
+		arg.PrRepo,
+		arg.ForgeState,
+		arg.ForgeCreatedAt,
+		arg.ForgeUpdatedAt,
+		arg.Pr,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -123,21 +220,22 @@ func (q *Queries) EndForgeWriteIntent(ctx context.Context, arg EndForgeWriteInte
 
 const holdForgeWriteIntent = `-- name: HoldForgeWriteIntent :one
 INSERT INTO forge_write_intents (
-    id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+    id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
     agent_account_id, owner_user_id, session_id, client_request_id, state
 )
 VALUES (
     $1, $2, $3, $4,
-    $5, $6, $7,
-    $8, $9, $10,
-    $11, 'held'
+    $5, $6, $7, $8::text,
+    $9, $10, $11,
+    $12, 'held'
 )
 ON CONFLICT (tenant_id, agent_account_id, client_request_id)
     WHERE state <> 'failed'
 DO UPDATE SET id = forge_write_intents.id
-RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
           agent_account_id, owner_user_id, session_id, client_request_id,
-          forge_key, state, created_at, tenant_id
+          issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
+          forge_key, forge_url, state, created_at, tenant_id
 `
 
 type HoldForgeWriteIntentParams struct {
@@ -148,13 +246,38 @@ type HoldForgeWriteIntentParams struct {
 	Kind            int16
 	ParentNumber    int64
 	HeadRef         string
+	BaseRef         pgtype.Text
 	AgentAccountID  string
 	OwnerUserID     string
 	SessionID       string
 	ClientRequestID string
 }
 
-func (q *Queries) HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIntentParams) (ForgeWriteIntent, error) {
+type HoldForgeWriteIntentRow struct {
+	ID                     string
+	ForgeProvider          int16
+	ForgeHost              string
+	Repo                   string
+	Kind                   int16
+	ParentNumber           int64
+	HeadRef                string
+	BaseRef                pgtype.Text
+	AgentAccountID         string
+	OwnerUserID            string
+	SessionID              string
+	ClientRequestID        string
+	IssueLinkForgeProvider pgtype.Int2
+	IssueLinkForgeHost     pgtype.Text
+	IssueLinkRepo          pgtype.Text
+	IssueLinkNumber        pgtype.Int8
+	ForgeKey               string
+	ForgeUrl               string
+	State                  string
+	CreatedAt              pgtype.Timestamptz
+	TenantID               string
+}
+
+func (q *Queries) HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIntentParams) (HoldForgeWriteIntentRow, error) {
 	row := q.db.QueryRow(ctx, holdForgeWriteIntent,
 		arg.ID,
 		arg.ForgeProvider,
@@ -163,12 +286,13 @@ func (q *Queries) HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIn
 		arg.Kind,
 		arg.ParentNumber,
 		arg.HeadRef,
+		arg.BaseRef,
 		arg.AgentAccountID,
 		arg.OwnerUserID,
 		arg.SessionID,
 		arg.ClientRequestID,
 	)
-	var i ForgeWriteIntent
+	var i HoldForgeWriteIntentRow
 	err := row.Scan(
 		&i.ID,
 		&i.ForgeProvider,
@@ -177,11 +301,17 @@ func (q *Queries) HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIn
 		&i.Kind,
 		&i.ParentNumber,
 		&i.HeadRef,
+		&i.BaseRef,
 		&i.AgentAccountID,
 		&i.OwnerUserID,
 		&i.SessionID,
 		&i.ClientRequestID,
+		&i.IssueLinkForgeProvider,
+		&i.IssueLinkForgeHost,
+		&i.IssueLinkRepo,
+		&i.IssueLinkNumber,
 		&i.ForgeKey,
+		&i.ForgeUrl,
 		&i.State,
 		&i.CreatedAt,
 		&i.TenantID,
@@ -190,17 +320,42 @@ func (q *Queries) HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIn
 }
 
 const lockWriteIntent = `-- name: LockWriteIntent :one
-SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
        agent_account_id, owner_user_id, session_id, client_request_id,
-       forge_key, state, created_at, tenant_id
+       issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
+       forge_key, forge_url, state, created_at, tenant_id
 FROM forge_write_intents
 WHERE id = $1
 FOR UPDATE
 `
 
-func (q *Queries) LockWriteIntent(ctx context.Context, id string) (ForgeWriteIntent, error) {
+type LockWriteIntentRow struct {
+	ID                     string
+	ForgeProvider          int16
+	ForgeHost              string
+	Repo                   string
+	Kind                   int16
+	ParentNumber           int64
+	HeadRef                string
+	BaseRef                pgtype.Text
+	AgentAccountID         string
+	OwnerUserID            string
+	SessionID              string
+	ClientRequestID        string
+	IssueLinkForgeProvider pgtype.Int2
+	IssueLinkForgeHost     pgtype.Text
+	IssueLinkRepo          pgtype.Text
+	IssueLinkNumber        pgtype.Int8
+	ForgeKey               string
+	ForgeUrl               string
+	State                  string
+	CreatedAt              pgtype.Timestamptz
+	TenantID               string
+}
+
+func (q *Queries) LockWriteIntent(ctx context.Context, id string) (LockWriteIntentRow, error) {
 	row := q.db.QueryRow(ctx, lockWriteIntent, id)
-	var i ForgeWriteIntent
+	var i LockWriteIntentRow
 	err := row.Scan(
 		&i.ID,
 		&i.ForgeProvider,
@@ -209,11 +364,17 @@ func (q *Queries) LockWriteIntent(ctx context.Context, id string) (ForgeWriteInt
 		&i.Kind,
 		&i.ParentNumber,
 		&i.HeadRef,
+		&i.BaseRef,
 		&i.AgentAccountID,
 		&i.OwnerUserID,
 		&i.SessionID,
 		&i.ClientRequestID,
+		&i.IssueLinkForgeProvider,
+		&i.IssueLinkForgeHost,
+		&i.IssueLinkRepo,
+		&i.IssueLinkNumber,
 		&i.ForgeKey,
+		&i.ForgeUrl,
 		&i.State,
 		&i.CreatedAt,
 		&i.TenantID,
@@ -222,9 +383,10 @@ func (q *Queries) LockWriteIntent(ctx context.Context, id string) (ForgeWriteInt
 }
 
 const pRWriteIntentByHead = `-- name: PRWriteIntentByHead :one
-SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
        agent_account_id, owner_user_id, session_id, client_request_id,
-       forge_key, state, created_at, tenant_id
+       issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
+       forge_key, forge_url, state, created_at, tenant_id
 FROM forge_write_intents
 WHERE forge_provider = $1
   AND forge_host = $2
@@ -242,14 +404,38 @@ type PRWriteIntentByHeadParams struct {
 	HeadRef       string
 }
 
-func (q *Queries) PRWriteIntentByHead(ctx context.Context, arg PRWriteIntentByHeadParams) (ForgeWriteIntent, error) {
+type PRWriteIntentByHeadRow struct {
+	ID                     string
+	ForgeProvider          int16
+	ForgeHost              string
+	Repo                   string
+	Kind                   int16
+	ParentNumber           int64
+	HeadRef                string
+	BaseRef                pgtype.Text
+	AgentAccountID         string
+	OwnerUserID            string
+	SessionID              string
+	ClientRequestID        string
+	IssueLinkForgeProvider pgtype.Int2
+	IssueLinkForgeHost     pgtype.Text
+	IssueLinkRepo          pgtype.Text
+	IssueLinkNumber        pgtype.Int8
+	ForgeKey               string
+	ForgeUrl               string
+	State                  string
+	CreatedAt              pgtype.Timestamptz
+	TenantID               string
+}
+
+func (q *Queries) PRWriteIntentByHead(ctx context.Context, arg PRWriteIntentByHeadParams) (PRWriteIntentByHeadRow, error) {
 	row := q.db.QueryRow(ctx, pRWriteIntentByHead,
 		arg.ForgeProvider,
 		arg.ForgeHost,
 		arg.Repo,
 		arg.HeadRef,
 	)
-	var i ForgeWriteIntent
+	var i PRWriteIntentByHeadRow
 	err := row.Scan(
 		&i.ID,
 		&i.ForgeProvider,
@@ -258,11 +444,17 @@ func (q *Queries) PRWriteIntentByHead(ctx context.Context, arg PRWriteIntentByHe
 		&i.Kind,
 		&i.ParentNumber,
 		&i.HeadRef,
+		&i.BaseRef,
 		&i.AgentAccountID,
 		&i.OwnerUserID,
 		&i.SessionID,
 		&i.ClientRequestID,
+		&i.IssueLinkForgeProvider,
+		&i.IssueLinkForgeHost,
+		&i.IssueLinkRepo,
+		&i.IssueLinkNumber,
 		&i.ForgeKey,
+		&i.ForgeUrl,
 		&i.State,
 		&i.CreatedAt,
 		&i.TenantID,
@@ -271,9 +463,10 @@ func (q *Queries) PRWriteIntentByHead(ctx context.Context, arg PRWriteIntentByHe
 }
 
 const pendingForgeWriteIntents = `-- name: PendingForgeWriteIntents :many
-SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
        agent_account_id, owner_user_id, session_id, client_request_id,
-       forge_key, state, created_at, tenant_id
+       issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
+       forge_key, forge_url, state, created_at, tenant_id
 FROM forge_write_intents
 WHERE state = 'pending' AND created_at < $1::timestamptz
 ORDER BY created_at ASC, id ASC
@@ -285,15 +478,39 @@ type PendingForgeWriteIntentsParams struct {
 	QueryLimit int32
 }
 
-func (q *Queries) PendingForgeWriteIntents(ctx context.Context, arg PendingForgeWriteIntentsParams) ([]ForgeWriteIntent, error) {
+type PendingForgeWriteIntentsRow struct {
+	ID                     string
+	ForgeProvider          int16
+	ForgeHost              string
+	Repo                   string
+	Kind                   int16
+	ParentNumber           int64
+	HeadRef                string
+	BaseRef                pgtype.Text
+	AgentAccountID         string
+	OwnerUserID            string
+	SessionID              string
+	ClientRequestID        string
+	IssueLinkForgeProvider pgtype.Int2
+	IssueLinkForgeHost     pgtype.Text
+	IssueLinkRepo          pgtype.Text
+	IssueLinkNumber        pgtype.Int8
+	ForgeKey               string
+	ForgeUrl               string
+	State                  string
+	CreatedAt              pgtype.Timestamptz
+	TenantID               string
+}
+
+func (q *Queries) PendingForgeWriteIntents(ctx context.Context, arg PendingForgeWriteIntentsParams) ([]PendingForgeWriteIntentsRow, error) {
 	rows, err := q.db.Query(ctx, pendingForgeWriteIntents, arg.OlderThan, arg.QueryLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ForgeWriteIntent
+	var items []PendingForgeWriteIntentsRow
 	for rows.Next() {
-		var i ForgeWriteIntent
+		var i PendingForgeWriteIntentsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ForgeProvider,
@@ -302,11 +519,17 @@ func (q *Queries) PendingForgeWriteIntents(ctx context.Context, arg PendingForge
 			&i.Kind,
 			&i.ParentNumber,
 			&i.HeadRef,
+			&i.BaseRef,
 			&i.AgentAccountID,
 			&i.OwnerUserID,
 			&i.SessionID,
 			&i.ClientRequestID,
+			&i.IssueLinkForgeProvider,
+			&i.IssueLinkForgeHost,
+			&i.IssueLinkRepo,
+			&i.IssueLinkNumber,
 			&i.ForgeKey,
+			&i.ForgeUrl,
 			&i.State,
 			&i.CreatedAt,
 			&i.TenantID,
@@ -323,12 +546,33 @@ func (q *Queries) PendingForgeWriteIntents(ctx context.Context, arg PendingForge
 
 const promoteForgeWriteIntent = `-- name: PromoteForgeWriteIntent :execrows
 UPDATE forge_write_intents
-SET state = 'pending', created_at = now()
-WHERE id = $1 AND state = 'held'
+SET state = 'pending', created_at = now(),
+    base_ref = COALESCE($1::text, base_ref),
+    issue_link_forge_provider = COALESCE($2::smallint, issue_link_forge_provider),
+    issue_link_forge_host = COALESCE($3::text, issue_link_forge_host),
+    issue_link_repo = COALESCE($4::text, issue_link_repo),
+    issue_link_number = COALESCE($5::bigint, issue_link_number)
+WHERE id = $6 AND state = 'held'
 `
 
-func (q *Queries) PromoteForgeWriteIntent(ctx context.Context, id string) (int64, error) {
-	result, err := q.db.Exec(ctx, promoteForgeWriteIntent, id)
+type PromoteForgeWriteIntentParams struct {
+	BaseRef                pgtype.Text
+	IssueLinkForgeProvider pgtype.Int2
+	IssueLinkForgeHost     pgtype.Text
+	IssueLinkRepo          pgtype.Text
+	IssueLinkNumber        pgtype.Int8
+	ID                     string
+}
+
+func (q *Queries) PromoteForgeWriteIntent(ctx context.Context, arg PromoteForgeWriteIntentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, promoteForgeWriteIntent,
+		arg.BaseRef,
+		arg.IssueLinkForgeProvider,
+		arg.IssueLinkForgeHost,
+		arg.IssueLinkRepo,
+		arg.IssueLinkNumber,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -338,40 +582,73 @@ func (q *Queries) PromoteForgeWriteIntent(ctx context.Context, id string) (int64
 const recordForgeWriteIntent = `-- name: RecordForgeWriteIntent :one
 
 INSERT INTO forge_write_intents (
-    id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
-    agent_account_id, owner_user_id, session_id, client_request_id, state
+    id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
+    agent_account_id, owner_user_id, session_id, client_request_id,
+    issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number, state
 )
 VALUES (
     $1, $2, $3, $4,
-    $5, $6, $7,
-    $8, $9, $10,
-    $11, 'pending'
+    $5, $6, $7, $8::text,
+    $9, $10, $11,
+    $12, $13::smallint,
+    $14::text, $15::text,
+    $16::bigint, 'pending'
 )
 ON CONFLICT (tenant_id, agent_account_id, client_request_id)
     WHERE state <> 'failed'
 DO UPDATE SET id = forge_write_intents.id
-RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
           agent_account_id, owner_user_id, session_id, client_request_id,
-          forge_key, state, created_at, tenant_id
+          issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
+          forge_key, forge_url, state, created_at, tenant_id
 `
 
 type RecordForgeWriteIntentParams struct {
-	ID              string
-	ForgeProvider   int16
-	ForgeHost       string
-	Repo            string
-	Kind            int16
-	ParentNumber    int64
-	HeadRef         string
-	AgentAccountID  string
-	OwnerUserID     string
-	SessionID       string
-	ClientRequestID string
+	ID                     string
+	ForgeProvider          int16
+	ForgeHost              string
+	Repo                   string
+	Kind                   int16
+	ParentNumber           int64
+	HeadRef                string
+	BaseRef                pgtype.Text
+	AgentAccountID         string
+	OwnerUserID            string
+	SessionID              string
+	ClientRequestID        string
+	IssueLinkForgeProvider pgtype.Int2
+	IssueLinkForgeHost     pgtype.Text
+	IssueLinkRepo          pgtype.Text
+	IssueLinkNumber        pgtype.Int8
+}
+
+type RecordForgeWriteIntentRow struct {
+	ID                     string
+	ForgeProvider          int16
+	ForgeHost              string
+	Repo                   string
+	Kind                   int16
+	ParentNumber           int64
+	HeadRef                string
+	BaseRef                pgtype.Text
+	AgentAccountID         string
+	OwnerUserID            string
+	SessionID              string
+	ClientRequestID        string
+	IssueLinkForgeProvider pgtype.Int2
+	IssueLinkForgeHost     pgtype.Text
+	IssueLinkRepo          pgtype.Text
+	IssueLinkNumber        pgtype.Int8
+	ForgeKey               string
+	ForgeUrl               string
+	State                  string
+	CreatedAt              pgtype.Timestamptz
+	TenantID               string
 }
 
 // Durable create attempts. Failed attempts may reuse a request key; pending,
 // done, and lost attempts retain it as the idempotency result.
-func (q *Queries) RecordForgeWriteIntent(ctx context.Context, arg RecordForgeWriteIntentParams) (ForgeWriteIntent, error) {
+func (q *Queries) RecordForgeWriteIntent(ctx context.Context, arg RecordForgeWriteIntentParams) (RecordForgeWriteIntentRow, error) {
 	row := q.db.QueryRow(ctx, recordForgeWriteIntent,
 		arg.ID,
 		arg.ForgeProvider,
@@ -380,12 +657,17 @@ func (q *Queries) RecordForgeWriteIntent(ctx context.Context, arg RecordForgeWri
 		arg.Kind,
 		arg.ParentNumber,
 		arg.HeadRef,
+		arg.BaseRef,
 		arg.AgentAccountID,
 		arg.OwnerUserID,
 		arg.SessionID,
 		arg.ClientRequestID,
+		arg.IssueLinkForgeProvider,
+		arg.IssueLinkForgeHost,
+		arg.IssueLinkRepo,
+		arg.IssueLinkNumber,
 	)
-	var i ForgeWriteIntent
+	var i RecordForgeWriteIntentRow
 	err := row.Scan(
 		&i.ID,
 		&i.ForgeProvider,
@@ -394,11 +676,17 @@ func (q *Queries) RecordForgeWriteIntent(ctx context.Context, arg RecordForgeWri
 		&i.Kind,
 		&i.ParentNumber,
 		&i.HeadRef,
+		&i.BaseRef,
 		&i.AgentAccountID,
 		&i.OwnerUserID,
 		&i.SessionID,
 		&i.ClientRequestID,
+		&i.IssueLinkForgeProvider,
+		&i.IssueLinkForgeHost,
+		&i.IssueLinkRepo,
+		&i.IssueLinkNumber,
 		&i.ForgeKey,
+		&i.ForgeUrl,
 		&i.State,
 		&i.CreatedAt,
 		&i.TenantID,
@@ -407,16 +695,41 @@ func (q *Queries) RecordForgeWriteIntent(ctx context.Context, arg RecordForgeWri
 }
 
 const writeIntentByID = `-- name: WriteIntentByID :one
-SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
        agent_account_id, owner_user_id, session_id, client_request_id,
-       forge_key, state, created_at, tenant_id
+       issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
+       forge_key, forge_url, state, created_at, tenant_id
 FROM forge_write_intents
 WHERE id = $1
 `
 
-func (q *Queries) WriteIntentByID(ctx context.Context, id string) (ForgeWriteIntent, error) {
+type WriteIntentByIDRow struct {
+	ID                     string
+	ForgeProvider          int16
+	ForgeHost              string
+	Repo                   string
+	Kind                   int16
+	ParentNumber           int64
+	HeadRef                string
+	BaseRef                pgtype.Text
+	AgentAccountID         string
+	OwnerUserID            string
+	SessionID              string
+	ClientRequestID        string
+	IssueLinkForgeProvider pgtype.Int2
+	IssueLinkForgeHost     pgtype.Text
+	IssueLinkRepo          pgtype.Text
+	IssueLinkNumber        pgtype.Int8
+	ForgeKey               string
+	ForgeUrl               string
+	State                  string
+	CreatedAt              pgtype.Timestamptz
+	TenantID               string
+}
+
+func (q *Queries) WriteIntentByID(ctx context.Context, id string) (WriteIntentByIDRow, error) {
 	row := q.db.QueryRow(ctx, writeIntentByID, id)
-	var i ForgeWriteIntent
+	var i WriteIntentByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.ForgeProvider,
@@ -425,11 +738,17 @@ func (q *Queries) WriteIntentByID(ctx context.Context, id string) (ForgeWriteInt
 		&i.Kind,
 		&i.ParentNumber,
 		&i.HeadRef,
+		&i.BaseRef,
 		&i.AgentAccountID,
 		&i.OwnerUserID,
 		&i.SessionID,
 		&i.ClientRequestID,
+		&i.IssueLinkForgeProvider,
+		&i.IssueLinkForgeHost,
+		&i.IssueLinkRepo,
+		&i.IssueLinkNumber,
 		&i.ForgeKey,
+		&i.ForgeUrl,
 		&i.State,
 		&i.CreatedAt,
 		&i.TenantID,

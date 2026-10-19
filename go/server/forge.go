@@ -118,17 +118,17 @@ func (r *forgeProviderRegistry) resolve(ref *compassv1.ForgeRef) (resolvedForge,
 // mirror mode, and tracked PR reads.
 type forgeStore interface { //nolint:interfacebloat // the forge write path's whole store surface: attribution, write intents, scope, and mirror mode.
 	GetAccount(ctx context.Context, id store.AccountID) (store.Account, error)
-	CreatePullRequestWithLink(ctx context.Context, a store.AuthoredArtifact, pr store.PullRequestRow, issue *store.ForgeCoord) error
+	PullRequestsByCoords(ctx context.Context, coords []store.ForgeCoord) ([]store.PullRequestRow, error)
 	EnsureAgentForgeSubscription(ctx context.Context, sub store.AgentForgeSubscription) (string, error)
 	DeleteAgentForgeSubscription(ctx context.Context, agent store.AccountID, subscriptionID string) error
 	RecordStateTransition(ctx context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64, state string, agent store.AccountID, at time.Time) error
 	HasForgeScope(ctx context.Context, account store.AccountID, provider store.ForgeProvider, host, repo string) (bool, error)
 	ForgeMirrorMode(ctx context.Context, provider store.ForgeProvider, host, repo string) (store.ForgeMirrorMode, error)
-	PullRequestsByCoords(ctx context.Context, coords []store.ForgeCoord) ([]store.PullRequestRow, error)
 	RecordWriteIntent(ctx context.Context, in store.WriteIntent) (store.WriteIntent, error)
 	HoldWriteIntent(ctx context.Context, in store.WriteIntent) (store.WriteIntent, error)
-	PromoteWriteIntent(ctx context.Context, id string) error
-	CompleteWriteIntent(ctx context.Context, id string, artifact *store.AuthoredArtifact, forgeKey string) error
+	PromoteWriteIntent(ctx context.Context, in store.WriteIntent) error
+	CompleteWriteIntent(ctx context.Context, id string, artifact *store.AuthoredArtifact, forgeKey, forgeURL string) error
+	CompletePullRequestWriteIntent(ctx context.Context, id string, artifact store.AuthoredArtifact, pr store.PullRequestRow, forgeURL string) error
 	EndWriteIntent(ctx context.Context, id string, state store.WriteState) error
 	DeleteExpiredHeldWriteIntents(ctx context.Context, olderThan time.Time, limit int) (int64, error)
 	PendingWriteIntents(ctx context.Context, olderThan time.Time, limit int) ([]store.WriteIntent, error)
@@ -414,7 +414,7 @@ func (s *forgeService) createIssue(ctx context.Context, caller store.AccountID, 
 		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.author.Name(), op: "create_issue"})
 	}
 	a := s.authoredArtifact(rf, id, caller, sessionID, req.GetRepo(), store.ForgeArtifactKindIssue, iss.Number)
-	if fe := s.completeWrite(ctx, intent.ID, &a, ""); fe != nil {
+	if fe := s.completeWrite(ctx, intent.ID, &a, "", iss.URL); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	return &compassv1internal.ForgeCallResult{
@@ -444,7 +444,8 @@ func (s *forgeService) createPullRequest(ctx context.Context, caller store.Accou
 		return forgeErrorResult(fe)
 	}
 	intent, prior, fe := s.beginWrite(ctx, call.GetClientRequestId(), writeTarget{
-		rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), kind: forge.WriteKindPullRequest, headRef: req.GetHeadRef(),
+		rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), kind: forge.WriteKindPullRequest,
+		headRef: req.GetHeadRef(), baseRef: req.GetBaseRef(), issueLink: link,
 	})
 	if fe != nil {
 		return forgeErrorResult(fe)
@@ -468,11 +469,7 @@ func (s *forgeService) createPullRequest(ctx context.Context, caller store.Accou
 		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.author.Name(), op: "create_pull_request"})
 	}
 	wire := translatePR(pr, rf, req.GetRepo())
-	a := s.authoredArtifact(rf, id, caller, sessionID, req.GetRepo(), store.ForgeArtifactKindPullRequest, pr.Number)
-	if fe := s.recordPullRequest(ctx, a, pr, wire, link); fe != nil {
-		return forgeErrorResult(fe)
-	}
-	if fe := s.completeWrite(ctx, intent.ID, &a, ""); fe != nil {
+	if fe := s.recordPullRequest(ctx, intent.ID, s.authoredArtifact(rf, id, caller, sessionID, req.GetRepo(), store.ForgeArtifactKindPullRequest, pr.Number), pr, link); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	return &compassv1internal.ForgeCallResult{
@@ -511,17 +508,25 @@ func (s *forgeService) resolveIssueLink(rf resolvedForge, prRepo string, in *com
 // recordPullRequest writes the DL-055 row, the PR row and the explicit link in
 // one transaction, then republishes the linked issue so the PR shows at once.
 // The PR row's forge_updated_at is the epoch, so the next hydrate always wins.
-func (s *forgeService) recordPullRequest(ctx context.Context, a store.AuthoredArtifact, raw forge.PullRequest, wire *compassv1.PullRequest, link *store.ForgeCoord) *compassv1internal.ForgeCallError {
+func (s *forgeService) recordPullRequest(ctx context.Context, intentID string, artifact store.AuthoredArtifact, raw forge.PullRequest, link *store.ForgeCoord) *compassv1internal.ForgeCallError {
+	rf, ok := s.providers.resolve(&compassv1.ForgeRef{Provider: compassv1.ForgeProvider(artifact.Provider), Host: artifact.Host})
+	if !ok {
+		return forgeErr(connect.CodeNotFound, "forge: no provider configured for pull request")
+	}
+	wire := translatePR(raw, rf, artifact.Repo)
 	body, err := protojson.Marshal(wire)
 	if err != nil {
 		return forgeErr(connect.CodeInternal, "forge: encode pull request")
 	}
-	coord := store.ForgeCoord{Provider: a.Provider, Host: a.Host, Repo: a.Repo, Number: raw.Number}
-	row := store.PullRequestRow{Coord: coord, State: raw.State, CreatedAt: raw.CreatedAt, UpdatedAt: time.Unix(0, 0).UTC(), PR: body}
-	if row.CreatedAt.IsZero() {
-		row.CreatedAt = s.now()
+	createdAt := raw.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = s.now()
 	}
-	if err := s.store.CreatePullRequestWithLink(ctx, a, row, link); err != nil {
+	row := store.PullRequestRow{
+		Coord: store.ForgeCoord{Provider: artifact.Provider, Host: artifact.Host, Repo: artifact.Repo, Number: raw.Number},
+		State: raw.State, CreatedAt: createdAt, UpdatedAt: time.Unix(0, 0).UTC(), PR: body,
+	}
+	if err := s.store.CompletePullRequestWriteIntent(ctx, intentID, artifact, row, raw.URL); err != nil && !errors.Is(err, store.ErrConflict) {
 		return storeForgeError(err)
 	}
 	// The rows are committed; a failed publish heals on the next issue hydrate.
@@ -599,7 +604,7 @@ func (s *forgeService) writeComment(ctx context.Context, caller store.AccountID,
 	if key == "" {
 		key = strconv.FormatUint(cm.ID, 10)
 	}
-	if fe := s.completeWrite(ctx, intent.ID, nil, key); fe != nil {
+	if fe := s.completeWrite(ctx, intent.ID, nil, key, cm.URL); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	return wrap(&compassv1internal.CommentRef{Url: cm.URL, CommentId: cm.ID})
@@ -658,7 +663,7 @@ func (s *forgeService) submitReview(ctx context.Context, caller store.AccountID,
 	if err != nil {
 		return s.failWrite(ctx, intent.ID, err, forgeOp{provider: rf.reviewer.Name(), op: "submit_review"})
 	}
-	if fe := s.completeWrite(ctx, intent.ID, nil, strconv.FormatUint(sr.ID, 10)); fe != nil {
+	if fe := s.completeWrite(ctx, intent.ID, nil, strconv.FormatUint(sr.ID, 10), sr.URL); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	return &compassv1internal.ForgeCallResult{

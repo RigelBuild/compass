@@ -48,7 +48,7 @@ func (p *stackProvider) CreatePullRequest(_ context.Context, _ string, in forge.
 		return forge.PullRequest{}, err
 	}
 	p.next++
-	pr := &forge.PullRequest{Number: p.next, Title: in.Title, Body: in.Body, State: "open", HeadRef: in.HeadRef, BaseRef: in.BaseRef, Draft: in.Draft}
+	pr := &forge.PullRequest{Number: p.next, Title: in.Title, Body: in.Body, State: "open", HeadRef: in.HeadRef, BaseRef: in.BaseRef, Draft: in.Draft, CreatedAt: nowStub(), URL: "https://example.test/pull/" + itoa(int(p.next))}
 	p.prs[in.HeadRef] = pr
 	return *pr, nil
 }

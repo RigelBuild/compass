@@ -41,8 +41,8 @@ func intentCases() []intentCase {
 			name: "pull_request", method: "CreatePullRequest", kind: forge.WriteKindPullRequest, rowKind: store.ForgeArtifactKindPullRequest,
 			call: func(key, body string) *compassv1internal.ForgeCallRequest { return createPRCall(body, key) },
 			script: func(a, _ *forge.FakeProvider) {
-				a.CreatePRResult = forge.PullRequest{Number: 55, State: "open"}
-				a.FindPRResult, a.FindPRFound = forge.PullRequest{Number: 55, State: "open"}, true
+				a.CreatePRResult = forge.PullRequest{Number: 55, State: "open", BaseRef: "main", CreatedAt: nowStub(), URL: "https://forge/pr/55"}
+				a.FindPRResult, a.FindPRFound = forge.PullRequest{Number: 55, State: "open", BaseRef: "main", CreatedAt: nowStub(), URL: "https://forge/pr/55"}, true
 			},
 		},
 		{
@@ -341,7 +341,7 @@ func TestForgeWriteIntentInFlightSweepNeverResends(t *testing.T) {
 			}
 			target := writeTarget{rf: rf, id: id, caller: testAgentID, session: testSessionID, repo: testRepo, kind: tc.kind}
 			if tc.kind == forge.WriteKindPullRequest {
-				target.headRef = "feature"
+				target.headRef, target.baseRef = "feature", "main"
 			} else if tc.kind != forge.WriteKindIssue {
 				target.parent = 7
 			}
@@ -396,5 +396,123 @@ func TestForgeWriteIntentKeylessCreateIsInvalidArgument(t *testing.T) {
 				t.Fatalf("keyless create touched provider=%d intents=%d", len(creator.Calls()), len(st.intents))
 			}
 		})
+	}
+}
+
+// TestForgeWriteIntentOlderSameHeadPRStaysPending rejects a PR created before the intent.
+func TestForgeWriteIntentOlderSameHeadPRStaysPending(t *testing.T) {
+	tc := intentCases()[1]
+	svc, st, _, creator := newIntentService(t, tc)
+	creator.SetError(tc.method, &forge.StatusError{Status: 502, Message: "bad gateway"})
+	if fe := svc.ExecuteForgeCallAsAccountMust(t, tc.call("k1", "b")).GetError(); fe == nil {
+		t.Fatal("lost-response create returned success")
+	}
+	creator.SetError(tc.method, nil)
+	creator.FindPRResult = forge.PullRequest{
+		Number: 55, State: "open", BaseRef: "main",
+		CreatedAt: st.intents[0].CreatedAt.Add(-writePRClockSkew - time.Second), URL: "https://forge/pr/55",
+	}
+	res := svc.ExecuteForgeCallAsAccountMust(t, tc.call("k1", "b"))
+	if fe := res.GetError(); fe == nil || fe.GetCode() != "unavailable" {
+		t.Fatalf("retry with an older same-head PR = %v, want unavailable", fe)
+	}
+	if st.intents[0].State != store.WriteStatePending || len(st.recorded) != 0 || countCalls(creator, tc.method) != 1 {
+		t.Fatalf("intent=%s ownership=%d creates=%d; want pending, none, one", st.intents[0].State, len(st.recorded), countCalls(creator, tc.method))
+	}
+}
+
+// TestForgeWriteIntentRecoveryRestoresPullRequestRows checks recovered PR completion as one store operation.
+func TestForgeWriteIntentRecoveryRestoresPullRequestRows(t *testing.T) {
+	tc := intentCases()[1]
+	svc, st, author, creator := newIntentService(t, tc)
+	call := createPRWithIssue("k1", &compassv1internal.PullRequestIssueLink{Number: 7})
+	creator.SetError(tc.method, &forge.StatusError{Status: 502, Message: "bad gateway"})
+	if fe := svc.ExecuteForgeCallAsAccountMust(t, call).GetError(); fe == nil {
+		t.Fatal("lost-response create returned success")
+	}
+	creator.SetError(tc.method, nil)
+	creator.FindPRResult = forge.PullRequest{
+		Number: 55, State: "open", BaseRef: "main", CreatedAt: st.intents[0].CreatedAt, URL: "https://forge/pr/55",
+	}
+	creator.FindPRFound = true
+	res := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if res.GetError() != nil {
+		t.Fatalf("recovery retry = %v", res.GetError())
+	}
+	if len(st.recorded) != 1 || st.recorded[0].Kind != store.ForgeArtifactKindPullRequest || st.recorded[0].Number != 55 {
+		t.Fatalf("ownership rows = %+v, want recovered PR ownership", st.recorded)
+	}
+	wantLink := store.ForgeCoord{Provider: store.ForgeProviderGitHub, Host: testHost, Repo: testRepo, Number: 7}
+	if len(st.prRows) != 1 || st.prRows[0].Coord.Number != 55 || len(st.prLinks) != 1 || st.prLinks[0] != wantLink {
+		t.Fatalf("recovered PR rows=%+v links=%+v, want link %+v", st.prRows, st.prLinks, wantLink)
+	}
+	if len(st.intents) != 1 || st.intents[0].State != store.WriteStateDone || st.intents[0].ForgeURL != "https://forge/pr/55" {
+		t.Fatalf("completed recovered intent = %+v", st.intents)
+	}
+	if countCalls(creator, tc.method) != 1 || countCalls(author, "FindPullRequestByHead") != 1 {
+		t.Fatalf("create calls=%d PR lookups=%d, want one each", countCalls(creator, tc.method), countCalls(author, "FindPullRequestByHead"))
+	}
+}
+
+// TestForgeWriteIntentReplayReturnsStoredURLs checks URLs for done comments and reviews.
+func TestForgeWriteIntentReplayReturnsStoredURLs(t *testing.T) {
+	for _, tc := range intentCases() {
+		if tc.kind != forge.WriteKindComment && tc.kind != forge.WriteKindReview {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			svc, st, _, creator := newIntentService(t, tc)
+			const url = "https://forge/object/77"
+			if tc.kind == forge.WriteKindReview {
+				creator.SubmitReviewResult.URL = url
+			} else {
+				creator.CommentResult.URL = url
+			}
+			first := svc.ExecuteForgeCallAsAccountMust(t, tc.call("k1", "b"))
+			if first.GetError() != nil {
+				t.Fatalf("first create = %v", first.GetError())
+			}
+			second := svc.ExecuteForgeCallAsAccountMust(t, tc.call("k1", "b"))
+			if second.GetError() != nil {
+				t.Fatalf("replay = %v", second.GetError())
+			}
+			var firstURL, secondURL string
+			switch {
+			case tc.kind == forge.WriteKindReview:
+				firstURL, secondURL = first.GetReview().GetUrl(), second.GetReview().GetUrl()
+			case tc.name == "comment_on_issue":
+				firstURL, secondURL = first.GetIssueComment().GetUrl(), second.GetIssueComment().GetUrl()
+			default:
+				firstURL, secondURL = first.GetPrComment().GetUrl(), second.GetPrComment().GetUrl()
+			}
+			if firstURL != url || secondURL != url || st.intents[0].ForgeURL != url {
+				t.Fatalf("first URL=%q replay URL=%q stored URL=%q, want %q", firstURL, secondURL, st.intents[0].ForgeURL, url)
+			}
+			if countCalls(creator, tc.method) != 1 {
+				t.Fatalf("%s calls = %d, want 1", tc.method, countCalls(creator, tc.method))
+			}
+		})
+	}
+}
+
+// TestForgeWriteIntent408StaysPendingNoResend treats an HTTP timeout as an unknown outcome.
+func TestForgeWriteIntent408StaysPendingNoResend(t *testing.T) {
+	tc := intentCases()[0]
+	svc, st, author, creator := newIntentService(t, tc)
+	creator.SetError(tc.method, &forge.StatusError{Status: 408, Message: "request timeout"})
+	author.FindWriteFound = false
+	if fe := svc.ExecuteForgeCallAsAccountMust(t, tc.call("k1", "b")).GetError(); fe == nil {
+		t.Fatal("408 create returned success")
+	}
+	if st.intents[0].State != store.WriteStatePending {
+		t.Fatalf("intent after 408 = %s, want pending", st.intents[0].State)
+	}
+	creator.SetError(tc.method, nil)
+	retry := svc.ExecuteForgeCallAsAccountMust(t, tc.call("k1", "b"))
+	if fe := retry.GetError(); fe == nil || fe.GetCode() != "unavailable" {
+		t.Fatalf("same-key retry after 408 = %v, want unavailable", fe)
+	}
+	if countCalls(creator, tc.method) != 1 {
+		t.Fatalf("%s calls = %d, want one create", tc.method, countCalls(creator, tc.method))
 	}
 }
