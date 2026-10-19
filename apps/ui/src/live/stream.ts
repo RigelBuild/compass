@@ -363,7 +363,40 @@ export async function runCommsStream(opts: CommsStreamOptions): Promise<void> {
 				if (resp.instanceEpoch) instanceEpoch = resp.instanceEpoch;
 
 				const event = decodeEvent(state, resp.payload, callerId, mapMessage);
-				if (event) {
+				if (event?.kind === "channelChanged") {
+					const wasKnown = state.channels.some(
+						(channel) => channel.id === event.channel.id,
+					);
+					state = applyEvent(state, event);
+					onState(state);
+					if (!wasKnown) {
+						try {
+							const [topicsResp, wireMessages] = await Promise.all([
+								client.listTopics(
+									{ channelId: event.channel.id, includeArchived: true },
+									{ signal },
+								),
+								fetchChannelMessages(client, event.channel.id, 0n, signal),
+							]);
+							if (signal?.aborted) return;
+							for (const topic of topicsResp.topics) {
+								state = applyEvent(state, {
+									kind: "topicUpserted",
+									topic: adaptTopic(topic),
+								});
+							}
+							for (const message of wireMessages) {
+								state = applyEvent(state, {
+									kind: "messagePosted",
+									message: mapMessage(message),
+								});
+							}
+							onState(state);
+						} catch (error) {
+							if (!signal?.aborted) onError?.(error);
+						}
+					}
+				} else if (event) {
 					state = applyEvent(state, event);
 					onState(state);
 				}
