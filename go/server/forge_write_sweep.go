@@ -49,19 +49,7 @@ type writeTarget struct {
 // caller owns a fresh attempt and calls the forge.
 func (s *forgeService) beginWrite(ctx context.Context, key string, t writeTarget) (store.WriteIntent, *forge.WrittenRef, *compassv1internal.ForgeCallError) {
 	fresh := uuid.NewString()
-	in, err := s.store.RecordWriteIntent(ctx, store.WriteIntent{
-		ID:             fresh,
-		Provider:       store.ForgeProvider(t.rf.provider),
-		Host:           t.rf.host,
-		Repo:           t.repo,
-		Kind:           t.kind,
-		Parent:         t.parent,
-		HeadRef:        t.headRef,
-		AgentAccountID: t.caller,
-		OwnerUserID:    t.id.ownerID,
-		SessionID:      t.session,
-		RequestKey:     key,
-	})
+	in, err := s.store.RecordWriteIntent(ctx, t.intent(fresh, key))
 	if err != nil {
 		return store.WriteIntent{}, nil, storeForgeError(err)
 	}
@@ -73,6 +61,13 @@ func (s *forgeService) beginWrite(ctx context.Context, key string, t writeTarget
 		return in, nil, forgeErr(connect.CodeFailedPrecondition, writeOtherTarget)
 	}
 	switch in.State {
+	case store.WriteStateHeld:
+		// A stack preflight reserved this key for this target and sent nothing; the create is now ours to send.
+		if err := s.store.PromoteWriteIntent(ctx, in.ID); err != nil {
+			return in, nil, storeForgeError(err)
+		}
+		in.State = store.WriteStatePending
+		return in, nil, nil
 	case store.WriteStateDone:
 		ref, fe := intentRef(in)
 		return in, ref, fe
@@ -93,6 +88,23 @@ func (s *forgeService) beginWrite(ctx context.Context, key string, t writeTarget
 		return in, nil, forgeErr(connect.CodeInternal, "forge: write intent replayed a failed attempt")
 	default:
 		return in, nil, forgeErr(connect.CodeInternal, fmt.Sprintf("forge: write intent in unknown state %q", in.State))
+	}
+}
+
+// intent is the row beginWrite and a stack hold record for this target.
+func (t writeTarget) intent(id, key string) store.WriteIntent {
+	return store.WriteIntent{
+		ID:             id,
+		Provider:       store.ForgeProvider(t.rf.provider),
+		Host:           t.rf.host,
+		Repo:           t.repo,
+		Kind:           t.kind,
+		Parent:         t.parent,
+		HeadRef:        t.headRef,
+		AgentAccountID: t.caller,
+		OwnerUserID:    t.id.ownerID,
+		SessionID:      t.session,
+		RequestKey:     key,
 	}
 }
 

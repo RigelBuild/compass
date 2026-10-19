@@ -4,6 +4,7 @@ package store
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -75,28 +76,52 @@ func TestRecordWriteIntentFailedAttemptAndLostReplay(t *testing.T) {
 	}
 }
 
-func TestLiveWriteIntentByKeyReadsWithoutClaiming(t *testing.T) {
+// A held key is reserved for its target and replayed to a racing claim, but it
+// claims no PR head and is not swept until it is promoted to pending.
+func TestHoldWriteIntentReservesKeyWithoutClaimingHead(t *testing.T) {
 	s := newTestStore(t)
-	in := writeIntentFixture(t, s, "intent-by-key", "key-read", "feature/read")
-	if _, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("read before record = %v, want ErrNotFound", err)
+	in := writeIntentFixture(t, s, "intent-hold", "key-hold", "feature/hold")
+	held, err := s.HoldWriteIntent(t.Context(), in)
+	if err != nil || held.State != WriteStateHeld {
+		t.Fatalf("HoldWriteIntent = %+v, %v; want a held row", held, err)
 	}
-	if _, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("second read = %v, want ErrNotFound (a read claims nothing)", err)
+	other := in
+	other.Repo = "Owner/Other"
+	if got, err := s.HoldWriteIntent(t.Context(), other); err != nil || got.ID != held.ID || got.Repo != held.Repo {
+		t.Fatalf("hold on another target = %+v, %v; want the first hold %+v", got, err, held)
 	}
-	rec, err := s.RecordWriteIntent(t.Context(), in)
+	if got, err := s.RecordWriteIntent(t.Context(), other); err != nil || got.ID != held.ID {
+		t.Fatalf("record on another target = %+v, %v; want the first hold", got, err)
+	}
+	// Another agent may still claim the same head: a hold is not a PR-head claim.
+	rival := writeIntentFixture(t, s, "intent-hold-rival", "key-rival", in.HeadRef)
+	if _, err := s.RecordWriteIntent(t.Context(), rival); err != nil {
+		t.Fatalf("rival head claim = %v, want allowed while the key is only held", err)
+	}
+	if pending, err := s.PendingWriteIntents(t.Context(), time.Now().Add(time.Hour), 10); err != nil || slices.ContainsFunc(pending, func(w WriteIntent) bool { return w.ID == held.ID }) {
+		t.Fatalf("pending = %+v, %v; want the held row excluded", pending, err)
+	}
+	if err := s.PromoteWriteIntent(t.Context(), held.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("promote onto a claimed head = %v, want ErrConflict", err)
+	}
+}
+
+func TestPromoteWriteIntentOnlyMovesHeldRows(t *testing.T) {
+	s := newTestStore(t)
+	in := writeIntentFixture(t, s, "intent-promote", "key-promote", "feature/promote")
+	held, err := s.HoldWriteIntent(t.Context(), in)
 	if err != nil {
-		t.Fatalf("RecordWriteIntent: %v", err)
+		t.Fatalf("HoldWriteIntent: %v", err)
 	}
-	got, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey)
-	if err != nil || got != rec {
-		t.Fatalf("read = %+v, %v; want %+v", got, err, rec)
+	if err := s.PromoteWriteIntent(t.Context(), held.ID); err != nil {
+		t.Fatalf("PromoteWriteIntent: %v", err)
 	}
-	if err := s.EndWriteIntent(t.Context(), rec.ID, WriteStateFailed); err != nil {
-		t.Fatalf("EndWriteIntent(failed): %v", err)
+	got, err := s.RecordWriteIntent(t.Context(), in)
+	if err != nil || got.ID != held.ID || got.State != WriteStatePending {
+		t.Fatalf("replay after promote = %+v, %v; want the same row pending", got, err)
 	}
-	if _, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("read after failure = %v, want ErrNotFound", err)
+	if err := s.PromoteWriteIntent(t.Context(), held.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second promote = %v, want ErrConflict", err)
 	}
 }
 

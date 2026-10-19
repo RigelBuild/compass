@@ -309,6 +309,7 @@ type Querier interface {
 	// Feeds requireGroupCreateAuthz: owner, agent-owner, same namespace, or SHARED-visibility group.
 	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
 	HasForgeScope(ctx context.Context, arg HasForgeScopeParams) (bool, error)
+	HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIntentParams) (ForgeWriteIntent, error)
 	// HotTailBytes and HotTailSizes derive the checkpoint inside the statement, so
 	// a checkpoint committed between the valve's reads cannot shift its window.
 	HotTailBytes(ctx context.Context, sessionID string) (int64, error)
@@ -471,7 +472,6 @@ type Querier interface {
 	ListTopicsWithStats(ctx context.Context, arg ListTopicsWithStatsParams) ([]ListTopicsWithStatsRow, error)
 	ListUserPeerings(ctx context.Context, userID string) ([]ListUserPeeringsRow, error)
 	ListVisibleAccounts(ctx context.Context, id string) ([]ListVisibleAccountsRow, error)
-	LiveWriteIntentByKey(ctx context.Context, arg LiveWriteIntentByKeyParams) (ForgeWriteIntent, error)
 	LoadDeliveryCursor(ctx context.Context, arg LoadDeliveryCursorParams) (LoadDeliveryCursorRow, error)
 	LoadForgeArtifactCursor(ctx context.Context, arg LoadForgeArtifactCursorParams) (LoadForgeArtifactCursorRow, error)
 	// Forge repo-subscription / watermark queries (sqlc adoption T6, RIG-3034). These
@@ -589,6 +589,7 @@ type Querier interface {
 	PendingForgeWriteIntents(ctx context.Context, arg PendingForgeWriteIntentsParams) ([]ForgeWriteIntent, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
 	PlacementForAgent(ctx context.Context, agentAccountID string) (PlacementForAgentRow, error)
+	PromoteForgeWriteIntent(ctx context.Context, id string) (int64, error)
 	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) (int64, error)
 	PullRequestForgeUpdatedAt(ctx context.Context, arg PullRequestForgeUpdatedAtParams) (pgtype.Timestamptz, error)
 	PullRequestLinks(ctx context.Context, arg PullRequestLinksParams) ([]PullRequestLinksRow, error)

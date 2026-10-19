@@ -120,3 +120,69 @@ func TestSubmitStackKeyReusedOnOwnPRInAnotherRepoIsRefusedFirst(t *testing.T) {
 		t.Fatalf("applied %d->%d pushes %d->%d events %v, want no mirror or provider work", applied, len(m.applied), pushes, len(m.pushes), (*p.events)[events:])
 	}
 }
+
+// Another call claims the key for repo A in the window before this call's claim
+// on repo B lands: the claim sees their row, so this call writes nothing.
+func TestSubmitStackClaimRaceWithAnotherTargetWritesNothing(t *testing.T) {
+	svc, st, p, m := newStackServiceForTest(t)
+	p.prs["a"] = &forge.PullRequest{Number: 900, Title: "mine in B", State: "open", HeadRef: "a", BaseRef: "main"}
+	st.recordArtifact(store.AuthoredArtifact{Provider: store.ForgeProviderGitHub, Host: testHost, Repo: otherRepo, Kind: store.ForgeArtifactKindPullRequest, Number: 900, AgentAccountID: testAgentID, OwnerUserID: testOwnerID})
+	st.beforeHold = func() {
+		st.beforeHold = nil
+		// The racing call is a create on repo A under the same derived key.
+		if _, err := st.RecordWriteIntent(t.Context(), store.WriteIntent{ID: "11111111-1111-4111-8111-111111111111", Provider: store.ForgeProviderGitHub, Host: testHost, Repo: testRepo, Kind: forge.WriteKindPullRequest, HeadRef: "a", AgentAccountID: testAgentID, OwnerUserID: testOwnerID, RequestKey: "k:a"}); err != nil {
+			t.Fatalf("racing record: %v", err)
+		}
+	}
+
+	call := stackCall("k", "", []byte("bundle"), stackEntry("a", ""))
+	call.GetSubmitStack().Repo = otherRepo
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, call))
+	if got[0].GetStatus() != failedStatus || !strings.Contains(got[0].GetError().GetMessage(), "another target") {
+		t.Fatalf("raced claim = %v, want refused naming another target", got)
+	}
+	if len(m.applied)+len(m.pushes) != 0 || p.count("find")+p.count("update")+p.count("create") != 0 {
+		t.Fatalf("applied=%v pushes=%v events=%v, want no mirror or provider work", m.applied, m.pushes, *p.events)
+	}
+}
+
+// An own PR's entry leaves a held claim, so a later create on another target
+// under the same key is refused rather than writing.
+func TestSubmitStackOwnPRClaimRefusesLaterOtherTarget(t *testing.T) {
+	svc, st, p, _ := newStackServiceForTest(t)
+	p.prs["a"] = &forge.PullRequest{Number: 900, Title: "mine", State: "open", HeadRef: "a", BaseRef: "main"}
+	seedOwnPR(st, 900, testAgentID)
+	if s := statuses(stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall("k", "", nil, stackEntry("a", ""))))); s[0] != doneStatus {
+		t.Fatalf("own PR submit = %v, want done", s)
+	}
+	if len(st.intents) != 1 || st.intents[0].State != store.WriteStateHeld {
+		t.Fatalf("intents = %+v, want one held claim", st.intents)
+	}
+	creates := p.count("create")
+	second := stackCall("k", "", nil, stackEntry("a", "owner/other#7"))
+	second.GetSubmitStack().Repo = otherRepo
+	delete(p.prs, "a")
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, second))
+	if got[0].GetStatus() != failedStatus || !strings.Contains(got[0].GetError().GetMessage(), "another target") || p.count("create") != creates {
+		t.Fatalf("other target after own claim = %v creates %d->%d, want refused with no create", got, creates, p.count("create"))
+	}
+}
+
+// Entry 2 fails preflight: every entry still reports a status.
+func TestSubmitStackPreflightFailureOnSecondEntryStatusesEveryEntry(t *testing.T) {
+	svc, _, p, m := newStackServiceForTest(t)
+	p.prs["b"] = &forge.PullRequest{Number: 11, State: "open", HeadRef: "other", BaseRef: "a"}
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall("k", "", []byte("bundle"), stackEntry("a", "owner/repo#7"), stackEntry("b", "owner/repo#7"))))
+	if len(got) != 2 {
+		t.Fatalf("entries = %d, want 2", len(got))
+	}
+	if got[0].GetStatus() != skippedStatus || got[0].GetHeadRef() != "a" {
+		t.Fatalf("entry a = %v, want skipped", got[0])
+	}
+	if got[1].GetStatus() != failedStatus || got[1].GetError().GetCode() != "failed_precondition" {
+		t.Fatalf("entry b = %v, want failed_precondition", got[1])
+	}
+	if len(m.applied)+len(m.pushes) != 0 || p.count("create")+p.count("update") != 0 {
+		t.Fatalf("applied=%v pushes=%v events=%v, want no writes", m.applied, m.pushes, *p.events)
+	}
+}

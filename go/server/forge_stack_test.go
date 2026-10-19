@@ -339,8 +339,9 @@ func TestSubmitStackIssueChecks(t *testing.T) {
 			if got[0].GetStatus() != failedStatus || got[0].GetError().GetCode() != tc.code {
 				t.Fatalf("entry = %v, want %s", got[0], tc.code)
 			}
-			if p.count("create") != 0 || len(st.intents) != 0 {
-				t.Fatalf("creates=%d intents=%d, want 0 and 0", p.count("create"), len(st.intents))
+			// The key stays held for this target; no intent was promoted to send a create.
+			if p.count("create") != 0 || len(st.intents) != 1 || st.intents[0].State != store.WriteStateHeld {
+				t.Fatalf("creates=%d intents=%+v, want 0 creates and one held claim", p.count("create"), st.intents)
 			}
 		})
 	}

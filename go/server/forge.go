@@ -126,7 +126,8 @@ type forgeStore interface { //nolint:interfacebloat // the forge write path's wh
 	ForgeMirrorMode(ctx context.Context, provider store.ForgeProvider, host, repo string) (store.ForgeMirrorMode, error)
 	PullRequestsByCoords(ctx context.Context, coords []store.ForgeCoord) ([]store.PullRequestRow, error)
 	RecordWriteIntent(ctx context.Context, in store.WriteIntent) (store.WriteIntent, error)
-	LiveWriteIntentByKey(ctx context.Context, agent store.AccountID, key string) (store.WriteIntent, error)
+	HoldWriteIntent(ctx context.Context, in store.WriteIntent) (store.WriteIntent, error)
+	PromoteWriteIntent(ctx context.Context, id string) error
 	CompleteWriteIntent(ctx context.Context, id string, artifact *store.AuthoredArtifact, forgeKey string) error
 	EndWriteIntent(ctx context.Context, id string, state store.WriteState) error
 	PendingWriteIntents(ctx context.Context, olderThan time.Time, limit int) ([]store.WriteIntent, error)

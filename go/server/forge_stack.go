@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect/v2"
+	"github.com/google/uuid"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
@@ -133,6 +134,12 @@ func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, 
 			out[j] = &compassv1internal.StackEntryResult{HeadRef: entries[j].GetHeadRef(), Status: compassv1internal.StackEntryStatus_STACK_ENTRY_STATUS_SKIPPED}
 		}
 	}
+	// A preflight failure on entry N leaves the entries below it unrun too.
+	for j := range out {
+		if out[j] == nil {
+			out[j] = &compassv1internal.StackEntryResult{HeadRef: entries[j].GetHeadRef(), Status: compassv1internal.StackEntryStatus_STACK_ENTRY_STATUS_SKIPPED}
+		}
+	}
 	return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_Stack{Stack: &compassv1internal.StackResult{Entries: out}}}
 }
 
@@ -193,9 +200,10 @@ func stackBase(entries []*compassv1internal.StackEntry, i int) string {
 // or this call's own unrecorded create, before the mirror moves a ref.
 func (r *stackRun) preflight(ctx context.Context, entries []*compassv1internal.StackEntry, prs []forge.PullRequest) ([]bool, int, *compassv1internal.ForgeCallError) {
 	found := make([]bool, len(entries))
-	// The key's target is checked first: an own PR found below would otherwise skip beginWrite.
+	// Each entry's key is claimed before anything else, so a concurrent call on
+	// another target sees this claim or this call sees theirs; own PRs included.
 	for i, e := range entries {
-		if fe := r.checkIntentTarget(ctx, e.GetHeadRef()); fe != nil {
+		if fe := r.claim(ctx, e.GetHeadRef()); fe != nil {
 			return found, i, fe
 		}
 	}
@@ -222,16 +230,15 @@ func (r *stackRun) preflight(ctx context.Context, entries []*compassv1internal.S
 	return found, -1, nil
 }
 
-// checkIntentTarget refuses an entry whose derived key already names another target.
-func (r *stackRun) checkIntentTarget(ctx context.Context, head string) *compassv1internal.ForgeCallError {
-	in, err := r.s.store.LiveWriteIntentByKey(ctx, r.caller, r.intentKey(head))
-	if errors.Is(err, store.ErrNotFound) {
-		return nil
-	}
+// claim holds the entry's derived key for this target and refuses one already
+// used for another. A held row sends nothing; create promotes it before the write.
+func (r *stackRun) claim(ctx context.Context, head string) *compassv1internal.ForgeCallError {
+	t := r.target(head)
+	in, err := r.s.store.HoldWriteIntent(ctx, t.intent(uuid.NewString(), r.intentKey(head)))
 	if err != nil {
 		return storeForgeError(err)
 	}
-	if !sameWriteTarget(in, r.target(head)) {
+	if !sameWriteTarget(in, t) {
 		return forgeErr(connect.CodeFailedPrecondition, writeOtherTarget)
 	}
 	return nil
