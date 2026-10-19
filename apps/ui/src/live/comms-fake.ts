@@ -23,8 +23,8 @@ import {
 } from "@compass/client";
 
 /** One recorded PostMessage — the fields the UI is contractually required to
- *  set. `topic` is the topic oneof (post into an existing topic by id, or
- *  get-or-create by name). */
+ *  set. `topic` is the topic oneof (post into an existing topic by id, or by
+ *  name); a name-miss creates the topic only when `createTopic` is set. */
 export interface RecordedPost {
 	readonly channelId: string;
 	readonly text: string;
@@ -33,6 +33,7 @@ export interface RecordedPost {
 		| { case: "topicName"; value: string }
 		| { case: undefined };
 	readonly clientRequestId: string;
+	readonly createTopic: boolean;
 }
 
 /** One recorded RespondToAsk: the ask plus every question's answer, in the wire
@@ -248,6 +249,7 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 				| { case: undefined };
 			blocks: Array<{ block: { case?: string; value?: unknown } }>;
 			clientRequestId: string;
+			createTopic?: boolean;
 		}) => {
 			if (postFailure) {
 				const err = postFailure;
@@ -273,6 +275,7 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 							? { case: "topicName", value: req.topic.value }
 							: { case: undefined },
 				clientRequestId: req.clientRequestId,
+				createTopic: req.createTopic ?? false,
 			});
 			const response = { message: undefined as WireMessage | undefined };
 			if (req.clientRequestId) deduped.set(req.clientRequestId, response);

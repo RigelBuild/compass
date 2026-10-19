@@ -2188,6 +2188,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			topic,
 			blocks: [{ block: { case: "text", value: text } }],
 			clientRequestId: `${requestIdPrefix}-${++requestCount}`,
+			// Only the New topic composer posts by name; without this the server rejects the miss.
+			createTopic: topic.case === "topicName",
 		});
 	};
 

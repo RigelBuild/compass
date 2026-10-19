@@ -225,6 +225,7 @@ describe("store live write path", () => {
 			expect(post.text).toBe("a live post");
 			expect(post.topic).toEqual({ case: "topicId", value: TOPIC });
 			expect(post.clientRequestId.length).toBeGreaterThan(0);
+			expect(post.createTopic).toBe(false);
 
 			// No local insert — the echo is what renders it.
 			expect(store.messages()).toEqual([]);
@@ -270,8 +271,8 @@ describe("store live write path", () => {
 		});
 	});
 
-	// A "new topic" post carries the topic oneof as `topicName` (get-or-create is
-	// server-side) rather than a topicId. Same no-local-insert contract.
+	// A "new topic" post names the topic and sets createTopic: the server answers a
+	// name-miss with NOT_FOUND unless the post asks it to create the topic.
 	test("postMessage with a topicName starts a new topic and does not insert locally", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -291,6 +292,7 @@ describe("store live write path", () => {
 				value: "deploy plan",
 			});
 			expect(fake.posts[0].text).toBe("first message in a new topic");
+			expect(fake.posts[0].createTopic).toBe(true);
 			// No minted local message — the echo renders it.
 			expect(store.messages()).toEqual([]);
 		});
