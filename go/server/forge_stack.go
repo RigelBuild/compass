@@ -35,10 +35,11 @@ type stackRun struct {
 	repo    string
 	key     string
 	bundled bool
-	// pushed holds heads the foreign rebase already pushed, so ensure does not push them twice.
-	pushed map[string]bool
-	// leases are the remote heads the call's own fetches saw; every push leases on exactly these.
-	leases forge.Leases
+	// pushed avoids repeating a push after foreign-base replay; intentIDs ties it to its claim.
+	pushed    map[string]bool
+	intentIDs map[string]string
+	leases    forge.Leases
+	links     map[string]*store.ForgeCoord
 }
 
 // foreignBase is a same-owner agent's open PR that the caller's line sits on.
@@ -63,6 +64,9 @@ func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, 
 	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
 		return forgeErrorResult(fe)
 	}
+	if fe := checkStackDefaultBranch(ctx, rf, req.GetRepo(), req.GetEntries()); fe != nil {
+		return forgeErrorResult(fe)
+	}
 	id, fe := s.resolveIdentity(ctx, caller, sessionID)
 	if fe != nil {
 		return forgeErrorResult(fe)
@@ -74,73 +78,98 @@ func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, 
 	if len(req.GetBundle()) > 0 && s.mirror == nil {
 		return forgeErrorResult(forgeErr(connect.CodeFailedPrecondition, mirrorOffMessage))
 	}
-	r := &stackRun{s: s, rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), key: call.GetClientRequestId(), bundled: len(req.GetBundle()) > 0, pushed: map[string]bool{}, leases: forge.Leases{}}
-
+	r := &stackRun{s: s, rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), key: call.GetClientRequestId(), bundled: len(req.GetBundle()) > 0, pushed: map[string]bool{}, intentIDs: map[string]string{}, leases: forge.Leases{}, links: map[string]*store.ForgeCoord{}}
 	out := make([]*compassv1internal.StackEntryResult, len(entries))
 	prs := make([]forge.PullRequest, len(entries))
 	// Every head must be the caller's or new before the mirror moves any ref.
 	found, failed, fe := r.preflight(ctx, entries, prs)
-	if fe == nil {
-		fe = r.applyBundle(ctx, req.GetBundle(), entries)
-		if fe != nil {
-			return forgeErrorResult(fe)
-		}
-	}
 	var foreign *foreignBase
 	if fe == nil {
-		foreign, fe = r.checkForeignBase(ctx, entries[0].GetBaseRef())
-		if fe == nil && foreign != nil {
-			fe = r.rebaseForeign(ctx, foreign, entries)
+		if fe = r.applyBundle(ctx, req.GetBundle(), entries); fe != nil {
+			return forgeErrorResult(fe)
 		}
-		if fe != nil {
-			failed = 0
-		}
+		foreign, failed, fe = r.prepareStack(ctx, entries, found)
 	}
 	if fe != nil {
 		out[failed] = failedEntry(entries[failed].GetHeadRef(), fe)
 	}
-	for i := 0; failed < 0 && i < len(entries); i++ {
-		pr, created, fe := r.ensure(ctx, entries[i], stackBase(entries, i), prs[i], found[i])
+	if fe == nil {
+		failed = r.ensureStack(ctx, entries, found, prs, out)
+	}
+	if fe == nil && failed < 0 {
+		failed = r.restampStack(ctx, req, entries, prs, out, foreign)
+	}
+	finishStackResults(entries, out, failed)
+	return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_Stack{Stack: &compassv1internal.StackResult{Entries: out}}}
+}
+
+func (r *stackRun) prepareStack(ctx context.Context, entries []*compassv1internal.StackEntry, found []bool) (*foreignBase, int, *compassv1internal.ForgeCallError) {
+	for i, entry := range entries {
+		if found[i] {
+			continue
+		}
+		if fe := r.requireOwnBranch(ctx, entry.GetHeadRef(), r.leases["refs/heads/"+entry.GetHeadRef()]); fe != nil {
+			return nil, i, fe
+		}
+	}
+	foreign, fe := r.checkForeignBase(ctx, entries[0].GetBaseRef())
+	if fe != nil {
+		return nil, 0, fe
+	}
+	if foreign != nil {
+		if fe := r.rebaseForeign(ctx, foreign, entries, found); fe != nil {
+			return nil, 0, fe
+		}
+	}
+	return foreign, -1, nil
+}
+
+func (r *stackRun) ensureStack(ctx context.Context, entries []*compassv1internal.StackEntry, found []bool, prs []forge.PullRequest, out []*compassv1internal.StackEntryResult) int {
+	for i, entry := range entries {
+		pr, created, fe := r.ensure(ctx, entry, stackBase(entries, i), prs[i], found[i])
 		if fe != nil {
-			out[i], failed = failedEntry(entries[i].GetHeadRef(), fe), i
-			break
+			out[i] = failedEntry(entry.GetHeadRef(), fe)
+			return i
 		}
 		prs[i] = pr
 		out[i] = &compassv1internal.StackEntryResult{
-			HeadRef: entries[i].GetHeadRef(), PullRequest: translatePR(pr, rf, r.repo),
+			HeadRef: entry.GetHeadRef(), PullRequest: translatePR(pr, r.rf, r.repo),
 			Created: created, Authored: true, Status: compassv1internal.StackEntryStatus_STACK_ENTRY_STATUS_DONE,
 		}
 	}
-	// The restamp runs only when every entry has its PR, so each block names the whole line.
-	if failed < 0 {
-		lines := stackLines(foreign, entries, prs)
-		if foreign != nil {
-			if fe := r.restampForeign(ctx, foreign.pr.Number, lines); fe != nil {
-				out[0], failed = failedEntry(entries[0].GetHeadRef(), fe), 0
-			}
-		}
-		for i := 0; failed < 0 && i < len(entries); i++ {
-			e := entries[i]
-			pr, fe := r.restamp(ctx, e, prs[i], stackBase(entries, i), lines, e.GetHeadRef() == req.GetReadyHeadRef())
-			if fe != nil {
-				out[i], failed = failedEntry(e.GetHeadRef(), fe), i
-				break
-			}
-			out[i].PullRequest = translatePR(pr, rf, r.repo)
+	return -1
+}
+
+func (r *stackRun) restampStack(ctx context.Context, req *compassv1internal.SubmitStackRequest, entries []*compassv1internal.StackEntry, prs []forge.PullRequest, out []*compassv1internal.StackEntryResult, foreign *foreignBase) int {
+	lines := stackLines(foreign, entries, prs)
+	if foreign != nil {
+		if fe := r.restampForeign(ctx, foreign.pr.Number, lines); fe != nil {
+			out[0] = failedEntry(entries[0].GetHeadRef(), fe)
+			return 0
 		}
 	}
+	for i, entry := range entries {
+		pr, fe := r.restamp(ctx, entry, prs[i], stackBase(entries, i), lines, entry.GetHeadRef() == req.GetReadyHeadRef())
+		if fe != nil {
+			out[i] = failedEntry(entry.GetHeadRef(), fe)
+			return i
+		}
+		out[i].PullRequest = translatePR(pr, r.rf, r.repo)
+	}
+	return -1
+}
+
+func finishStackResults(entries []*compassv1internal.StackEntry, out []*compassv1internal.StackEntryResult, failed int) {
 	if failed >= 0 {
 		for j := failed + 1; j < len(entries); j++ {
 			out[j] = &compassv1internal.StackEntryResult{HeadRef: entries[j].GetHeadRef(), Status: compassv1internal.StackEntryStatus_STACK_ENTRY_STATUS_SKIPPED}
 		}
 	}
-	// A preflight failure on entry N leaves the entries below it unrun too.
 	for j := range out {
 		if out[j] == nil {
 			out[j] = &compassv1internal.StackEntryResult{HeadRef: entries[j].GetHeadRef(), Status: compassv1internal.StackEntryStatus_STACK_ENTRY_STATUS_SKIPPED}
 		}
 	}
-	return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_Stack{Stack: &compassv1internal.StackResult{Entries: out}}}
 }
 
 // stackLines lists the line bottom to top, a foreign base first; a lone PR gets no block.
@@ -177,6 +206,9 @@ func validateStack(req *compassv1internal.SubmitStackRequest) *compassv1internal
 		if head == "" {
 			return forgeErr(connect.CodeInvalidArgument, "forge: every entry needs head_ref")
 		}
+		if head == entries[0].GetBaseRef() {
+			return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf("forge: head %q equals the bottom entry's base_ref", head))
+		}
 		if seen[head] {
 			return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf("forge: head %q appears twice", head))
 		}
@@ -184,6 +216,19 @@ func validateStack(req *compassv1internal.SubmitStackRequest) *compassv1internal
 	}
 	if ready := req.GetReadyHeadRef(); ready != "" && !seen[ready] {
 		return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf("forge: ready_head_ref %q is not an entry", ready))
+	}
+	return nil
+}
+
+func checkStackDefaultBranch(ctx context.Context, rf resolvedForge, repo string, entries []*compassv1internal.StackEntry) *compassv1internal.ForgeCallError {
+	defaultBranch, err := rf.author.DefaultBranch(ctx, repo)
+	if err != nil {
+		return mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "get_default_branch"})
+	}
+	for _, entry := range entries {
+		if entry.GetHeadRef() == defaultBranch {
+			return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf("forge: head %q is the repository's default branch", entry.GetHeadRef()))
+		}
 	}
 	return nil
 }
@@ -227,6 +272,19 @@ func (r *stackRun) preflight(ctx context.Context, entries []*compassv1internal.S
 		}
 		prs[i], found[i] = pr, true
 	}
+	for i, e := range entries {
+		if found[i] {
+			continue
+		}
+		if strings.TrimSpace(e.GetIssueRef()) == "" {
+			return found, i, forgeErr(connect.CodeInvalidArgument, noIssueMessage)
+		}
+		link, fe := r.checkIssue(ctx, e.GetIssueRef())
+		if fe != nil {
+			return found, i, fe
+		}
+		r.links[e.GetHeadRef()] = link
+	}
 	return found, -1, nil
 }
 
@@ -241,6 +299,7 @@ func (r *stackRun) claim(ctx context.Context, head string) *compassv1internal.Fo
 	if !sameWriteTarget(in, t) {
 		return forgeErr(connect.CodeFailedPrecondition, writeOtherTarget)
 	}
+	r.intentIDs[head] = in.ID
 	return nil
 }
 
@@ -288,7 +347,7 @@ func (r *stackRun) checkForeignBase(ctx context.Context, base string) (*foreignB
 // rebaseForeign replays the foreign bookmark and the caller's bookmarks onto the
 // foreign PR's current base in one replay, then pushes every moved ref with leases.
 // A conflict pushes nothing and asks the owning agent to resolve.
-func (r *stackRun) rebaseForeign(ctx context.Context, f *foreignBase, entries []*compassv1internal.StackEntry) *compassv1internal.ForgeCallError {
+func (r *stackRun) rebaseForeign(ctx context.Context, f *foreignBase, entries []*compassv1internal.StackEntry, found []bool) *compassv1internal.ForgeCallError {
 	if r.s.mirror == nil {
 		return forgeErr(connect.CodeFailedPrecondition, mirrorOffMessage)
 	}
@@ -300,7 +359,7 @@ func (r *stackRun) rebaseForeign(ctx context.Context, f *foreignBase, entries []
 	r.leases[foreignRef] = oldHead
 	// Preflight already proved every entry is the caller's, so only own refs ride above the foreign one.
 	line := []string{foreignRef}
-	for _, e := range entries {
+	for i, e := range entries {
 		ref := "refs/heads/" + e.GetHeadRef()
 		// Without a bundle the caller's bookmarks are already on the forge.
 		if !r.bundled {
@@ -309,6 +368,11 @@ func (r *stackRun) rebaseForeign(ctx context.Context, f *foreignBase, entries []
 				return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: read %s: %v", e.GetHeadRef(), err))
 			}
 			r.leases[ref] = seeded
+			if !found[i] {
+				if fe := r.requireOwnBranch(ctx, e.GetHeadRef(), seeded); fe != nil {
+					return fe
+				}
+			}
 		}
 		line = append(line, ref)
 	}
@@ -329,6 +393,12 @@ func (r *stackRun) rebaseForeign(ctx context.Context, f *foreignBase, entries []
 	}
 	for ref := range heads {
 		r.pushed[strings.TrimPrefix(ref, "refs/heads/")] = true
+	}
+	for _, e := range entries {
+		head := e.GetHeadRef()
+		if r.pushed[head] {
+			r.markHeadPushed(ctx, r.intentIDs[head])
+		}
 	}
 	r.notify(ctx, f, fmt.Sprintf("I rebased your bookmark %s (PR #%d) onto %s so my line could build on it. Old head %s, new head %s. Sync before you push again.", f.pr.HeadRef, f.pr.Number, f.pr.BaseRef, oldHead, heads[foreignRef]), heads[foreignRef])
 	return nil
@@ -405,6 +475,9 @@ func (r *stackRun) ensure(ctx context.Context, e *compassv1internal.StackEntry, 
 	if fe := r.push(ctx, e.GetHeadRef()); fe != nil {
 		return forge.PullRequest{}, false, fe
 	}
+	if intentID := r.intentIDs[e.GetHeadRef()]; intentID != "" {
+		r.markHeadPushed(ctx, intentID)
+	}
 	return pr, false, nil
 }
 
@@ -442,6 +515,31 @@ func (r *stackRun) adopt(ctx context.Context, pr forge.PullRequest, head string)
 	return forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: head %q is pull request #%d, which this agent did not create", head, pr.Number))
 }
 
+// requireOwnBranch refuses to overwrite a PR-less remote branch without durable push evidence.
+// A lease proves the observed tip, not which agent pushed it.
+func (r *stackRun) requireOwnBranch(ctx context.Context, head, remoteOID string) *compassv1internal.ForgeCallError {
+	if remoteOID == "" {
+		return nil
+	}
+	owned, err := r.s.store.HasPushedPRHead(ctx, store.ForgeProvider(r.rf.provider), r.rf.host, r.repo, head, r.caller)
+	if err != nil {
+		return storeForgeError(err)
+	}
+	if !owned {
+		return forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: head %q already exists on the forge with no pull request, and this agent did not push it", head))
+	}
+	return nil
+}
+
+func (r *stackRun) markHeadPushed(ctx context.Context, id string) {
+	if !r.bundled {
+		return
+	}
+	if err := r.s.store.MarkWriteIntentHeadPushed(ctx, id); err != nil {
+		slog.WarnContext(ctx, "forge: mark pushed PR head", slog.String("intent", id), slog.Any("error", err))
+	}
+}
+
 // endUnusedIntent fails a fresh intent that sent no create; a conflict means recovery already ended it.
 func (s *forgeService) endUnusedIntent(ctx context.Context, id string) {
 	if err := s.store.EndWriteIntent(ctx, id, store.WriteStateFailed); err != nil && !errors.Is(err, store.ErrConflict) {
@@ -449,16 +547,10 @@ func (s *forgeService) endUnusedIntent(ctx context.Context, id string) {
 	}
 }
 
-// create opens a draft PR for a new entry under a write intent, after checking its issue.
+// create opens a draft PR for a new entry under a write intent, using its preflight-checked issue link.
 func (r *stackRun) create(ctx context.Context, e *compassv1internal.StackEntry, base string) (forge.PullRequest, bool, *compassv1internal.ForgeCallError) {
 	head := e.GetHeadRef()
-	if strings.TrimSpace(e.GetIssueRef()) == "" {
-		return forge.PullRequest{}, false, forgeErr(connect.CodeInvalidArgument, noIssueMessage)
-	}
-	link, fe := r.checkIssue(ctx, e.GetIssueRef())
-	if fe != nil {
-		return forge.PullRequest{}, false, fe
-	}
+	link := r.links[head]
 	intent, prior, fe := r.s.beginWrite(ctx, r.intentKey(head), r.target(head, base, link))
 	if fe != nil {
 		return forge.PullRequest{}, false, fe
@@ -474,6 +566,7 @@ func (r *stackRun) create(ctx context.Context, e *compassv1internal.StackEntry, 
 		if fe := r.push(ctx, head); fe != nil {
 			return forge.PullRequest{}, false, fe
 		}
+		r.markHeadPushed(ctx, intent.ID)
 		return pr, false, nil
 	}
 	// The head is pushed only once a fresh intent owns this create; a failed push sent no create.
@@ -481,6 +574,7 @@ func (r *stackRun) create(ctx context.Context, e *compassv1internal.StackEntry, 
 		r.s.endUnusedIntent(ctx, intent.ID)
 		return forge.PullRequest{}, false, fe
 	}
+	r.markHeadPushed(ctx, intent.ID)
 	op := r.op(len(e.GetBody()))
 	body, err := r.body(e.GetBody(), "")
 	if err != nil {
@@ -594,6 +688,7 @@ func (r *stackRun) push(ctx context.Context, head string) *compassv1internal.For
 	if err := r.s.mirror.Push(ctx, r.repo, map[string]string{ref: ref}, r.leases); err != nil {
 		return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: push %s: %v; sync and submit again", head, err))
 	}
+	r.pushed[head] = true
 	return nil
 }
 

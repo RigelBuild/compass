@@ -19,15 +19,19 @@ import (
 // entries sees distinct PRs. events is shared with fakeMirror to check order.
 type stackProvider struct {
 	*forge.FakeProvider
-	prs       map[string]*forge.PullRequest
-	next      uint64
-	createErr map[string]error
-	findErr   map[string]error
-	events    *[]string
+	prs            map[string]*forge.PullRequest
+	next           uint64
+	createErr      map[string]error
+	createAfterErr map[string]error
+	findErr        map[string]error
+	events         *[]string
 }
 
 func newStackProvider(events *[]string) *stackProvider {
-	return &stackProvider{FakeProvider: forge.NewFakeProvider("gh-author"), prs: map[string]*forge.PullRequest{}, next: 100, createErr: map[string]error{}, findErr: map[string]error{}, events: events}
+	return &stackProvider{
+		FakeProvider: forge.NewFakeProvider("gh-author"), prs: map[string]*forge.PullRequest{}, next: 100,
+		createErr: map[string]error{}, createAfterErr: map[string]error{}, findErr: map[string]error{}, events: events,
+	}
 }
 
 func (p *stackProvider) FindPullRequestByHead(_ context.Context, _ string, head string) (forge.PullRequest, bool, error) {
@@ -50,6 +54,9 @@ func (p *stackProvider) CreatePullRequest(_ context.Context, _ string, in forge.
 	p.next++
 	pr := &forge.PullRequest{Number: p.next, Title: in.Title, Body: in.Body, State: "open", HeadRef: in.HeadRef, BaseRef: in.BaseRef, Draft: in.Draft, CreatedAt: nowStub(), URL: "https://example.test/pull/" + itoa(int(p.next))}
 	p.prs[in.HeadRef] = pr
+	if err := p.createAfterErr[in.HeadRef]; err != nil {
+		return forge.PullRequest{}, err
+	}
 	return *pr, nil
 }
 
@@ -264,6 +271,152 @@ func TestSubmitStackNewEntryWithoutIssueFails(t *testing.T) {
 	}
 	if p.count("create") != 0 {
 		t.Fatalf("creates = %d, want 0", p.count("create"))
+	}
+}
+func TestSubmitStackRejectsDefaultBranchHead(t *testing.T) {
+	svc, _, p, m := newStackServiceForTest(t)
+	p.DefaultBranchResult = "trunk"
+	call := stackCall("k", "", []byte("bundle"), stackEntry("a", "owner/repo#7"), stackEntry("trunk", "owner/repo#7"))
+	res := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if fe := res.GetError(); fe == nil || fe.GetCode() != "invalid_argument" || !strings.Contains(fe.GetMessage(), "repository's default branch") {
+		t.Fatalf("result = %v, want invalid_argument naming the repository's default branch", res)
+	}
+	if len(m.applied)+len(m.pushes) != 0 || p.count("create") != 0 {
+		t.Fatalf("applied=%v pushes=%v creates=%d, want no side effects", m.applied, m.pushes, p.count("create"))
+	}
+}
+
+func TestSubmitStackRejectsHeadEqualToBase(t *testing.T) {
+	svc, _, p, m := newStackServiceForTest(t)
+	call := stackCall("k", "", []byte("bundle"), stackEntry("main", "owner/repo#7"))
+	res := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if fe := res.GetError(); fe == nil || fe.GetCode() != "invalid_argument" {
+		t.Fatalf("result = %v, want invalid_argument", res)
+	}
+	if len(m.applied)+len(m.pushes) != 0 || p.count("create") != 0 {
+		t.Fatalf("applied=%v pushes=%v creates=%d, want no side effects", m.applied, m.pushes, p.count("create"))
+	}
+}
+func TestSubmitStackChecksIssueBeforeForeignRebase(t *testing.T) {
+	svc, p, m, n := seedForeignBase(t, testOwnerID)
+	p.GetIssueResult = forge.Issue{State: "closed"}
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, foreignLineCall()))
+	if statuses(got)[0] != failedStatus || statuses(got)[1] != skippedStatus || got[0].GetError().GetCode() != "failed_precondition" {
+		t.Fatalf("results = %v, want failed_precondition then skipped", got)
+	}
+	if len(m.rebases)+len(m.pushes)+len(n.posts) != 0 {
+		t.Fatalf("rebases=%v pushes=%v notices=%v, want no side effects", m.rebases, m.pushes, n.posts)
+	}
+}
+
+func TestSubmitStackRefusesExistingHeadWithoutPriorAttempt(t *testing.T) {
+	svc, _, p, m := newStackServiceForTest(t)
+	m.remote["refs/heads/a"] = "someone-sha"
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall("k", "", []byte("bundle"), stackEntry("a", "owner/repo#7"))))
+	if got[0].GetStatus() != failedStatus || got[0].GetError().GetCode() != "permission_denied" {
+		t.Fatalf("entry = %v, want permission_denied", got[0])
+	}
+	if len(m.pushes) != 0 || p.count("create") != 0 {
+		t.Fatalf("pushes=%v creates=%d, want no push or create", m.pushes, p.count("create"))
+	}
+}
+
+func TestSubmitStackAllowsHeadWithPriorPushedIntent(t *testing.T) {
+	svc, st, p, m := newStackServiceForTest(t)
+	p.createErr["a"] = &forge.StatusError{Status: 422, Message: "invalid"}
+	first := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall("first-key", "", []byte("bundle"), stackEntry("a", "owner/repo#7"))))
+	if first[0].GetStatus() != failedStatus || first[0].GetError().GetCode() != "invalid_argument" {
+		t.Fatalf("first entry = %v, want failed invalid_argument", first[0])
+	}
+	if len(st.intents) != 1 || st.intents[0].State != store.WriteStateFailed || !st.intents[0].HeadPushed {
+		t.Fatalf("intent = %+v, want failed and marked pushed", st.intents)
+	}
+	p.createErr["a"] = nil
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall("second-key", "", []byte("bundle"), stackEntry("a", "owner/repo#7"))))
+	if got[0].GetStatus() != doneStatus || !got[0].GetCreated() {
+		t.Fatalf("entry = %v, want created", got[0])
+	}
+	if len(m.pushes) != 2 || p.count("create") != 2 {
+		t.Fatalf("pushes=%v creates=%d, want two pushes and creates", m.pushes, p.count("create"))
+	}
+}
+func TestSubmitStackRefusesUnpushedFailedPRIntent(t *testing.T) {
+	svc, st, p, m := newStackServiceForTest(t)
+	m.remote["refs/heads/a"] = "someone-sha"
+	st.intents = append(st.intents, store.WriteIntent{
+		ID: "failed-unpushed", Provider: store.ForgeProviderGitHub, Host: testHost, Repo: testRepo,
+		Kind: forge.WriteKindPullRequest, HeadRef: "a", AgentAccountID: testAgentID,
+		State: store.WriteStateFailed, RequestKey: "prior:a",
+	})
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall("new-key", "", []byte("bundle"), stackEntry("a", "owner/repo#7"))))
+	if got[0].GetStatus() != failedStatus || got[0].GetError().GetCode() != "permission_denied" {
+		t.Fatalf("entry = %v, want permission_denied", got[0])
+	}
+	if len(m.pushes) != 0 || p.count("create") != 0 {
+		t.Fatalf("pushes=%v creates=%d, want no push or create", m.pushes, p.count("create"))
+	}
+}
+
+func TestSubmitStackUnbundledForeignBaseRefusesExistingEntryBranch(t *testing.T) {
+	svc, p, m, n := seedForeignBase(t, testOwnerID)
+	m.remote["refs/heads/a"] = "someone-sha"
+	call := foreignLineCall()
+	call.GetSubmitStack().Bundle = nil
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, call))
+	if got[0].GetStatus() != failedStatus || got[0].GetError().GetCode() != "permission_denied" {
+		t.Fatalf("entry = %v, want permission_denied", got[0])
+	}
+	if len(m.rebases)+len(m.pushes)+len(n.posts) != 0 || p.count("create") != 0 {
+		t.Fatalf("rebases=%v pushes=%v notices=%v creates=%d, want no side effects", m.rebases, m.pushes, n.posts, p.count("create"))
+	}
+}
+func TestSubmitStackWriteIntentRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		recErr bool
+		path   string
+	}{
+		{name: "lost response retry", path: "retry"},
+		{name: "lost response sweep", path: "sweep"},
+		{name: "failed record retry", recErr: true, path: "retry"},
+		{name: "failed record sweep", recErr: true, path: "sweep"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, st, p, _ := newStackServiceForTest(t)
+			call := func() []*compassv1internal.StackEntryResult {
+				return stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall("recovery", "", nil, stackEntry("a", "owner/repo#7"))))
+			}
+			if tc.recErr {
+				st.recErr = errors.New("store: connection reset")
+			} else {
+				p.createAfterErr["a"] = &forge.StatusError{Status: 502, Message: "bad gateway"}
+			}
+			first := call()
+			if first[0].GetStatus() != failedStatus {
+				t.Fatalf("first entry = %v, want failed", first[0])
+			}
+			if tc.recErr && first[0].GetError().GetCode() != "internal" {
+				t.Fatalf("failed record = %v, want internal", first[0].GetError())
+			}
+			if len(st.intents) != 1 || st.intents[0].State != store.WriteStatePending {
+				t.Fatalf("intent after first call = %+v, want pending", st.intents)
+			}
+			st.recErr = nil
+			p.createAfterErr["a"] = nil
+			if tc.path == "sweep" {
+				svc.now = func() time.Time { return nowStub().Add(2 * time.Minute) }
+				if err := svc.sweepWriteIntents(t.Context()); err != nil {
+					t.Fatalf("sweep: %v", err)
+				}
+			}
+			retried := call()
+			if retried[0].GetStatus() != doneStatus || retried[0].GetCreated() {
+				t.Fatalf("retry entry = %v, want done and not created", retried[0])
+			}
+			if len(st.recorded) != 1 || len(st.prCreates) != 1 || len(st.intents) != 1 || st.intents[0].State != store.WriteStateDone || p.count("create") != 1 {
+				t.Fatalf("recorded=%+v prCreates=%+v intents=%+v creates=%d, want one recovered PR and create", st.recorded, st.prCreates, st.intents, p.count("create"))
+			}
+		})
 	}
 }
 

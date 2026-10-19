@@ -203,6 +203,27 @@ func (f *fakeForgeStore) RecordWriteIntent(_ context.Context, in store.WriteInte
 	return in, nil
 }
 
+func (f *fakeForgeStore) HasPushedPRHead(_ context.Context, provider store.ForgeProvider, host, repo, headRef string, agent store.AccountID) (bool, error) {
+	repo = (store.ForgeCoord{Provider: provider, Repo: repo}).Normalized().Repo
+	for _, in := range f.intents {
+		intentRepo := (store.ForgeCoord{Provider: in.Provider, Repo: in.Repo}).Normalized().Repo
+		if in.Provider == provider && in.Host == host && intentRepo == repo && in.HeadRef == headRef &&
+			in.Kind == forge.WriteKindPullRequest && in.AgentAccountID == agent && in.HeadPushed {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeForgeStore) MarkWriteIntentHeadPushed(_ context.Context, id string) error {
+	for i := range f.intents {
+		if f.intents[i].ID == id {
+			f.intents[i].HeadPushed = true
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
 func (f *fakeForgeStore) HoldWriteIntent(_ context.Context, in store.WriteIntent) (store.WriteIntent, error) {
 	if f.beforeHold != nil {
 		f.beforeHold()

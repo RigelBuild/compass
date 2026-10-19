@@ -314,6 +314,7 @@ type Querier interface {
 	// Feeds requireGroupCreateAuthz: owner, agent-owner, same namespace, or SHARED-visibility group.
 	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
 	HasForgeScope(ctx context.Context, arg HasForgeScopeParams) (bool, error)
+	HasPushedPRHead(ctx context.Context, arg HasPushedPRHeadParams) (bool, error)
 	HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIntentParams) (HoldForgeWriteIntentRow, error)
 	// HotTailBytes and HotTailSizes derive the checkpoint inside the statement, so
 	// a checkpoint committed between the valve's reads cannot shift its window.
@@ -571,6 +572,7 @@ type Querier interface {
 	MarkForgeNoticeDelivered(ctx context.Context, id pgtype.UUID) (int64, error)
 	MarkMentionsRouted(ctx context.Context, arg MarkMentionsRoutedParams) error
 	MarkPRsBackfilled(ctx context.Context, arg MarkPRsBackfilledParams) (int64, error)
+	MarkWriteIntentHeadPushed(ctx context.Context, id string) (int64, error)
 	MergeTopicLastSeq(ctx context.Context, arg MergeTopicLastSeqParams) error
 	MessageByID(ctx context.Context, id string) (MessageByIDRow, error)
 	MessageChannel(ctx context.Context, id string) (string, error)

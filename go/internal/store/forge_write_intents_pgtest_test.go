@@ -159,6 +159,61 @@ func TestHoldWriteIntentReservesKeyWithoutClaimingHead(t *testing.T) {
 	}
 }
 
+func TestHasPushedPRHead(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	unmarked := writeIntentFixture(t, s, "intent-head-unmarked", "key-head-unmarked", "feature/unmarked")
+	unmarkedRow, err := s.RecordWriteIntent(ctx, unmarked)
+	if err != nil {
+		t.Fatalf("RecordWriteIntent(unmarked): %v", err)
+	}
+	if got, err := s.HasPushedPRHead(ctx, unmarked.Provider, unmarked.Host, unmarked.Repo, unmarked.HeadRef, unmarked.AgentAccountID); err != nil || got {
+		t.Fatalf("HasPushedPRHead(unmarked) = %v, %v; want false", got, err)
+	}
+	if err := s.MarkWriteIntentHeadPushed(ctx, unmarkedRow.ID); err != nil {
+		t.Fatalf("MarkWriteIntentHeadPushed: %v", err)
+	}
+	if got, err := s.HasPushedPRHead(ctx, unmarked.Provider, unmarked.Host, unmarked.Repo, unmarked.HeadRef, unmarked.AgentAccountID); err != nil || !got {
+		t.Fatalf("HasPushedPRHead(marked) = %v, %v; want true", got, err)
+	}
+	unpushedFailed := writeIntentFixture(t, s, "intent-head-failed-unpushed", "key-head-failed-unpushed", "feature/failed-unpushed")
+	unpushedFailedRow, err := s.RecordWriteIntent(ctx, unpushedFailed)
+	if err != nil {
+		t.Fatalf("RecordWriteIntent(failed unpushed): %v", err)
+	}
+	if err := s.EndWriteIntent(ctx, unpushedFailedRow.ID, WriteStateFailed); err != nil {
+		t.Fatalf("EndWriteIntent(failed unpushed): %v", err)
+	}
+	if got, err := s.HasPushedPRHead(ctx, unpushedFailed.Provider, unpushedFailed.Host, unpushedFailed.Repo, unpushedFailed.HeadRef, unpushedFailed.AgentAccountID); err != nil || got {
+		t.Fatalf("HasPushedPRHead(failed unpushed) = %v, %v; want false", got, err)
+	}
+
+	failed := writeIntentFixture(t, s, "intent-head-failed", "key-head-failed", "feature/failed")
+	failedRow, err := s.RecordWriteIntent(ctx, failed)
+	if err != nil {
+		t.Fatalf("RecordWriteIntent(failed): %v", err)
+	}
+	if err := s.MarkWriteIntentHeadPushed(ctx, failedRow.ID); err != nil {
+		t.Fatalf("MarkWriteIntentHeadPushed(failed): %v", err)
+	}
+	if err := s.EndWriteIntent(ctx, failedRow.ID, WriteStateFailed); err != nil {
+		t.Fatalf("EndWriteIntent(failed): %v", err)
+	}
+	if got, err := s.HasPushedPRHead(ctx, failed.Provider, failed.Host, failed.Repo, failed.HeadRef, failed.AgentAccountID); err != nil || !got {
+		t.Fatalf("HasPushedPRHead(failed and pushed) = %v, %v; want true", got, err)
+	}
+
+	other := writeIntentFixture(t, s, "intent-head-other-agent", "key-head-other-agent", failed.HeadRef)
+	if _, err := s.RecordWriteIntent(ctx, other); err != nil {
+		t.Fatalf("RecordWriteIntent(other agent): %v", err)
+	}
+	caller, _ := seedAgent(t, s, "intent-head-caller")
+	if got, err := s.HasPushedPRHead(ctx, other.Provider, other.Host, other.Repo, other.HeadRef, caller); err != nil || got {
+		t.Fatalf("HasPushedPRHead(other agent) = %v, %v; want false", got, err)
+	}
+}
+
 func TestPromoteWriteIntentOnlyMovesHeldRows(t *testing.T) {
 	s := newTestStore(t)
 	in := writeIntentFixture(t, s, "intent-promote", "key-promote", "feature/promote")
