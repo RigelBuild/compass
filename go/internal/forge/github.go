@@ -641,6 +641,20 @@ func (g *GitHub) TransitionIssueState(ctx context.Context, repo string, number u
 	return out.toIssue(), nil
 }
 
+// EditIssue updates only the supplied issue fields and returns GitHub's response.
+func (g *GitHub) EditIssue(ctx context.Context, repo string, number uint64, in EditIssue) (Issue, error) {
+	body := struct {
+		Title *string `json:"title,omitempty"`
+		Body  *string `json:"body,omitempty"`
+	}{Title: in.Title, Body: in.Body}
+	url := g.apiBase() + "/repos/" + repo + "/issues/" + strconv.FormatUint(number, 10)
+	var out ghIssue
+	if err := g.doJSON(ctx, http.MethodPatch, url, body, &out); err != nil {
+		return Issue{}, fmt.Errorf("forge: github edit issue %q#%d: %w", repo, number, err)
+	}
+	return out.toIssue(), nil
+}
+
 // TransitionPullRequestState moves PR number in repo to in.State via
 // PATCH /repos/{repo}/pulls/{number}. Only `state` is sent: merge is a separate
 // operation the transition never expresses, and GitHub's issue-only

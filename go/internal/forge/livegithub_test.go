@@ -545,6 +545,26 @@ func TestLiveGitHubTransitionIssueClose(t *testing.T) {
 	assertMatchesFixture(t, got, f.Response.Want)
 }
 
+func TestLiveGitHubEditIssue(t *testing.T) {
+	repo, author, _ := requireLive(t)
+	ctx, cancel := liveCtx(t)
+	defer cancel()
+	gh := liveGitHub(author)
+	issue, err := createGitHubIssueWithBackoff(ctx, t, gh, author, repo, CreateIssue{Title: "compass-live-edit-" + newRunID()})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
+	title, body := "compass-live-edited-"+newRunID(), "edited by forge_edit_issue"
+	got, err := gh.EditIssue(ctx, repo, issue.Number, EditIssue{Title: &title, Body: &body})
+	if err != nil {
+		t.Fatalf("EditIssue: %v", err)
+	}
+	if got.Number != issue.Number || got.Title != title || got.Body != body {
+		t.Fatalf("EditIssue result = %+v, want title %q and body %q", got, title, body)
+	}
+}
+
 // TestLiveGitHubTransitionIssueCloseReason closes with an explicit not_planned
 // state_reason on a labeled issue and asserts the decoded issue matches the
 // fixture (State closed, the label preserved through the close).
@@ -1030,6 +1050,23 @@ func TestLiveLinearTransitionIssueCloseByName(t *testing.T) {
 		t.Fatalf("TransitionIssueState close_by_name: %v", err)
 	}
 	assertMatchesFixture(t, got, f.Response.Want)
+}
+
+func TestLiveLinearEditIssue(t *testing.T) {
+	ts, team := requireLinear(t)
+	ctx, cancel := liveCtx(t)
+	defer cancel()
+	ln := liveLinear(ts)
+	issue := createVisibleLinearIssue(ctx, t, ln, ts, team, CreateIssue{Title: "compass-live-edit-" + newRunID()})
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+	title, body := "compass-live-edited-"+newRunID(), "edited by forge_edit_issue"
+	got, err := ln.EditIssue(ctx, team, issue.Number, EditIssue{Title: &title, Body: &body})
+	if err != nil {
+		t.Fatalf("EditIssue: %v", err)
+	}
+	if got.Number != issue.Number || got.Title != title || got.Body != body {
+		t.Fatalf("EditIssue result = %+v, want title %q and body %q", got, title, body)
+	}
 }
 
 // TestLiveLinearTransitionIssueReopen closes then reopens an issue via the

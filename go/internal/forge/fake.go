@@ -75,6 +75,8 @@ type FakeProvider struct {
 	// TransitionIssueResult is returned by TransitionIssueState when no error is
 	// scripted.
 	TransitionIssueResult Issue
+	// EditIssueResult is returned by EditIssue when no error is scripted.
+	EditIssueResult Issue
 	// TransitionPRResult is returned by TransitionPullRequestState when no error
 	// is scripted.
 	TransitionPRResult PullRequest
@@ -249,6 +251,14 @@ func (f *FakeProvider) TransitionIssueState(_ context.Context, repo string, numb
 		return Issue{}, err
 	}
 	return f.TransitionIssueResult, nil
+}
+
+// EditIssue records the call and returns the scripted result or error.
+func (f *FakeProvider) EditIssue(_ context.Context, repo string, number uint64, in EditIssue) (Issue, error) {
+	if err := f.record(Call{Method: "EditIssue", Repo: repo, Number: number, Payload: in}); err != nil {
+		return Issue{}, err
+	}
+	return f.EditIssueResult, nil
 }
 
 // TransitionPullRequestState records the call and returns the scripted result or error.

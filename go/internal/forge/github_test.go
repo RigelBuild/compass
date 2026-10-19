@@ -821,6 +821,38 @@ func TestCreateIssueRequestAndDecode(t *testing.T) {
 	}
 }
 
+func TestGitHubEditIssueRequestOnlySendsSetFields(t *testing.T) {
+	const response = `{"number":7,"title":"edited title","body":"edited body","state":"open","html_url":"https://github.com/org/repo/issues/7","user":{"login":"octocat"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: http.StatusOK, body: response}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	title, body := "edited title", "edited body"
+	got, err := g.EditIssue(context.Background(), "org/repo", 7, EditIssue{Title: &title, Body: &body})
+	if err != nil {
+		t.Fatalf("EditIssue: %v", err)
+	}
+	if req := rt.requests[0]; req.Method != http.MethodPatch || req.URL.String() != "https://api.github.com/repos/org/repo/issues/7" {
+		t.Fatalf("request = %s %s, want issue PATCH", rt.requests[0].Method, rt.requests[0].URL)
+	}
+	if got := readReqBody(t, rt.requests[0]); got != `{"title":"edited title","body":"edited body"}` {
+		t.Fatalf("request body = %s, want only the supplied fields", got)
+	}
+	if got.Title != title || got.Body != body || got.Number != 7 {
+		t.Fatalf("updated issue = %+v", got)
+	}
+}
+
+func TestGitHubEditIssueTitleOnlyOmitsBody(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: http.StatusOK, body: `{"number":7,"title":"renamed","state":"open"}`}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	title := "renamed"
+	if _, err := g.EditIssue(context.Background(), "org/repo", 7, EditIssue{Title: &title}); err != nil {
+		t.Fatalf("EditIssue: %v", err)
+	}
+	if got := readReqBody(t, rt.requests[0]); got != `{"title":"renamed"}` {
+		t.Fatalf("title-only request body = %s, want body omitted", got)
+	}
+}
+
 func TestCommentOnIssueRequestAndDecode(t *testing.T) {
 	const respBody = `{
 		"id": 555,

@@ -505,6 +505,36 @@ func (l *Linear) ListIssues(ctx context.Context, repo string, f IssueFilter) ([]
 	return all, nil
 }
 
+// EditIssue updates only supplied fields and returns Linear's issueUpdate response.
+func (l *Linear) EditIssue(ctx context.Context, repo string, number uint64, in EditIssue) (Issue, error) {
+	issueID, err := l.resolveIssueID(ctx, repo, number)
+	if err != nil {
+		return Issue{}, fmt.Errorf("forge: linear edit issue %q#%d: %w", repo, number, err)
+	}
+	input := make(map[string]any, 2)
+	if in.Title != nil {
+		input["title"] = *in.Title
+	}
+	if in.Body != nil {
+		input["description"] = *in.Body
+	}
+	const query = `mutation CompassIssueEdit($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) {
+    issue { ...CompassIssueFields }
+  }
+}` + issueFieldsFragment
+	var out struct {
+		IssueUpdate struct {
+			Issue linearIssue `json:"issue"`
+		} `json:"issueUpdate"`
+	}
+	vars := map[string]any{"id": issueID, gqlInputKey: input}
+	if err := l.doGraphQL(ctx, query, vars, &out); err != nil {
+		return Issue{}, fmt.Errorf("forge: linear edit issue %q#%d: %w", repo, number, err)
+	}
+	return out.IssueUpdate.Issue.toIssue(), nil
+}
+
 // TransitionIssueState moves issue number in the team keyed by repo to the
 // workflow state in resolves to, returning the UPDATED issue (the mutation
 // response IS the new truth). Resolution order is team -> the team's workflow

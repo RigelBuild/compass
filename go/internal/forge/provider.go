@@ -205,6 +205,12 @@ type CreateIssue struct {
 	Assignee string
 }
 
+// EditIssue holds the optional fields to update on an existing issue.
+type EditIssue struct {
+	Title *string
+	Body  *string
+}
+
 // CreatePR is the input to Provider.CreatePullRequest.
 type CreatePR struct {
 	// Title is the new PR's title.
@@ -322,6 +328,8 @@ type Provider interface { //nolint:interfacebloat // one method per forge operat
 	// implementation re-reads. in.State is the portable target; the refinements
 	// are screened at the server arm, so a provider may ignore a foreign one.
 	TransitionIssueState(ctx context.Context, repo string, number uint64, in TransitionState) (Issue, error)
+	// EditIssue updates the selected issue fields and returns the new issue.
+	EditIssue(ctx context.Context, repo string, number uint64, in EditIssue) (Issue, error)
 	// TransitionPullRequestState is the PR twin. A provider with no PR model
 	// returns ErrUnsupported.
 	TransitionPullRequestState(ctx context.Context, repo string, number uint64, in TransitionState) (PullRequest, error)

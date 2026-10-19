@@ -29,6 +29,7 @@ import {
 	createForgeTools,
 	createIssueParameters,
 	createPullRequestParameters,
+	editIssueParameters,
 	ForgeBroker,
 	type ForgeTransport,
 	getIssueParameters,
@@ -191,7 +192,7 @@ describe("ForgeBroker", () => {
 	});
 });
 describe("createForgeTools", () => {
-	test("exposes all thirteen forge tools and registers transitions as writes", () => {
+	test("exposes all fourteen forge tools and registers transitions as writes", () => {
 		const tools = createForgeTools(
 			new ForgeBroker(new FakeTransport(issueResult())),
 		);
@@ -205,6 +206,7 @@ describe("createForgeTools", () => {
 			"forge_create_issue",
 			"forge_create_pull_request",
 			"forge_transition_issue_state",
+			"forge_edit_issue",
 			"forge_transition_pull_request_state",
 			"forge_subscribe",
 			"forge_unsubscribe",
@@ -240,6 +242,7 @@ describe("createForgeTools", () => {
 			"forge_subscribe",
 			"forge_mirror_messages",
 			"forge_unsubscribe",
+			"forge_edit_issue",
 		])
 			expect(approvalOf(w)).toBe("write");
 	});
@@ -919,6 +922,52 @@ describe("forge transition tools", () => {
 		expect(fenceOf(textOf(result))).toHaveLength(8);
 	});
 });
+
+describe("forge_edit_issue", () => {
+	test("sends only supplied title/body fields and renders the updated issue", async () => {
+		const transport = new FakeTransport(
+			issueResult({ number: 7, repo: "o/r", title: "edited", body: "body" }),
+		);
+		const result = await exec(
+			tool(new ForgeBroker(transport), "forge_edit_issue"),
+			"tc-1",
+			{ repo: "o/r", issue_number: 7, title: "edited", body: "body" },
+		);
+		const req = transport.requests[0];
+		expect(req.call.case).toBe("editIssue");
+		if (req.call.case !== "editIssue") throw new Error("expected arm");
+		expect(req.call.value.issueNumber).toBe(7n);
+		expect(req.call.value.title).toBe("edited");
+		expect(req.call.value.body).toBe("body");
+		expect(fenceOf(textOf(result))).toHaveLength(8);
+	});
+
+	test("title-only edit leaves body absent on the wire", async () => {
+		const transport = new FakeTransport(
+			issueResult({ number: 7, repo: "o/r" }),
+		);
+		await exec(tool(new ForgeBroker(transport), "forge_edit_issue"), "tc-2", {
+			repo: "o/r",
+			issue_number: 7,
+			title: "renamed",
+		});
+		const req = transport.requests[0];
+		if (req.call.case !== "editIssue") throw new Error("expected arm");
+		expect(req.call.value.title).toBe("renamed");
+		expect(req.call.value.body).toBeUndefined();
+	});
+
+	test("rejects an empty edit before contacting the server", async () => {
+		const transport = new FakeTransport(errorResult("internal", "unused"));
+		await expect(
+			exec(tool(new ForgeBroker(transport), "forge_edit_issue"), "tc-empty", {
+				repo: "o/r",
+				issue_number: 7,
+			}),
+		).rejects.toThrow("forge_edit_issue: provide title, body, or both");
+		expect(transport.requests).toHaveLength(0);
+	});
+});
 describe("forge_create_issue", () => {
 	test("sets a nonce-prefixed clientRequestId and renders the created ack", async () => {
 		const transport = new FakeTransport(
@@ -1201,6 +1250,26 @@ describe("forgeFailure", () => {
 describe("forge parameter schemas", () => {
 	const rejects = (schema: Type<object>, params: unknown): boolean =>
 		schema(params) instanceof ArkErrors;
+
+	test("edit issue requires title, body, or both", () => {
+		expect(rejects(editIssueParameters, { repo: "o/r", issue_number: 7 })).toBe(
+			true,
+		);
+		expect(
+			rejects(editIssueParameters, {
+				repo: "o/r",
+				issue_number: 7,
+				body: "",
+			}),
+		).toBe(false);
+		expect(
+			rejects(editIssueParameters, {
+				repo: "o/r",
+				issue_number: 7,
+				title: "renamed",
+			}),
+		).toBe(false);
+	});
 
 	test("the transition arms reject a state outside the portable domain", () => {
 		// "merged" and a Linear workflow-state name are both real forge states,

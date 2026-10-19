@@ -192,6 +192,8 @@ func (s *forgeService) ExecuteForgeCallAsAccount(
 		return s.submitReview(ctx, caller, sessionID, call, c.SubmitReview), nil
 	case *compassv1internal.ForgeCallRequest_TransitionIssueState:
 		return s.transitionIssueState(ctx, caller, call, c.TransitionIssueState), nil
+	case *compassv1internal.ForgeCallRequest_EditIssue:
+		return s.editIssue(ctx, caller, sessionID, call, c.EditIssue), nil
 	case *compassv1internal.ForgeCallRequest_TransitionPullRequestState:
 		return s.transitionPullRequestState(ctx, caller, call, c.TransitionPullRequestState), nil
 	case *compassv1internal.ForgeCallRequest_GetIssue:
@@ -689,6 +691,41 @@ func (s *forgeService) transitionIssueState(ctx context.Context, caller store.Ac
 	}
 	return &compassv1internal.ForgeCallResult{
 		Result: &compassv1internal.ForgeCallResult_Issue{Issue: translateIssue(iss, rf, req.GetRepo())},
+	}
+}
+
+// editIssue checks the caller's scope, stamps any body edit, and returns the
+// updated issue without creating an ownership row.
+func (s *forgeService) editIssue(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.EditIssueRequest) *compassv1internal.ForgeCallResult {
+	rf, fe := s.resolveTarget(call, req.GetRepo())
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if req.Title == nil && req.Body == nil {
+		return forgeErrorResult(forgeErr(connect.CodeInvalidArgument, "forge: edit_issue requires title or body"))
+	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	in := forge.EditIssue{Title: req.Title}
+	if req.Body != nil {
+		bodyText := req.GetBody()
+		id, fe := s.resolveIdentity(ctx, caller, sessionID)
+		if fe != nil {
+			return forgeErrorResult(fe)
+		}
+		body, err := forge.StampOwner(bodyText, id.author, rf.bodyLimit)
+		if err != nil {
+			return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "edit_issue", bodyLen: len(bodyText), bodyLimit: rf.bodyLimit}))
+		}
+		in.Body = &body
+	}
+	issue, err := rf.author.EditIssue(ctx, req.GetRepo(), req.GetIssueNumber(), in)
+	if err != nil {
+		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "edit_issue"}))
+	}
+	return &compassv1internal.ForgeCallResult{
+		Result: &compassv1internal.ForgeCallResult_Issue{Issue: translateIssue(issue, rf, req.GetRepo())},
 	}
 }
 
