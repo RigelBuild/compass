@@ -51,6 +51,31 @@ func TestGitMirrorCommitIdentitiesReadsBundledHead(t *testing.T) {
 		t.Fatalf("CommitIdentities = (%q, %q), want author@example.test and committer@example.test", authorEmail, committerEmail)
 	}
 }
+
+func TestGitMirrorRefHeadReadsBundledHeadAndMissingRef(t *testing.T) {
+	fixture := newMirrorFixture(t)
+	mirrorGit(t, fixture.work, "switch", "-c", "agent")
+	head := mirrorCommit(t, fixture.work, "agent.txt", "agent\n")
+	bundle := mirrorBundle(t, fixture.work, "refs/heads/agent")
+	m := newTestGitMirror(t, fixture, 1<<30, 1<<30)
+	if _, err := m.ApplyBundle(t.Context(), "owner/repo", bundle, []string{"refs/heads/agent"}); err != nil {
+		t.Fatalf("ApplyBundle: %v", err)
+	}
+	got, err := m.RefHead(t.Context(), "owner/repo", "refs/heads/agent")
+	if err != nil {
+		t.Fatalf("RefHead bundled head: %v", err)
+	}
+	if got != head {
+		t.Fatalf("RefHead bundled head = %q, want %q", got, head)
+	}
+	got, err = m.RefHead(t.Context(), "owner/repo", "refs/heads/missing")
+	if err != nil {
+		t.Fatalf("RefHead absent ref: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("RefHead absent ref = %q, want empty", got)
+	}
+}
 func TestGitMirrorApplyBundleDoesNotInstallUnrequestedRefs(t *testing.T) {
 	fixture := newMirrorFixture(t)
 	mainHead := mirrorCommit(t, fixture.work, "main.txt", "main\n")

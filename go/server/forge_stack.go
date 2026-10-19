@@ -112,7 +112,15 @@ func (r *stackRun) prepareStack(ctx context.Context, entries []*compassv1interna
 		if found[i] {
 			continue
 		}
-		if fe := r.requireOwnBranch(ctx, entry.GetHeadRef(), r.leases["refs/heads/"+entry.GetHeadRef()]); fe != nil {
+		localOID := ""
+		if r.bundled {
+			var err error
+			localOID, err = r.s.mirror.RefHead(ctx, r.repo, "refs/heads/"+entry.GetHeadRef())
+			if err != nil {
+				return nil, i, forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: read bundled head %q: %v", entry.GetHeadRef(), err))
+			}
+		}
+		if fe := r.requireOwnBranch(ctx, entry.GetHeadRef(), r.leases["refs/heads/"+entry.GetHeadRef()], localOID); fe != nil {
 			return nil, i, fe
 		}
 	}
@@ -399,7 +407,7 @@ func (r *stackRun) rebaseForeign(ctx context.Context, f *foreignBase, entries []
 			}
 			r.leases[ref] = seeded
 			if !found[i] {
-				if fe := r.requireOwnBranch(ctx, e.GetHeadRef(), seeded); fe != nil {
+				if fe := r.requireOwnBranch(ctx, e.GetHeadRef(), seeded, ""); fe != nil {
 					return fe
 				}
 			}
@@ -545,10 +553,10 @@ func (r *stackRun) adopt(ctx context.Context, pr forge.PullRequest, head string)
 	return forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: head %q is pull request #%d, which this agent did not create", head, pr.Number))
 }
 
-// requireOwnBranch refuses to overwrite a PR-less remote branch without durable push evidence.
-// A lease proves the observed tip, not which agent pushed it.
-func (r *stackRun) requireOwnBranch(ctx context.Context, head, remoteOID string) *compassv1internal.ForgeCallError {
-	if remoteOID == "" {
+// requireOwnBranch refuses to overwrite a PR-less remote branch without ownership evidence.
+// A local match is safe because the subsequent push does not change the remote ref.
+func (r *stackRun) requireOwnBranch(ctx context.Context, head, remoteOID, localOID string) *compassv1internal.ForgeCallError {
+	if remoteOID == "" || remoteOID == localOID {
 		return nil
 	}
 	owned, err := r.s.store.HasPushedPRHead(ctx, store.ForgeProvider(r.rf.provider), r.rf.host, r.repo, head, r.caller)

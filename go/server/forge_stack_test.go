@@ -118,6 +118,7 @@ type fakeMirror struct {
 	leases     []forge.Leases
 	pushErr    error
 	remote     map[string]string
+	local      map[string]string
 	identities map[string][2]string
 	// rebases records each Rebase line and its onto; conflict scripts the result.
 	rebases  [][]string
@@ -133,10 +134,20 @@ func (m *fakeMirror) ApplyBundle(_ context.Context, _ string, _ []byte, refs []s
 	*m.events = append(*m.events, "apply")
 	m.applied = append(m.applied, refs)
 	leases := forge.Leases{}
+	if m.local == nil {
+		m.local = make(map[string]string)
+	}
 	for _, ref := range refs {
 		leases[ref] = m.remote[ref]
+		if _, ok := m.local[ref]; !ok {
+			m.local[ref] = "bundle-" + strings.TrimPrefix(ref, "refs/heads/")
+		}
 	}
 	return leases, nil
+}
+
+func (m *fakeMirror) RefHead(_ context.Context, _, ref string) (string, error) {
+	return m.local[ref], nil
 }
 
 func (m *fakeMirror) Push(_ context.Context, _ string, refs map[string]string, expected forge.Leases) error {
@@ -225,6 +236,7 @@ func newStackServiceForTest(t *testing.T) (*forgeService, *fakeForgeStore, *stac
 	m := &fakeMirror{
 		events: events,
 		remote: map[string]string{},
+		local:  map[string]string{},
 		identities: map[string][2]string{
 			"default": {
 				agentidentity.AgentCommitEmail(string(testAgentID)),
@@ -234,6 +246,37 @@ func newStackServiceForTest(t *testing.T) (*forgeService, *fakeForgeStore, *stac
 	}
 	svc.mirror = m
 	return svc, st, p, m
+}
+
+func TestSubmitStackAllowsExistingHeadWhenBundleMatchesRemote(t *testing.T) {
+	svc, st, p, m := newStackServiceForTest(t)
+	ref := "refs/heads/a"
+	commit := "same-commit"
+	m.remote[ref] = commit
+	m.local[ref] = commit
+	owned, err := st.HasPushedPRHead(t.Context(), store.ForgeProviderGitHub, testHost, testRepo, "a", testAgentID)
+	if err != nil {
+		t.Fatalf("HasPushedPRHead before submit: %v", err)
+	}
+	if owned {
+		t.Fatal("head already has pushed evidence before submit")
+	}
+
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t,
+		stackCall("same-commit", "", []byte("bundle"), stackEntry("a", "owner/repo#7"))))
+	if got[0].GetStatus() != doneStatus || !got[0].GetCreated() {
+		t.Fatalf("entry = %v, want a created pull request", got[0])
+	}
+	if p.count("create") != 1 || p.prs["a"] == nil {
+		t.Fatalf("creates = %d, PR = %v, want one created PR", p.count("create"), p.prs["a"])
+	}
+	owned, err = st.HasPushedPRHead(t.Context(), store.ForgeProviderGitHub, testHost, testRepo, "a", testAgentID)
+	if err != nil {
+		t.Fatalf("HasPushedPRHead after submit: %v", err)
+	}
+	if !owned {
+		t.Fatal("head lacks pushed evidence after successful submit")
+	}
 }
 
 func stackEntry(head, issue string) *compassv1internal.StackEntry {

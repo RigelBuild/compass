@@ -28,6 +28,8 @@ type Mirror interface {
 	// Rebase replays a line of refs, bottom to top, onto the given commit in one
 	// replay. It returns each moved ref's new head; none move when refs[0] already contains it.
 	Rebase(ctx context.Context, repo string, refs []string, onto string) (heads map[string]string, conflict bool, err error)
+	// RefHead returns a local branch ref's commit OID; an absent ref returns "".
+	RefHead(ctx context.Context, repo, ref string) (string, error)
 	// CommitIdentities returns the author and committer emails for a branch or commit.
 	CommitIdentities(ctx context.Context, repo, commit string) (authorEmail, committerEmail string, err error)
 	// SeedRef points ref at the fetched remote head of the same branch and returns it, which is also its lease.
@@ -73,6 +75,31 @@ func (m *gitMirror) ApplyBundle(ctx context.Context, repo string, bundle []byte,
 	m.capMu.Lock()
 	defer m.capMu.Unlock()
 	return m.applyBundle(ctx, repo, bundle, refs)
+}
+
+// RefHead reads a local branch tip while excluding mirror mutations.
+func (m *gitMirror) RefHead(ctx context.Context, repo, ref string) (string, error) {
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return "", fmt.Errorf("ref %q is not a branch ref", ref)
+	}
+	lock := m.repoLock(repo)
+	lock.Lock()
+	defer lock.Unlock()
+	path, _, normalized, _, err := m.prepare(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	if _, err := m.run(ctx, path, "", "check-ref-format", ref); err != nil {
+		return "", fmt.Errorf("invalid branch ref %q: %w", ref, err)
+	}
+	out, err := m.run(ctx, path, "", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil {
+		if isMissingRef(err) || exitCode(err) == 1 {
+			return "", nil
+		}
+		return "", fmt.Errorf("read local head %q in %s: %w", ref, normalized, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // CommitIdentities reads a branch tip or object ID while excluding mirror mutations.
