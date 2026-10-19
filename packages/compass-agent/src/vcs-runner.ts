@@ -3,13 +3,10 @@ export interface CommandResult {
 	stderr: string;
 	code: number;
 	timedOut?: boolean;
-	// Set instead of stdout when the call asked for binary output.
-	bytes?: Uint8Array;
 }
 
 export interface CommandOptions {
 	timeoutMs?: number;
-	binary?: boolean;
 }
 
 export interface CommandRunner {
@@ -37,13 +34,9 @@ export async function runCommand(
 	});
 	const done: Promise<CommandResult> = Promise.all([
 		proc.exited,
-		new Response(proc.stdout).bytes(),
+		new Response(proc.stdout).text(),
 		new Response(proc.stderr).text(),
-	]).then(([code, out, stderr]) =>
-		options.binary
-			? { code, stdout: "", stderr, bytes: out }
-			: { code, stdout: new TextDecoder().decode(out), stderr },
-	);
+	]).then(([code, stdout, stderr]) => ({ code, stdout, stderr }));
 	if (options.timeoutMs === undefined) return done;
 	let timer: Timer | undefined;
 	const expired = new Promise<undefined>((resolve) => {

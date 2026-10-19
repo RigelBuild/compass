@@ -94,9 +94,9 @@ same broker/identity/registration shape as comms. The stack arms
 
 PRs are created and updated by `vcs_submit` (`src/vcs-submit.ts`), not a
 forge tool: the agent cannot push, so the Server pushes its bundle and writes
-the PRs. The create, comment, and review arms carry a broker-scoped DL-206
-`client_request_id` (`ForgeBroker.idempotencyKey`); reads and transitions send
-none.
+the PRs. The create-issue, comment, review, mirror, and submit-stack arms carry
+a broker-scoped DL-206 `client_request_id` (`ForgeBroker.idempotencyKey`); reads,
+subscriptions, and lifecycle transitions do not.
 Every tool spreads an optional forge selector (`forge_provider` +
 `forge_host`): unset = the configured default GitHub forge (DL-202);
 `forge_provider: "linear"` targets the issues-only Linear provider (DL-051)

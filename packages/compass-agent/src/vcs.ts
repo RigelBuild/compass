@@ -587,7 +587,7 @@ export async function originRemote(
 	);
 	const url = listed.code === 0 ? listed.stdout.trim() : "";
 	const match = url.match(
-		/^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/,
+		/^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/,
 	);
 	// The URL is never echoed: a remote outside these forms can embed a credential.
 	if (!match)
@@ -660,14 +660,12 @@ async function trackAuthored(
 			throw new Error(
 				`${toolName}: stack_status for ${entry.headRef}: ${entry.error.message}`,
 			);
-		// A head with no PR is a push whose create failed; a local bookmark of that name marks it as ours.
-		if (
-			entry.pullRequest
-				? !entry.authored
-				: !(await hasLocal(deps, entry.headRef, toolName))
-		)
-			continue;
-		await requireNotDiverged(deps, entry.headRef, toolName);
+		const own = entry.pullRequest
+			? entry.authored
+			: await isOwnPushWithoutPr(deps, entry.headRef, toolName);
+		if (!own) continue;
+		if (entry.pullRequest)
+			await requireNotDiverged(deps, entry.headRef, toolName);
 		await runJj(deps, toolName, [
 			...JJ_FLAGS,
 			"bookmark",
@@ -679,17 +677,27 @@ async function trackAuthored(
 	}
 }
 
-async function hasLocal(
+/** A PR-less head is this agent's push whose create failed only when it holds the same commit as the local bookmark. */
+async function isOwnPushWithoutPr(
 	deps: VcsDeps,
 	name: string,
 	toolName: string,
 ): Promise<boolean> {
-	const found = await runJj(
-		deps,
-		toolName,
-		argsForLog(`bookmarks(exact:${quoteRevset(name)})`),
+	const target = async (revset: string): Promise<string | undefined> =>
+		parseRows(
+			(await runJj(deps, toolName, argsForLog(revset))).stdout,
+			toolName,
+		)[0]?.commit_id;
+	const local = await target(`bookmarks(exact:${quoteRevset(name)})`);
+	if (local === undefined) return false;
+	const remote = await target(
+		`remote_bookmarks(exact:${quoteRevset(name)}, remote=exact:"origin")`,
 	);
-	return found.stdout.trim().length > 0;
+	if (local !== remote)
+		throw new Error(
+			`${toolName}: ${name}@origin has no pull request and differs from your ${name}; rename your bookmark and submit again`,
+		);
+	return true;
 }
 
 // Tracking a bookmark whose local and remote targets diverged leaves it conflicted, which blocks every later call.

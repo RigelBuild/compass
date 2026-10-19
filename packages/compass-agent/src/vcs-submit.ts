@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type } from "@oh-my-pi/omptype/ark";
@@ -58,7 +58,9 @@ export const vcsSubmitParameters = type({
 		sections: type("Record<string, string>").describe(
 			"New PR body keyed by the pull request template headings",
 		),
-	}).describe("Replace one PR's title and body"),
+	}).describe(
+		"Replace one PR's title and body; issues must name its issue in `issues`",
+	),
 });
 
 export const vcsRetireParameters = type({
@@ -155,7 +157,6 @@ async function checkAbove(
 		);
 }
 
-/** The branch a line's bottom PR targets: the trunk branch or the foreign one. */
 async function baseBranch(
 	deps: VcsDeps,
 	base: string,
@@ -166,11 +167,37 @@ async function baseBranch(
 		(await runJj(deps, toolName, argsForLog("trunk()"))).stdout,
 		toolName,
 	);
-	const branch = rows[0]?.remoteBookmarks
-		.find((name) => name.endsWith("@origin"))
-		?.replace(/@origin$/, "");
-	if (!branch) throw new Error(`${toolName}: trunk() has no origin bookmark`);
-	return branch;
+	const origin = (rows[0]?.remoteBookmarks ?? [])
+		.filter((name) => name.endsWith("@origin"))
+		.map((name) => name.replace(/@origin$/, ""));
+	const preferred = ["main", "master", "trunk"].find((name) =>
+		origin.includes(name),
+	);
+	if (preferred) return preferred;
+	if (origin.length === 1) return origin[0] ?? "";
+	if (origin.length > 1)
+		throw new Error(
+			`${toolName}: trunk() carries several origin bookmarks (${origin.join(", ")}); cannot tell the default branch`,
+		);
+	throw new Error(`${toolName}: trunk() has no origin bookmark`);
+}
+
+function requireNonDefaultBranches(
+	segs: Segment[],
+	trunkBranch: string,
+	toolName: string,
+): void {
+	for (const { bookmark } of segs) {
+		if (
+			bookmark === "main" ||
+			bookmark === "master" ||
+			bookmark === "trunk" ||
+			bookmark === trunkBranch
+		)
+			throw new Error(
+				`${toolName}: ${bookmark} is the default branch; commit on a bookmark of its own`,
+			);
+	}
 }
 
 function splitDescription(description: string): {
@@ -257,26 +284,40 @@ async function runPrePush(
 	}
 }
 
+function requireSubmitSize(size: number, toolName: string): void {
+	if (size > MAX_SUBMIT_BYTES)
+		throw new Error(
+			`${toolName}: the submit is ${size} bytes, over the ${MAX_SUBMIT_BYTES}-byte limit; split the stack or drop large files`,
+		);
+}
+
 async function bundle(
 	deps: VcsDeps,
 	segs: Segment[],
 	baseCommit: string,
 	toolName: string,
 ): Promise<Uint8Array> {
-	const result = await deps.git.run(
-		[
-			"bundle",
-			"create",
-			"-",
-			...segs.map((seg) => `refs/heads/${seg.bookmark}`),
-			`^${baseCommit}`,
-		],
-		deps.cwd,
-		{ binary: true },
-	);
-	if (result.code !== 0 || !result.bytes)
-		throw new Error(`${toolName}: git bundle: ${result.stderr.trim()}`);
-	return result.bytes;
+	const dir = await mkdtemp(join(tmpdir(), "vcs-submit-"));
+	try {
+		const file = join(dir, "bundle");
+		const result = await deps.git.run(
+			[
+				"bundle",
+				"create",
+				file,
+				...segs.map((seg) => `refs/heads/${seg.bookmark}`),
+				`^${baseCommit}`,
+			],
+			deps.cwd,
+		);
+		if (result.code !== 0)
+			throw new Error(`${toolName}: git bundle: ${result.stderr.trim()}`);
+		const size = (await stat(file)).size;
+		requireSubmitSize(size, toolName);
+		return await readFile(file);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 }
 
 function renderEntry(entry: StackEntryResult): string {
@@ -368,6 +409,28 @@ async function buildEntries(
 	return entries;
 }
 
+/** The D4 refusals over the synced stack; returns its segments bottom to top. */
+async function checkStack(
+	deps: VcsDeps,
+	synced: { tip: string; rows: JjRow[] },
+	textBookmark: string | undefined,
+	toolName: string,
+): Promise<Segment[]> {
+	checkRows(synced.rows, toolName);
+	await checkAbove(deps, synced.tip, toolName);
+	const segs = segments(synced.rows, toolName);
+	requireNonDefaultBranches(
+		segs,
+		await baseBranch(deps, "trunk()", toolName),
+		toolName,
+	);
+	if (textBookmark && !segs.some((seg) => seg.bookmark === textBookmark))
+		throw new Error(
+			`${toolName}: text names ${textBookmark}, which is not in the stack`,
+		);
+	return segs;
+}
+
 export function createSubmitTools(deps: VcsDeps): AgentTool[] {
 	const submit: AgentTool<typeof vcsSubmitParameters> = {
 		name: "vcs_submit",
@@ -378,6 +441,10 @@ export function createSubmitTools(deps: VcsDeps): AgentTool[] {
 		execute: async (toolCallId, params) => {
 			const name = "vcs_submit";
 			validateBookmark(params.text?.bookmark, name);
+			if (params.text && !params.issues?.[params.text.bookmark])
+				throw new Error(
+					`${name}: text replaces ${params.text.bookmark}'s title and body, so issues must name its issue too`,
+				);
 			const remote = await originRemote(deps, name);
 			const synced = await syncOwn(deps, toolCallId, name, params.bookmark);
 			const root = synced.rows[synced.rows.length - 1];
@@ -386,14 +453,7 @@ export function createSubmitTools(deps: VcsDeps): AgentTool[] {
 				throw new Error(
 					`${name}: ${synced.tip} is in trunk; nothing to submit`,
 				);
-			checkRows(synced.rows, name);
-			await checkAbove(deps, synced.tip, name);
-			const segs = segments(synced.rows, name);
-			const textBookmark = params.text?.bookmark;
-			if (textBookmark && !segs.some((seg) => seg.bookmark === textBookmark))
-				throw new Error(
-					`${name}: text names ${textBookmark}, which is not in the stack`,
-				);
+			const segs = await checkStack(deps, synced, params.text?.bookmark, name);
 			await requireIssues(
 				deps,
 				toolCallId,
@@ -405,6 +465,7 @@ export function createSubmitTools(deps: VcsDeps): AgentTool[] {
 			const entries = await buildEntries(deps, remote.repo, segs, params, name);
 			const bottom = entries[0];
 			if (bottom) bottom.baseRef = await baseBranch(deps, synced.base, name);
+			const bundleBytes = await bundle(deps, segs, baseCommit, name);
 			const timedOut = await runPrePush(deps, remote, segs, name);
 			const req: ForgeCallRequest = create(ForgeCallRequestSchema, {
 				callId: toolCallId,
@@ -414,16 +475,13 @@ export function createSubmitTools(deps: VcsDeps): AgentTool[] {
 						repo: remote.repo,
 						entries,
 						readyHeadRef: params.ready ? synced.tip : "",
-						bundle: await bundle(deps, segs, baseCommit, name),
+						bundle: bundleBytes,
 					}),
 				},
 				clientRequestId: deps.forge.idempotencyKey(toolCallId),
 			});
 			const size = toBinary(ForgeCallRequestSchema, req).length;
-			if (size > MAX_SUBMIT_BYTES)
-				throw new Error(
-					`${name}: the submit is ${size} bytes, over the ${MAX_SUBMIT_BYTES}-byte limit; split the stack or drop large files`,
-				);
+			requireSubmitSize(size, name);
 			const result = await deps.forge.call(req);
 			if (result.result.case !== "stack")
 				throw forgeFailure(result, name, "stack");
@@ -450,6 +508,14 @@ export function createSubmitTools(deps: VcsDeps): AgentTool[] {
 		execute: async (toolCallId, params) => {
 			const name = "vcs_retire";
 			validateBookmark(params.bookmark, name);
+			if (
+				params.bookmark === "main" ||
+				params.bookmark === "master" ||
+				params.bookmark === "trunk"
+			)
+				throw new Error(
+					`${name}: ${params.bookmark} is the default branch; commit on a bookmark of its own`,
+				);
 			const remote = await originRemote(deps, name);
 			const result = await deps.forge.call(
 				create(ForgeCallRequestSchema, {

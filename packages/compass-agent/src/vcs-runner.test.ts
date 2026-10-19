@@ -29,11 +29,4 @@ describe("runCommand", () => {
 		);
 		expect(result).toEqual({ code: 3, stdout: "out\n", stderr: "err\n" });
 	});
-
-	test("binary output arrives as bytes", async () => {
-		const result = await runCommand("printf", ["\\001\\002"], "/", {
-			binary: true,
-		});
-		expect(result.bytes).toEqual(new Uint8Array([1, 2]));
-	});
 });
