@@ -1184,8 +1184,9 @@ export async function main(
 	// the send spine, so without this barrier the process can exit uncommitted. The
 	// transport holds a 15-min idle HTTP/2 session; closing first abandons those frames.
 	try {
-		// A failed seed leaves freshness unknown, so the first tool call nudges once.
-		await seedBoardFreshness(commsBroker, turnSequence, boardFreshness).catch(
+		// Not awaited: a hung seed must not hold startup. Until it lands, freshness is
+		// unknown and the first tool call nudges once.
+		seedBoardFreshness(commsBroker, turnSequence, boardFreshness).catch(
 			(error: unknown) => {
 				console.error("[compass-agent] failed to seed board freshness:", error);
 			},

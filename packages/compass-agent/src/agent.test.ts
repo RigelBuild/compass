@@ -573,6 +573,46 @@ describe("CompassAgent board freshness", () => {
 		await h.close();
 	});
 
+	test("a nonterminal settle keeps the run open: no re-prompt until the terminal end", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(0n, 0);
+		const h = boardAgent(freshness);
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.drive({
+			type: "tool_execution_start",
+			toolCallId: "t",
+			toolName: "read",
+			args: {},
+		} as AgentSessionEvent);
+		h.drive({ type: "agent_end", isTerminal: false } as AgentSessionEvent);
+		expect(h.session.agent.prompts).toEqual([]);
+		// The continuation writes the board, so the run as a whole wrote.
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		freshness.noteWrite(0n, 0);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		expect(h.session.agent.prompts).toEqual([]);
+		await h.close();
+	});
+
+	test("a write counts for its run even when the sequence moved on", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(0n, 0);
+		const h = boardAgent(freshness);
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.drive({
+			type: "tool_execution_start",
+			toolCallId: "t",
+			toolName: "read",
+			args: {},
+		} as AgentSessionEvent);
+		freshness.noteWrite(1n, 0);
+		// A later start advanced the sequence before this run ended.
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		expect(h.session.agent.prompts).toEqual([]);
+		await h.close();
+	});
+
 	test("the re-prompt runs ahead of a queued batch, which flushes at its end", async () => {
 		const freshness = new BoardFreshness();
 		freshness.seed(0n, 0);

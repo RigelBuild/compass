@@ -81,7 +81,6 @@ export class CompassAgent {
 	// the live, caller-owned `state.tools` array by reference, so an in-place
 	// mutation would otherwise revoke natives out from under us.
 	readonly #natives: AgentTool[];
-	readonly #turnSequence: TurnSequence | undefined;
 	// Runner holds live prompt/steer until the agent acks ReplayComplete, but the
 	// agent also guards locally: frames before replay settles apply as context, and
 	// live prompt/steer are refused until `#replayComplete` — belt-and-suspenders.
@@ -141,6 +140,9 @@ export class CompassAgent {
 	#turnNudgeSent = false;
 	#repromptTurn = false;
 	#boardReprompt = false;
+	// Agent-written board writes seen when the run started; a run wrote if it moved.
+	#runWrites = 0;
+	#runOpen = false;
 
 	constructor(opts: CompassAgentOptions) {
 		this.#session = opts.session;
@@ -153,7 +155,6 @@ export class CompassAgent {
 		this.#batchWindow = opts.batchWindow;
 		this.#batchTimer = opts.batchWindow?.timer ?? realBatchTimer;
 		this.#boardFreshness = opts.boardFreshness;
-		this.#turnSequence = opts.turnSequence;
 		this.#now = opts.now ?? Date.now;
 		this.#mapper = new EventMapper(Date.now, opts.turnSequence);
 		this.#onUnmapped =
@@ -499,11 +500,15 @@ export class CompassAgent {
 
 	#trackBoardEvent(event: AgentSessionEvent): void {
 		const freshness = this.#boardFreshness;
-		const sequence = this.#turnSequence;
-		if (freshness === undefined || sequence === undefined) return;
+		if (freshness === undefined) return;
 		if (event.type === "agent_start") {
+			// A start inside an open run (a continuation after a nonterminal settle, or an
+			// overlapping start) is the same run; only the terminal end closes it.
+			if (this.#runOpen) return;
+			this.#runOpen = true;
 			this.#turnHadTool = false;
 			this.#turnNudgeSent = false;
+			this.#runWrites = freshness.writeCount();
 			return;
 		}
 		if (event.type === "tool_execution_start") {
@@ -525,19 +530,18 @@ export class CompassAgent {
 			}
 			return;
 		}
-		if (event.type === "agent_end") {
-			// Read at the end: the mapper's own listener starts the sequence, in either order.
-			if (
-				this.#turnHadTool &&
-				!this.#repromptTurn &&
-				!freshness.wroteThisTurn(sequence.current())
-			) {
-				this.#boardReprompt = true;
-			}
-			this.#turnHadTool = false;
-			this.#turnNudgeSent = false;
-			this.#repromptTurn = false;
+		if (event.type !== "agent_end" || event.isTerminal === false) return;
+		this.#runOpen = false;
+		if (
+			this.#turnHadTool &&
+			!this.#repromptTurn &&
+			freshness.writeCount() === this.#runWrites
+		) {
+			this.#boardReprompt = true;
 		}
+		this.#turnHadTool = false;
+		this.#turnNudgeSent = false;
+		this.#repromptTurn = false;
 	}
 
 	// Track a session turn edge (RIG-1310 §8, RIG-2732 W3). A turn-start edge marks
@@ -628,8 +632,6 @@ export class CompassAgent {
 		} else {
 			this.#tracer?.clearTurnTrigger();
 		}
-		this.#turnHadTool = false;
-		this.#turnNudgeSent = false;
 		this.#repromptTurn = boardReprompt;
 		const startPrompt = (): Promise<void> => this.#session.agent.prompt(input);
 		const started =
