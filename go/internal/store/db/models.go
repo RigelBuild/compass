@@ -415,6 +415,7 @@ type ForgeWriteIntent struct {
 	IssueLinkForgeHost     pgtype.Text
 	IssueLinkRepo          pgtype.Text
 	IssueLinkNumber        pgtype.Int8
+	BaseIsDefault          bool
 }
 
 type GatewayCredential struct {

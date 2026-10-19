@@ -29,6 +29,7 @@ func writeIntentFixture(t *testing.T, s *Store, handle, key, head string) WriteI
 func TestRecordWriteIntentIdempotencyAndHeadConflict(t *testing.T) {
 	s := newTestStore(t)
 	in := writeIntentFixture(t, s, "intent-idempotency", "key-one", "feature/shared")
+	in.BaseIsDefault = true
 
 	first, err := s.RecordWriteIntent(t.Context(), in)
 	if err != nil {
@@ -38,8 +39,8 @@ func TestRecordWriteIntentIdempotencyAndHeadConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordWriteIntent retry: %v", err)
 	}
-	if retry.ID != first.ID || retry != first {
-		t.Fatalf("retry = %+v, want original intent %+v", retry, first)
+	if retry.ID != first.ID || retry != first || !retry.BaseIsDefault {
+		t.Fatalf("retry = %+v, want original intent %+v with its default-base flag", retry, first)
 	}
 
 	other := writeIntentFixture(t, s, "intent-head-other", "key-two", in.HeadRef)
@@ -161,16 +162,22 @@ func TestHoldWriteIntentReservesKeyWithoutClaimingHead(t *testing.T) {
 func TestPromoteWriteIntentOnlyMovesHeldRows(t *testing.T) {
 	s := newTestStore(t)
 	in := writeIntentFixture(t, s, "intent-promote", "key-promote", "feature/promote")
+	in.BaseIsDefault = true
 	held, err := s.HoldWriteIntent(t.Context(), in)
 	if err != nil {
 		t.Fatalf("HoldWriteIntent: %v", err)
 	}
-	if err := s.PromoteWriteIntent(t.Context(), held); err != nil {
+	if !held.BaseIsDefault {
+		t.Fatalf("held base-is-default = false, want true")
+	}
+	promoted := held
+	promoted.BaseIsDefault = false
+	if err := s.PromoteWriteIntent(t.Context(), promoted); err != nil {
 		t.Fatalf("PromoteWriteIntent: %v", err)
 	}
 	got, err := s.RecordWriteIntent(t.Context(), in)
-	if err != nil || got.ID != held.ID || got.State != WriteStatePending {
-		t.Fatalf("replay after promote = %+v, %v; want the same row pending", got, err)
+	if err != nil || got.ID != held.ID || got.State != WriteStatePending || got.BaseIsDefault {
+		t.Fatalf("replay after promote = %+v, %v; want same pending row with promoted false base flag", got, err)
 	}
 	if err := s.PromoteWriteIntent(t.Context(), held); !errors.Is(err, ErrConflict) {
 		t.Fatalf("second promote = %v, want ErrConflict", err)

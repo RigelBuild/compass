@@ -71,6 +71,7 @@ type WriteIntent struct {
 	Parent         uint64
 	HeadRef        string
 	BaseRef        string
+	BaseIsDefault  bool
 	IssueLink      *ForgeCoord
 	AgentAccountID AccountID
 	OwnerUserID    AccountID
@@ -100,6 +101,7 @@ func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteInt
 		ParentNumber:           int64(in.Parent), //nolint:gosec // G115: normalizedWriteIntent bounds Parent to MaxInt64.
 		HeadRef:                in.HeadRef,
 		BaseRef:                nullableText(in.BaseRef),
+		BaseIsDefault:          in.BaseIsDefault,
 		IssueLinkForgeProvider: nullableForgeProvider(in.IssueLink),
 		IssueLinkForgeHost:     nullableIssueLinkHost(in.IssueLink),
 		IssueLinkRepo:          nullableIssueLinkRepo(in.IssueLink),
@@ -121,6 +123,7 @@ func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteInt
 	return writeIntentFromRow(db.ForgeWriteIntent{
 		ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
 		Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
+		BaseIsDefault:  row.BaseIsDefault,
 		AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
 		ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
 		IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
@@ -139,7 +142,7 @@ func (s *Store) HoldWriteIntent(ctx context.Context, in WriteIntent) (WriteInten
 	row, err := s.q.HoldForgeWriteIntent(ctx, db.HoldForgeWriteIntentParams{
 		ID: in.ID, ForgeProvider: int16(in.Provider), ForgeHost: in.Host, //nolint:gosec // G115: normalizedWriteIntent restricts providers to the stored enum.
 		Repo: in.Repo, Kind: int16(in.Kind), ParentNumber: int64(in.Parent), HeadRef: in.HeadRef, //nolint:gosec // G115: normalizedWriteIntent bounds Parent to MaxInt64.
-		BaseRef: nullableText(in.BaseRef), AgentAccountID: string(in.AgentAccountID),
+		BaseRef: nullableText(in.BaseRef), BaseIsDefault: in.BaseIsDefault, AgentAccountID: string(in.AgentAccountID),
 		OwnerUserID: string(in.OwnerUserID), SessionID: in.SessionID, ClientRequestID: in.RequestKey,
 	})
 	if err != nil {
@@ -151,6 +154,7 @@ func (s *Store) HoldWriteIntent(ctx context.Context, in WriteIntent) (WriteInten
 	return writeIntentFromRow(db.ForgeWriteIntent{
 		ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
 		Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
+		BaseIsDefault:  row.BaseIsDefault,
 		AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
 		ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
 		IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
@@ -184,6 +188,7 @@ func (s *Store) PromoteWriteIntent(ctx context.Context, in WriteIntent) error {
 	affected, err := s.q.PromoteForgeWriteIntent(ctx, db.PromoteForgeWriteIntentParams{
 		ID:                     in.ID,
 		BaseRef:                nullableText(in.BaseRef),
+		BaseIsDefault:          in.BaseIsDefault,
 		IssueLinkForgeProvider: nullableForgeProvider(link),
 		IssueLinkForgeHost:     nullableIssueLinkHost(link),
 		IssueLinkRepo:          nullableIssueLinkRepo(link),
@@ -271,6 +276,7 @@ func (s *Store) PRIntentForHead(ctx context.Context, provider ForgeProvider, hos
 	return writeIntentFromRow(db.ForgeWriteIntent{
 		ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
 		Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
+		BaseIsDefault:  row.BaseIsDefault,
 		AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
 		ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
 		IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
@@ -494,6 +500,7 @@ func (s *Store) PendingWriteIntents(ctx context.Context, olderThan time.Time, li
 		intents = append(intents, writeIntentFromRow(db.ForgeWriteIntent{
 			ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
 			Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
+			BaseIsDefault:  row.BaseIsDefault,
 			AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
 			ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
 			IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
@@ -550,7 +557,7 @@ func writeIntentFromRow(row db.ForgeWriteIntent) WriteIntent {
 	return WriteIntent{
 		ID: row.ID, Provider: ForgeProvider(row.ForgeProvider), Host: row.ForgeHost,
 		Repo: row.Repo, Kind: writeKindFromRow(row.Kind), Parent: uint64(row.ParentNumber), //nolint:gosec // G115: parent is nonnegative and bounded before insert.
-		HeadRef: row.HeadRef, BaseRef: row.BaseRef.String,
+		HeadRef: row.HeadRef, BaseRef: row.BaseRef.String, BaseIsDefault: row.BaseIsDefault,
 		IssueLink:      forgeCoordFromNullable(row.IssueLinkForgeProvider, row.IssueLinkForgeHost, row.IssueLinkRepo, row.IssueLinkNumber),
 		AgentAccountID: AccountID(row.AgentAccountID), OwnerUserID: AccountID(row.OwnerUserID),
 		SessionID: row.SessionID, RequestKey: row.ClientRequestID,
