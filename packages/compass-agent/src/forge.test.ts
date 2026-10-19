@@ -1,11 +1,14 @@
 // Pins forge tool requests and result rendering through the broker's wire seam.
+
 import { describe, expect, test } from "bun:test";
+import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import {
 	CommentRefSchema,
 	create,
+	EditIssueRequestSchema,
 	ForgeCallErrorSchema,
 	type ForgeCallRequest,
 	ForgeCallRequestSchema,
@@ -924,6 +927,33 @@ describe("forge transition tools", () => {
 });
 
 describe("forge_edit_issue", () => {
+	test("binary round-trip preserves explicit empty body presence", async () => {
+		for (const body of ["", undefined]) {
+			const transport = new FakeTransport(
+				issueResult({ number: 7, repo: "o/r" }),
+			);
+			await exec(
+				tool(new ForgeBroker(transport), "forge_edit_issue"),
+				"tc-presence",
+				{
+					repo: "o/r",
+					issue_number: 7,
+					title: "t",
+					...(body === undefined ? {} : { body }),
+				},
+			);
+
+			const request = transport.requests[0];
+			const wire = toBinary(ForgeCallRequestSchema, request);
+			const decoded = fromBinary(ForgeCallRequestSchema, wire);
+			if (decoded.call.case !== "editIssue")
+				throw new Error("expected edit issue arm");
+			expect(decoded.call.value.body).toBe(body);
+			const editWire = toBinary(EditIssueRequestSchema, decoded.call.value);
+			const edit = fromBinary(EditIssueRequestSchema, editWire);
+			expect(edit.body).toBe(body);
+		}
+	});
 	test("sends only supplied title/body fields and renders the updated issue", async () => {
 		const transport = new FakeTransport(
 			issueResult({ number: 7, repo: "o/r", title: "edited", body: "body" }),
