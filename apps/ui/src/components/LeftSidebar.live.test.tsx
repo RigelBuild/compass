@@ -8,6 +8,8 @@ import {
 	BoardHaltKind,
 	BoardHaltSchema,
 	BoardTaskSchema,
+	ChannelKind,
+	ChannelSchema,
 	create,
 	RosterEntrySchema,
 	UserAccountSchema,
@@ -34,14 +36,14 @@ const wireUserAccount = (id: string) =>
 
 /** An agent-kind account on the wire — joins into an `Agent` view-model with no
  *  fixture role/model/cwd (the live roster's honest shape). */
-const wireAgentAccount = (id: string) =>
+const wireAgentAccount = (id: string, homeChannelId = "", handle = id) =>
 	create(AccountSchema, {
 		id,
-		handle: id,
+		handle,
 		displayName: id,
 		kind: {
 			case: "agent",
-			value: create(AgentAccountSchema, { ownerUserId: CALLER }),
+			value: create(AgentAccountSchema, { ownerUserId: CALLER, homeChannelId }),
 		},
 	});
 
@@ -209,5 +211,83 @@ describe("LeftSidebar — live roster (T4/T5)", () => {
 			leaf()?.querySelector(".agent-halt-dot")?.getAttribute("data-halt"),
 		).toBe("blocked");
 		expect(count()).toBe("1 waiting on you");
+	});
+	test("live home channel links to its agent in either event order like a snapshot", async () => {
+		const agentId = "acc-go-migration";
+		const homeId = "chan-go-migration";
+		const agent = wireAgentAccount(agentId, homeId, "go-migration");
+		const channel = create(ChannelSchema, {
+			id: homeId,
+			name: "go-migration",
+			kind: ChannelKind.CHANNEL,
+			memberAccountIds: [CALLER, agentId],
+			subscriberAccountIds: [CALLER, agentId],
+		});
+		const snapshot = createFakeComms({
+			accounts: [wireUserAccount(CALLER), agent],
+			channels: [channel],
+		});
+		const fresh = await mountLive(snapshot);
+		const snapshotRow = [
+			...fresh.container.querySelectorAll<HTMLElement>(
+				".tree-children .ch-row",
+			),
+		].find(
+			(row) => row.querySelector(".ch-name")?.textContent === "go-migration",
+		);
+		const snapshotLink = {
+			agentName: snapshotRow
+				?.closest(".folder")
+				?.querySelector(".tree-agent .name")?.textContent,
+			channelName: snapshotRow?.querySelector(".ch-name")?.textContent,
+			alwaysSubscribed:
+				snapshotRow?.querySelector('[aria-label="Always subscribed"]') !== null,
+		};
+		expect(snapshotLink).toEqual({
+			agentName: "go-migration",
+			channelName: "go-migration",
+			alwaysSubscribed: true,
+		});
+		snapshot.close();
+
+		for (const order of ["channel-first", "account-first"] as const) {
+			const fake = createFakeComms({ accounts: [wireUserAccount(CALLER)] });
+			const { container } = await mountLive(fake);
+
+			if (order === "channel-first") {
+				await fake.emit(
+					{ case: "channelChanged", value: { channel, removedAccountIds: [] } },
+					1n,
+				);
+				await fake.emit(
+					{ case: "accountChanged", value: { account: agent } },
+					2n,
+				);
+			} else {
+				await fake.emit(
+					{ case: "accountChanged", value: { account: agent } },
+					1n,
+				);
+				await fake.emit(
+					{ case: "channelChanged", value: { channel, removedAccountIds: [] } },
+					2n,
+				);
+			}
+
+			const row = [
+				...container.querySelectorAll<HTMLElement>(".tree-children .ch-row"),
+			].find(
+				(item) =>
+					item.querySelector(".ch-name")?.textContent === "go-migration",
+			);
+			expect({
+				agentName: row?.closest(".folder")?.querySelector(".tree-agent .name")
+					?.textContent,
+				channelName: row?.querySelector(".ch-name")?.textContent,
+				alwaysSubscribed:
+					row?.querySelector('[aria-label="Always subscribed"]') !== null,
+			}).toEqual(snapshotLink);
+			fake.close();
+		}
 	});
 });
