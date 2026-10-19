@@ -152,6 +152,11 @@ describe("buildTag", () => {
 			"ghcr.io/x/y:git-c724a9ee03a8",
 		);
 	});
+	test("adds an architecture suffix to member tags", () => {
+		expect(buildTag("ghcr.io/x/y", "c724a9ee03a8", "arm64")).toBe(
+			"ghcr.io/x/y:git-c724a9ee03a8-arm64",
+		);
+	});
 
 	test("rejects a short or non-hex sha", () => {
 		expect(() => buildTag("ghcr.io/x/y", "c724a9ee")).toThrow(

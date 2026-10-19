@@ -106,16 +106,15 @@ let
     nameserver 127.0.0.1
   '';
 
-  # The pinned direct-boot kernel. cloud-hypervisor boots its uncompressed bzImage
-  # directly; as an unmodified nixpkgs kernel at the root-pinned rev it is
-  # substituted free from cache.nixos.org, never built in CI. Its modules live in
-  # the separate `modules` output, consumed by both the rootfs and the initrd.
+  # The pinned direct-boot kernel uses bzImage on x86_64 and Image on aarch64.
+  # It is substituted free from cache.nixos.org, never built in CI; its modules
+  # live in the separate `modules` output consumed by both rootfs and initrd.
   kernel = pkgs.linuxPackages.kernel;
 
   # The initramfs modprobes these before switch_root: nothing autoloads
   # afterwards (guestd IS init) and the loads persist across it. af_packet is
   # load-bearing -- guestd's DHCP raw socket fails EAFNOSUPPORT without it.
-  # The check below breaks the build if a pin move flips one to `=y`.
+  # The check below breaks the build if a pin move disables or drops one.
   bootModules = [
     "virtio_pci"
     "virtio_blk"
@@ -127,10 +126,9 @@ let
     "af_packet"
   ];
 
-  # The .config symbol each named module is gated on, checked `=m` at build time.
-  # Spelled out because the module→Kconfig mapping is not a mechanical
-  # upper-casing. Only these are checked; transitive deps (vsock, fuse) ride the
-  # closure.
+  # The .config symbols gated by the boot-critical modules; Kconfig names are
+  # explicit because the module-to-symbol mapping is not mechanical. Transitive
+  # dependencies (vsock, fuse) ride the module closure.
   bootModuleConfigs = [
     "CONFIG_VIRTIO_PCI"
     "CONFIG_VIRTIO_BLK"
@@ -142,20 +140,17 @@ let
     "CONFIG_PACKET"
   ];
 
-  # Derivation-time assertion: the pinned kernel's .config still carries the exact
-  # `=m` set the initramfs assumes. A shell snippet reused by the initrd build, so
-  # a pin move that changes any of these fails the moon gate at the initrd
-  # derivation instead of shipping a kernel the initrd cannot modprobe.
-  moduleConfigCheck = ''
-    echo "guest-image: verifying boot-critical kernel modules are =m in ${kernel.configfile}"
+  # Derivation-time assertion: the pinned kernel keeps every boot module built in or loadable.
+  moduleConfigCheck = configFile: ''
+    echo "guest-image: verifying boot-critical kernel modules in ${configFile}"
     ${lib.concatMapStringsSep "\n" (sym: ''
-      if ! grep -qx '${sym}=m' ${kernel.configfile}; then
-        echo "guest-image: BUILD-BREAK — kernel .config lacks '${sym}=m'." >&2
-        echo "  The initramfs assumes ${sym} is a loadable module." >&2
-        echo "  A kernel-pin move flipped it to =y or dropped it; the initrd would" >&2
-        echo "  not boot. Re-audit guest-image/default.nix bootModules against the" >&2
-        echo "  new kernel before proceeding." >&2
-        exit 1
+      if ! grep -Eq '^${sym}=(m|y)$' ${configFile}; then
+        if grep -qx '# ${sym} is not set' ${configFile} || ! grep -q '^${sym}=' ${configFile}; then
+          echo "guest-image: BUILD-BREAK — kernel .config lacks '${sym}' or has it unset." >&2
+          echo "  The initramfs assumes ${sym} is built in or loadable." >&2
+          echo "  Re-audit guest-image/default.nix bootModules against the new kernel." >&2
+          exit 1
+        fi
       fi
     '') bootModuleConfigs}
     echo "guest-image: boot-critical module set OK"
@@ -301,6 +296,8 @@ let
         in image.compass-guest-rootfs.agentPin;
       arm = pinFor "aarch64-linux";
       x86 = pinFor "x86_64-linux";
+      armKernel = (import ./default.nix { crossSystem = { system = "aarch64-linux"; }; }).compass-guest-kernel.target;
+      x86Kernel = (import ./default.nix { crossSystem = { system = "x86_64-linux"; }; }).compass-guest-kernel.target;
       unsupported = builtins.tryEval (builtins.deepSeq (agentPin.platformFor "riscv64-linux") true);
       check = system: selected: platform: member:
         let
@@ -313,12 +310,14 @@ let
         else true;
     in
     if unsupported.success then throw "guest-image: eval smoke: riscv64-linux unexpectedly has an agent pin member"
+    else if x86Kernel != "bzImage" then throw "guest-image: eval smoke: x86_64-linux kernel target is ${x86Kernel}, expected bzImage"
+    else if armKernel != "Image" then throw "guest-image: eval smoke: aarch64-linux kernel target is ${armKernel}, expected Image"
     else check "aarch64-linux" arm "linux/arm64" armLock && check "x86_64-linux" x86 "linux/amd64" x86Lock;
 in
   # Match the userland architecture to the kernel and boot layer being built.
 {
-  # Direct-boot kernel, substituted free from cache.nixos.org: its bzImage is
-  # ${compass-guest-kernel}/bzImage.
+  # Direct-boot kernel: bzImage on x86_64, Image on aarch64.
+  # Its target filename is checked by the pin smoke above.
   compass-guest-kernel = kernel;
 
   # The packed rootfs: a reproducible read-only erofs image, the boot disk
@@ -392,12 +391,12 @@ in
   # The initramfs: a zstd cpio carrying the boot-critical module set + an init
   # that loads them, mounts the erofs root + tmpfs overlay, and switch_roots to
   # /sbin/init. $out IS the initrd file. The module-set check gates the build:
-  # a kernel-pin move that drops a `=m` module fails here, not at boot.
+  # a pin move that drops or unsets a boot module fails here, not at boot.
   compass-guest-initrd =
     pkgs.runCommand "compass-guest-initrd"
       { }
       ''
-        ${moduleConfigCheck}
+        ${moduleConfigCheck "${kernel.configfile}"}
         cp ${initrdImage}/initrd $out
       '';
 
@@ -409,5 +408,8 @@ in
   compass-guest-agent-pin-tests = assert pinTests; pkgs.runCommand "compass-guest-agent-pin-tests" { } ''
     touch $out
   '';
+  compass-guest-module-check-tests = import ./module-check-tests.nix {
+    inherit pkgs moduleConfigCheck;
+  };
   compass-guest-agent-pin-smoke = pinSmoke;
 }

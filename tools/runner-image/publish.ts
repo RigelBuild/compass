@@ -2,13 +2,14 @@
 // Verify and push the local image by digest, then add its discoverable git tag.
 // GHCR tags are mutable, so tag only after the pushed digest matches the local build.
 // Reuse build.ts staging for digest parity. Requires skopeo and DOCKER_CONFIG.
-// Usage: bun tools/runner-image/publish.ts --lane <runner|server> --repo <ghcr.io/owner/name> --sha <sha12>
+// Usage: bun tools/runner-image/publish.ts --lane <runner|server> --repo <ghcr.io/owner/name> --sha <sha12> [--arch-suffix amd64|arm64]
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hostPlatform } from "./build-core.ts";
 import { imageLaneConfig } from "./image-lane-core.ts";
 import {
 	buildTag,
@@ -41,11 +42,26 @@ const sha12 = arg("sha");
 if (!repo || !sha12) {
 	fail(
 		EXIT.usage,
-		"usage: publish.ts --lane <runner|server> --repo <ghcr.io/owner/name> --sha <sha12>",
+		"usage: publish.ts --lane <runner|server> --repo <ghcr.io/owner/name> --sha <sha12> [--arch-suffix <amd64|arm64>]",
 	);
 }
+const archSuffix = arg("arch-suffix");
+if (process.argv.includes("--arch-suffix") && archSuffix === undefined)
+	fail(EXIT.usage, "--arch-suffix requires amd64 or arm64");
+const platform = hostPlatform(process.arch);
+if (
+	archSuffix !== undefined &&
+	archSuffix !== "amd64" &&
+	archSuffix !== "arm64"
+)
+	fail(EXIT.usage, "--arch-suffix must be amd64 or arm64");
+if (archSuffix !== undefined && archSuffix !== platform.slice("linux/".length))
+	fail(
+		EXIT.usage,
+		`--arch-suffix ${archSuffix} does not match host platform ${platform}`,
+	);
 // Validate the sha before any build or registry work.
-buildTag(repo, sha12);
+buildTag(repo, sha12, archSuffix);
 const dockerConfig = process.env.DOCKER_CONFIG;
 if (!dockerConfig) {
 	fail(
@@ -79,7 +95,7 @@ const metadataDir = mkdtempSync(join(tmpdir(), `${laneConfig.lane}-image-`));
 process.on("exit", () => rmSync(metadataDir, { recursive: true, force: true }));
 const metadataFile = join(metadataDir, "meta.json");
 const result = publishVerified(
-	{ repo, sha12, localDigest, authFile },
+	{ repo, sha12, localDigest, authFile, archSuffix },
 	{
 		push: () => {
 			const push = spawnSync(

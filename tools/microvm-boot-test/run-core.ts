@@ -1,5 +1,7 @@
 // Pure helpers keep path parsing and env mapping testable without nix or processes.
 
+import { kernelFileName, type Platform } from "../runner-image/build-core.ts";
+
 /** Split `nix build --print-out-paths` stdout into trimmed, non-empty store
  * paths, one per line. */
 export function parseOutPaths(stdout: string): string[] {
@@ -9,12 +11,11 @@ export function parseOutPaths(stdout: string): string[] {
 		.filter((line) => line !== "");
 }
 
-/** Map the three guest-image out-paths (in the order kernel, rootfs, initrd —
- * the attr order run.ts builds them in) to the env vars microvmtest.Require
- * reads. The kernel path gains `/bzImage`, mirroring ci.yml:392. Throws if not
- * given exactly three paths, so a build-count drift is a named failure. */
+/** Map the three guest-image out-paths (kernel, rootfs, initrd) to the env vars
+ * microvmtest.Require reads. Throws if the build yields the wrong path count. */
 export function guestImageEnv(
 	outPaths: readonly string[],
+	platform: Platform,
 ): Record<string, string> {
 	if (outPaths.length !== 3) {
 		throw new Error(
@@ -23,7 +24,7 @@ export function guestImageEnv(
 	}
 	const [kernel, rootfs, initrd] = outPaths as [string, string, string];
 	return {
-		COMPASS_TEST_GUEST_KERNEL: `${kernel}/bzImage`,
+		COMPASS_TEST_GUEST_KERNEL: `${kernel}/${kernelFileName(platform)}`,
 		COMPASS_TEST_GUEST_ROOTFS: rootfs,
 		COMPASS_TEST_GUEST_INITRD: initrd,
 	};

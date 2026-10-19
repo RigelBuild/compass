@@ -11,11 +11,11 @@
 // The fail-closed invariant is the whole point: Health is served ONLY after net
 // and mount both succeed, so a successful handshake IS the proof that D6 bringup
 // and the virtio-fs mount happened. Any step failing logs the cause to the
-// console (stderr → ttyS0) and returns non-zero; PID 1 exiting panics the guest
-// and the host's dial fails at its deadline. The in-VM behavior is proven by T4
-// (KVM-gated); this package ships the binary logic plus hermetic unit tests for
-// every piece that runs without a VM, behind the netProvisioner / workspaceMounter
-// seams the tests fake.
+// console (stderr → ttyS0 on amd64 or ttyAMA0 on arm64) and returns non-zero;
+// PID 1 exiting panics the guest and the host's dial fails at its deadline.
+// The in-VM behavior is proven by T4 (KVM-gated); this package ships the binary
+// logic plus hermetic unit tests for every piece that runs without a VM, behind
+// the netProvisioner / workspaceMounter seams the tests fake.
 package guestd
 
 import (
@@ -93,7 +93,7 @@ func Run(ctx context.Context, log *slog.Logger) error {
 // RPC Stop powers off because exiting PID 1 panics the guest kernel.
 func run(ctx context.Context, cfg config, steps bootSteps) error {
 	// log is the guestd logger threaded from Run; a nil (test-constructed config)
-	// falls back to the default handler, which writes to os.Stderr (ttyS0) — the
+	// falls back to the default handler, which writes to os.Stderr (ttyS0 or ttyAMA0) — the
 	// same sink the production logger uses, so a boot test needs no logger.
 	log := cfg.log
 	if log == nil {

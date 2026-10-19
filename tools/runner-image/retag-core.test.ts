@@ -38,6 +38,8 @@ describe("registry argv", () => {
 		);
 		expect(argv).toEqual([
 			"copy",
+			"--multi-arch",
+			"all",
 			"--preserve-digests",
 			"--src-no-creds",
 			"--dest-authfile",
@@ -501,9 +503,41 @@ describe("manifestIdentity", () => {
 		const raw = manifest(CONFIG_A);
 		const expected = `sha256:${new Bun.CryptoHasher("sha256").update(raw).digest("hex")}`;
 		expect(manifestIdentity(raw)).toEqual({
+			kind: "manifest",
 			manifestDigest: expected,
 			configDigest: CONFIG_A,
 		});
+	});
+
+	test("returns both index members with their platforms and digests", () => {
+		const raw = JSON.stringify({
+			schemaVersion: 2,
+			mediaType: "application/vnd.oci.image.index.v1+json",
+			manifests: [
+				{ digest: CONFIG_A, platform: { os: "linux", architecture: "amd64" } },
+				{ digest: CONFIG_B, platform: { os: "linux", architecture: "arm64" } },
+			],
+		});
+		const expected = `sha256:${new Bun.CryptoHasher("sha256").update(raw).digest("hex")}`;
+		expect(manifestIdentity(raw)).toEqual({
+			kind: "index",
+			manifestDigest: expected,
+			members: [
+				{ platform: "linux/amd64", digest: CONFIG_A },
+				{ platform: "linux/arm64", digest: CONFIG_B },
+			],
+		});
+	});
+
+	test("rejects an index missing linux/arm64", async () => {
+		const raw = JSON.stringify({
+			schemaVersion: 2,
+			mediaType: "application/vnd.oci.image.index.v1+json",
+			manifests: [
+				{ digest: CONFIG_A, platform: { os: "linux", architecture: "amd64" } },
+			],
+		});
+		await expectRetagError(() => manifestIdentity(raw), EXIT.badManifest);
 	});
 
 	test("a manifest without a sha256 config digest is malformed", async () => {
@@ -549,6 +583,35 @@ describe("assertCoherent", () => {
 		const rewritten = manifestIdentity(`${manifest(CONFIG_A)}\n`);
 		await expectRetagError(
 			() => assertCoherent(source, rewritten),
+			EXIT.incoherent,
+		);
+	});
+	test("fails when an index member digest changes", async () => {
+		const sourceRaw = JSON.stringify({
+			schemaVersion: 2,
+			mediaType: "application/vnd.oci.image.index.v1+json",
+			manifests: [
+				{ digest: CONFIG_A, platform: { os: "linux", architecture: "amd64" } },
+				{ digest: CONFIG_B, platform: { os: "linux", architecture: "arm64" } },
+			],
+		});
+		const changedRaw = JSON.stringify({
+			schemaVersion: 2,
+			mediaType: "application/vnd.oci.image.index.v1+json",
+			manifests: [
+				{ digest: CONFIG_A, platform: { os: "linux", architecture: "amd64" } },
+				{
+					digest: `sha256:${"c".repeat(64)}`,
+					platform: { os: "linux", architecture: "arm64" },
+				},
+			],
+		});
+		await expectRetagError(
+			() =>
+				assertCoherent(
+					manifestIdentity(sourceRaw),
+					manifestIdentity(changedRaw),
+				),
 			EXIT.incoherent,
 		);
 	});

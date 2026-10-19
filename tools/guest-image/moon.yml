@@ -26,7 +26,7 @@ tasks:
     # malformed digest), the manifest-shape refusals, the layer order that
     # determines the stacked filesystem, and the artifact descriptors plus
     # fail-closed tag disposition the publish lane maps.
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock', '/tools/runner-image/*-core.ts']
   # The CI aggregate. Without it ci-matrix contributes NO target for this
   # project (it emits `<id>:ci` only for a project defining a `ci` task), so
   # the guard suite above would never run on a PR — registered in

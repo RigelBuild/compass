@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -37,11 +38,12 @@ func (c Config) microVM() bool {
 // --microvm-* path, so these names are the contract between what this file
 // writes and what the runner reads.
 const (
-	guestKernelFile      = "kernel"
-	guestRootfsFile      = "rootfs.erofs"
-	guestInitrdFile      = "initrd"
-	guestManifestFile    = "manifest.sha256"
-	guestRawManifestFile = "manifest.oci.json"
+	guestKernelFile           = "kernel"
+	guestRootfsFile           = "rootfs.erofs"
+	guestInitrdFile           = "initrd"
+	guestManifestFile         = "manifest.sha256"
+	guestRawManifestFile      = "manifest.oci.json"
+	guestSelectedManifestFile = "manifest.selected.oci.json"
 	// guestImageDirName is the state-dir subdirectory the content-addressed
 	// per-digest directories live under.
 	guestImageDirName = "guest-image"
@@ -54,6 +56,7 @@ const (
 const (
 	guestArtifactType    = "application/vnd.compass.guest-image.v1"
 	ociManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
+	ociIndexMediaType    = "application/vnd.oci.image.index.v1+json"
 	emptyConfigMediaType = "application/vnd.oci.empty.v1+json"
 	emptyConfigDigest    = "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 	emptyConfigSize      = 2
@@ -84,6 +87,14 @@ type guestAsset struct {
 	fileName string
 }
 
+// guestKernelName maps the Go architecture to the nixpkgs kernel output name.
+func guestKernelName(goarch string) string {
+	if goarch == "arm64" {
+		return "Image"
+	}
+	return "bzImage"
+}
+
 // guestAssets is the canonical layer-order table. Fields are named rather than
 // positional: annotationName and fileName are both strings, so a positional
 // literal would let a reorder silently swap the published name with the on-disk
@@ -91,7 +102,7 @@ type guestAsset struct {
 var guestAssets = [...]guestAsset{
 	{
 		mediaType:      "application/vnd.compass.guest-kernel.v1",
-		annotationName: "bzImage",
+		annotationName: guestKernelName(runtime.GOARCH),
 		fileName:       guestKernelFile,
 	},
 	{
@@ -272,8 +283,8 @@ func cachedGuestTrusted(final, digest string, paths GuestPaths) bool {
 	if guestDigestPrefix+hex.EncodeToString(sum[:]) != digest {
 		return false
 	}
-	var manifest guestManifest
-	if json.Unmarshal(manifestBytes, &manifest) != nil || validateGuestManifest(manifest) != nil {
+	manifest, err := cachedGuestManifest(final, manifestBytes)
+	if err != nil || validateGuestManifest(manifest) != nil {
 		return false
 	}
 	return verifyGuestAgainstManifest(paths, manifest) == nil && verifyGuestManifestFile(paths.Manifest, manifest) == nil
@@ -346,6 +357,11 @@ func materializeGuestArtifact(ctx context.Context, reg guestRegistry, stateDir s
 	if err := os.WriteFile(filepath.Join(staging, guestRawManifestFile), rawManifest, 0o600); err != nil {
 		return GuestPaths{}, fmt.Errorf("materialise guest image %s: write authenticated manifest: %w", reg.digest, err)
 	}
+	if manifest.raw != nil {
+		if err := os.WriteFile(filepath.Join(staging, guestSelectedManifestFile), manifest.raw, 0o600); err != nil {
+			return GuestPaths{}, fmt.Errorf("materialise guest image %s: write selected manifest: %w", reg.digest, err)
+		}
+	}
 	if err := os.Rename(staging, final); err != nil {
 		return GuestPaths{}, fmt.Errorf("materialise guest image %s: publish %q: %w", reg.digest, final, err)
 	}
@@ -379,12 +395,83 @@ type guestManifest struct {
 	Config        guestDescriptor   `json:"config"`
 	Layers        []guestDescriptor `json:"layers"`
 	Annotations   map[string]string `json:"annotations"`
+	raw           []byte
 }
 
-// fetchGuestManifest GETs the manifest BY DIGEST and re-derives its identity
-// from the bytes received. The digest IS the identity, so a registry or proxy
-// that answered with anything else fails closed here rather than having its
-// content written under the pinned digest's directory name.
+type guestIndex struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	MediaType     string `json:"mediaType"`
+	Manifests     []struct {
+		Digest   string `json:"digest"`
+		Platform struct {
+			OS           string `json:"os"`
+			Architecture string `json:"architecture"`
+		} `json:"platform"`
+	} `json:"manifests"`
+}
+
+// selectGuestMember returns the Linux manifest digest for one Go architecture.
+func selectGuestMember(raw []byte, arch string) (string, error) {
+	var index guestIndex
+	if err := json.Unmarshal(raw, &index); err != nil {
+		return "", fmt.Errorf("parse guest image index: %w", err)
+	}
+	if index.SchemaVersion != 2 || index.MediaType != ociIndexMediaType || len(index.Manifests) == 0 {
+		return "", errors.New("invalid guest image index")
+	}
+	var selected string
+	for _, member := range index.Manifests {
+		if member.Platform.OS != "linux" || member.Platform.Architecture != arch {
+			continue
+		}
+		if selected != "" {
+			return "", fmt.Errorf("guest image index has multiple linux/%s members", arch)
+		}
+		if !isSHA256Digest(member.Digest) {
+			return "", fmt.Errorf("guest image index linux/%s member digest is invalid", arch)
+		}
+		selected = member.Digest
+	}
+	if selected == "" {
+		return "", fmt.Errorf("guest image index has no linux/%s member", arch)
+	}
+	return selected, nil
+}
+
+func cachedGuestManifest(final string, raw []byte) (guestManifest, error) {
+	var header struct {
+		MediaType string `json:"mediaType"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return guestManifest{}, err
+	}
+	if header.MediaType != ociIndexMediaType {
+		var manifest guestManifest
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			return guestManifest{}, err
+		}
+		return manifest, nil
+	}
+	memberDigest, err := selectGuestMember(raw, runtime.GOARCH)
+	if err != nil {
+		return guestManifest{}, err
+	}
+	selectedPath := filepath.Join(final, guestSelectedManifestFile)
+	selectedRaw, err := os.ReadFile(selectedPath) //nolint:gosec // G304: fixed basename inside the content-addressed cache
+	if err != nil {
+		return guestManifest{}, err
+	}
+	selectedSum := sha256.Sum256(selectedRaw)
+	if guestDigestPrefix+hex.EncodeToString(selectedSum[:]) != memberDigest {
+		return guestManifest{}, errors.New("cached guest member digest does not match its index")
+	}
+	var manifest guestManifest
+	if err := json.Unmarshal(selectedRaw, &manifest); err != nil {
+		return guestManifest{}, err
+	}
+	return manifest, nil
+}
+
 func verifyGuestAgainstManifest(paths GuestPaths, manifest guestManifest) error {
 	assetPaths := paths.assets()
 	for i := range guestAssets {
@@ -408,34 +495,67 @@ func verifyGuestAgainstManifest(paths GuestPaths, manifest guestManifest) error 
 }
 
 func fetchGuestManifest(ctx context.Context, client *http.Client, reg guestRegistry, token *guestBearerToken) (guestManifest, []byte, error) {
-	url := reg.baseURL + "/v2/" + reg.repository + "/manifests/" + reg.digest
+	raw, err := fetchGuestManifestBytes(ctx, client, reg, reg.digest, token)
+	if err != nil {
+		return guestManifest{}, nil, err
+	}
+	var header struct {
+		MediaType string `json:"mediaType"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return guestManifest{}, nil, fmt.Errorf("fetch guest manifest %s: parse: %w", reg.digest, err)
+	}
+	if header.MediaType != ociIndexMediaType {
+		var manifest guestManifest
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			return guestManifest{}, nil, fmt.Errorf("fetch guest manifest %s: parse: %w", reg.digest, err)
+		}
+		if err := validateGuestManifest(manifest); err != nil {
+			return guestManifest{}, nil, fmt.Errorf("guest manifest %s is not a compass guest artifact: %w", reg.digest, err)
+		}
+		return manifest, raw, nil
+	}
+	memberDigest, err := selectGuestMember(raw, runtime.GOARCH)
+	if err != nil {
+		return guestManifest{}, nil, err
+	}
+	memberRaw, err := fetchGuestManifestBytes(ctx, client, reg, memberDigest, token)
+	if err != nil {
+		return guestManifest{}, nil, err
+	}
+	var manifest guestManifest
+	if err := json.Unmarshal(memberRaw, &manifest); err != nil {
+		return guestManifest{}, nil, fmt.Errorf("fetch guest manifest %s: parse: %w", memberDigest, err)
+	}
+	if err := validateGuestManifest(manifest); err != nil {
+		return guestManifest{}, nil, fmt.Errorf("guest manifest %s is not a compass guest artifact: %w", memberDigest, err)
+	}
+	manifest.raw = memberRaw
+	return manifest, raw, nil
+}
+
+func fetchGuestManifestBytes(ctx context.Context, client *http.Client, reg guestRegistry, digest string, token *guestBearerToken) ([]byte, error) {
+	manifestURL := reg.baseURL + "/v2/" + reg.repository + "/manifests/" + digest
 	var raw []byte
-	err := doGuestGet(ctx, client, url, ociManifestMediaType, token, func(body io.Reader) error {
+	err := doGuestGet(ctx, client, manifestURL, ociManifestMediaType+", "+ociIndexMediaType, token, func(body io.Reader) error {
 		b, err := io.ReadAll(io.LimitReader(body, guestManifestMaxBytes+1))
 		if err != nil {
-			return fmt.Errorf("read manifest from %s: %w", url, err)
+			return fmt.Errorf("read manifest from %s: %w", manifestURL, err)
 		}
 		if len(b) > guestManifestMaxBytes {
-			return fmt.Errorf("manifest from %s exceeds %d bytes", url, guestManifestMaxBytes)
+			return fmt.Errorf("manifest from %s exceeds %d bytes", manifestURL, guestManifestMaxBytes)
 		}
 		raw = b
 		return nil
 	})
 	if err != nil {
-		return guestManifest{}, nil, fmt.Errorf("fetch guest manifest %s: %w", reg.digest, err)
+		return nil, fmt.Errorf("fetch guest manifest %s: %w", digest, err)
 	}
 	sum := sha256.Sum256(raw)
-	if got := guestDigestPrefix + hex.EncodeToString(sum[:]); got != reg.digest {
-		return guestManifest{}, nil, fmt.Errorf("fetch guest manifest %s: registry answered manifest %s", reg.digest, got)
+	if got := guestDigestPrefix + hex.EncodeToString(sum[:]); got != digest {
+		return nil, fmt.Errorf("fetch guest manifest %s: registry answered manifest %s", digest, got)
 	}
-	var m guestManifest
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return guestManifest{}, nil, fmt.Errorf("fetch guest manifest %s: parse: %w", reg.digest, err)
-	}
-	if err := validateGuestManifest(m); err != nil {
-		return guestManifest{}, nil, fmt.Errorf("guest manifest %s is not a compass guest artifact: %w", reg.digest, err)
-	}
-	return m, raw, nil
+	return raw, nil
 }
 
 // validateGuestManifest enforces the published artifact shape: a v2 manifest

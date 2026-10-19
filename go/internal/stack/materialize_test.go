@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,12 +27,13 @@ import (
 // requests so the verified-no-op case can assert ZERO additional traffic, and
 // can corrupt or truncate a named blob to drive the fail-closed paths for real.
 type fakeRegistry struct {
-	t        *testing.T
-	server   *httptest.Server
-	repo     string
-	manifest []byte
-	digest   string
-	blobs    map[string][]byte
+	t         *testing.T
+	server    *httptest.Server
+	repo      string
+	manifest  []byte
+	manifests map[string][]byte
+	digest    string
+	blobs     map[string][]byte
 
 	// corrupt names a layer whose body is served with one byte flipped (a
 	// digest mismatch at the declared size); truncate names one served short (a
@@ -103,10 +105,24 @@ func (r *fakeRegistry) handle(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	prefix := "/v2/" + r.repo + "/"
+	if digest, ok := strings.CutPrefix(req.URL.Path, prefix+"manifests/"); ok {
+		body := r.manifest
+		if digest != r.digest {
+			body = r.manifests[digest]
+		}
+		if body == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if digest == r.digest && bytes.Contains(body, []byte(ociIndexMediaType)) {
+			w.Header().Set("Content-Type", ociIndexMediaType)
+		} else {
+			w.Header().Set("Content-Type", ociManifestMediaType)
+		}
+		_, _ = w.Write(body)
+		return
+	}
 	switch {
-	case req.URL.Path == prefix+"manifests/"+r.digest:
-		w.Header().Set("Content-Type", ociManifestMediaType)
-		_, _ = w.Write(r.manifest)
 	case strings.HasPrefix(req.URL.Path, prefix+"blobs/"):
 		if r.observeBlob != nil {
 			r.observeBlob()
@@ -484,6 +500,87 @@ func TestMaterializeGuestSecondCallIsVerifiedNoOp(t *testing.T) {
 	if got := reg.requestCount(); got != after {
 		t.Fatalf("second call made %d additional requests, want 0", got-after)
 	}
+}
+
+func TestMaterializeGuestIndexedManifestCache(t *testing.T) {
+	reg := newFakeRegistry(t, nil)
+	memberDigest, memberManifest := reg.digest, reg.manifest
+	otherArch := "amd64"
+	if runtime.GOARCH == "amd64" {
+		otherArch = "arm64"
+	}
+	other := newFakeRegistry(t, func(m *guestManifest) {
+		m.Annotations["org.opencontainers.image.revision"] = "other-architecture"
+	})
+	index, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     ociIndexMediaType,
+		"manifests": []any{
+			map[string]any{"digest": memberDigest, "platform": map[string]string{"os": "linux", "architecture": runtime.GOARCH}},
+			map[string]any{"digest": other.digest, "platform": map[string]string{"os": "linux", "architecture": otherArch}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal guest index: %v", err)
+	}
+	reg.manifest = index
+	reg.manifests = map[string][]byte{memberDigest: memberManifest, other.digest: other.manifest}
+	reg.digest = digestOf(index)
+	stateDir := t.TempDir()
+
+	first, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
+	if err != nil {
+		t.Fatalf("first indexed materializeGuestArtifact = %v", err)
+	}
+	selectedPath := filepath.Join(filepath.Dir(first.Kernel), guestSelectedManifestFile)
+	assertSelectedManifest := func() {
+		t.Helper()
+		got, err := os.ReadFile(selectedPath)
+		if err != nil {
+			t.Fatalf("read selected manifest: %v", err)
+		}
+		if !bytes.Equal(got, memberManifest) {
+			t.Fatalf("selected manifest = %q, want member manifest %q", got, memberManifest)
+		}
+	}
+	assertSelectedManifest()
+	afterFirst := reg.requestCount()
+	if afterFirst == 0 {
+		t.Fatal("first call made no requests; the stub was never reached")
+	}
+
+	second, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
+	if err != nil {
+		t.Fatalf("second indexed materializeGuestArtifact = %v, want a verified cache hit", err)
+	}
+	if second != first {
+		t.Fatalf("second call paths = %+v, want the first call's %+v", second, first)
+	}
+	if got := reg.requestCount(); got != afterFirst {
+		t.Fatalf("verified cache hit made %d additional requests, want 0", got-afterFirst)
+	}
+
+	writeFile(t, selectedPath, []byte("tampered"))
+	beforeTamperRefetch := reg.requestCount()
+	if _, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir); err != nil {
+		t.Fatalf("materialize after selected manifest tampering = %v", err)
+	}
+	if got := reg.requestCount(); got <= beforeTamperRefetch {
+		t.Fatal("tampered selected manifest was reused instead of refetched")
+	}
+	assertSelectedManifest()
+
+	if err := os.Remove(selectedPath); err != nil {
+		t.Fatalf("remove selected manifest: %v", err)
+	}
+	beforeMissingRefetch := reg.requestCount()
+	if _, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir); err != nil {
+		t.Fatalf("materialize after selected manifest removal = %v", err)
+	}
+	if got := reg.requestCount(); got <= beforeMissingRefetch {
+		t.Fatal("missing selected manifest was reused instead of refetched")
+	}
+	assertSelectedManifest()
 }
 
 func TestMaterializeGuestStagingDirectoryIsPrivate(t *testing.T) {
@@ -1149,6 +1246,89 @@ func TestReadGuestManifestFileRejectsMalformed(t *testing.T) {
 			}
 			if _, err := readGuestManifestFile(path); err == nil {
 				t.Fatalf("readGuestManifestFile(%q) = nil error, want a rejection", tt.content)
+			}
+		})
+	}
+}
+
+func TestFetchGuestManifestIndexSelectsRuntimeArch(t *testing.T) {
+	amd64 := newFakeRegistry(t, func(m *guestManifest) {
+		m.Annotations["org.opencontainers.image.revision"] = "amd64"
+	})
+	arm64 := newFakeRegistry(t, func(m *guestManifest) {
+		m.Annotations["org.opencontainers.image.revision"] = "arm64"
+	})
+	index, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests": []any{
+			map[string]any{"digest": amd64.digest, "platform": map[string]string{"os": "linux", "architecture": "amd64"}},
+			map[string]any{"digest": arm64.digest, "platform": map[string]string{"os": "linux", "architecture": "arm64"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal guest index: %v", err)
+	}
+	indexDigest := digestOf(index)
+	manifests := map[string][]byte{
+		amd64.digest: amd64.manifest,
+		arm64.digest: arm64.manifest,
+	}
+	client := &http.Client{Transport: bearerTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		digest := strings.TrimPrefix(req.URL.Path, "/v2/"+amd64.repo+"/manifests/")
+		body := index
+		if digest != indexDigest {
+			body = manifests[digest]
+		}
+		if body == nil {
+			return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(nil)), Request: req}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: req}, nil
+	})}
+	reg := guestRegistry{baseURL: "https://registry.test", repository: amd64.repo, digest: indexDigest}
+	manifest, _, err := fetchGuestManifest(t.Context(), client, reg, &guestBearerToken{})
+	if err != nil {
+		t.Fatalf("fetchGuestManifest(index) error = %v", err)
+	}
+	if got := manifest.Annotations["org.opencontainers.image.revision"]; got != runtime.GOARCH {
+		t.Fatalf("selected revision = %q, want runtime.GOARCH %q", got, runtime.GOARCH)
+	}
+}
+
+func TestFetchGuestManifestIndexRejectsMissingRuntimeArch(t *testing.T) {
+	index, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests": []any{map[string]any{
+			"digest":   "sha256:" + strings.Repeat("a", 64),
+			"platform": map[string]string{"os": "linux", "architecture": "riscv64"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal guest index: %v", err)
+	}
+	client := &http.Client{Transport: bearerTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(index)), Request: req}, nil
+	})}
+	reg := guestRegistry{baseURL: "https://registry.test", repository: "rigelbuild/compass-guest-image", digest: digestOf(index)}
+	if _, _, err := fetchGuestManifest(t.Context(), client, reg, &guestBearerToken{}); err == nil || !strings.Contains(err.Error(), runtime.GOARCH) {
+		t.Fatalf("fetchGuestManifest(index) error = %v, want error naming %s", err, runtime.GOARCH)
+	}
+}
+
+func TestGuestKernelName(t *testing.T) {
+	tests := []struct {
+		name   string
+		goarch string
+		want   string
+	}{
+		{name: "arm64", goarch: "arm64", want: "Image"},
+		{name: "amd64", goarch: "amd64", want: "bzImage"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := guestKernelName(tt.goarch); got != tt.want {
+				t.Fatalf("guestKernelName(%q) = %q, want %q", tt.goarch, got, tt.want)
 			}
 		})
 	}

@@ -22,17 +22,34 @@ describe("parseOutPaths", () => {
 describe("guestImageEnv", () => {
 	test("maps kernel/rootfs/initrd to the env vars Require reads, kernel gets /bzImage", () => {
 		expect(
-			guestImageEnv(["/nix/store/k", "/nix/store/r", "/nix/store/i"]),
+			guestImageEnv(
+				["/nix/store/k", "/nix/store/r", "/nix/store/i"],
+				"linux/amd64",
+			),
 		).toEqual({
 			COMPASS_TEST_GUEST_KERNEL: "/nix/store/k/bzImage",
 			COMPASS_TEST_GUEST_ROOTFS: "/nix/store/r",
 			COMPASS_TEST_GUEST_INITRD: "/nix/store/i",
 		});
 	});
+	test("uses the platform kernel file for arm64", () => {
+		expect(
+			guestImageEnv(
+				["/nix/store/k", "/nix/store/r", "/nix/store/i"],
+				"linux/arm64",
+			),
+		).toEqual({
+			COMPASS_TEST_GUEST_KERNEL: "/nix/store/k/Image",
+			COMPASS_TEST_GUEST_ROOTFS: "/nix/store/r",
+			COMPASS_TEST_GUEST_INITRD: "/nix/store/i",
+		});
+	});
 
 	test("throws on a wrong out-path count (build-drift is a named failure)", () => {
-		expect(() => guestImageEnv(["/a", "/b"])).toThrow();
-		expect(() => guestImageEnv(["/a", "/b", "/c", "/d"])).toThrow();
+		expect(() => guestImageEnv(["/a", "/b"], "linux/amd64")).toThrow();
+		expect(() =>
+			guestImageEnv(["/a", "/b", "/c", "/d"], "linux/amd64"),
+		).toThrow();
 	});
 });
 

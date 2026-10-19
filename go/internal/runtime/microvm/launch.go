@@ -132,6 +132,10 @@ func LaunchNetOnly(ctx context.Context, cfg BootConfig) (*VM, error) {
 // launch resolves binaries from PATH so BootConfig remains a pure boot contract;
 // microvmtest.Require verifies those same binaries for the test harness.
 func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err error) {
+	console, err := serialConsole(runtime.GOARCH)
+	if err != nil {
+		return nil, fmt.Errorf("microvm: selecting serial console: %w", err)
+	}
 	dir := filepath.Dir(cfg.Net.VhostUserSocket)
 	// Keep vm local: returning nil through the named result would clobber the
 	// partially-started VM before deferred Shutdown could reap its daemons.
@@ -226,7 +230,7 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 		name:    "cloud-hypervisor",
 		logPath: filepath.Join(dir, "cloud-hypervisor.log"),
 		//nolint:gosec // G204: the microVM harness seam — vmmPath is LookPath-resolved and vmmArgs is harness-built from BootConfig, neither user-controlled
-		cmd: exec.CommandContext(ctx, vmmPath, vmmArgs(cfg, vm.consolePath, opts)...),
+		cmd: exec.CommandContext(ctx, vmmPath, vmmArgs(cfg, vm.consolePath, console, opts)...),
 	}
 	if startErr := vm.startRecordedChild(vm.vmm, dir, "vmm.pid"); startErr != nil {
 		return nil, startErr
@@ -276,12 +280,26 @@ func translateSpec(guestID, hostID string) string {
 	return "map:" + guestID + ":" + hostID + ":1"
 }
 
+// serialConsole returns the guest UART device for the requested architecture.
+func serialConsole(goarch string) (string, error) {
+	switch goarch {
+	case "amd64":
+		return "ttyS0", nil
+	case "arm64":
+		return "ttyAMA0", nil
+	default:
+		return "", fmt.Errorf("unsupported microVM architecture %q", goarch)
+	}
+}
+
 // vmmArgs builds cloud-hypervisor argv, omitting fs/vsock for the net-only smoke.
 // It appends console, vsock-port, and net.ifnames=0: guestd binds eth0, while
 // the generic kernel otherwise names the single virtio-net interface enpNsM.
-func vmmArgs(cfg BootConfig, consolePath string, opts launchOptions) []string {
-	cmdline := strings.TrimSpace(cfg.Cmdline +
-		" console=ttyS0 net.ifnames=0 compass.vsock_port=" + strconv.FormatUint(uint64(cfg.VsockPort), 10))
+func vmmArgs(cfg BootConfig, consolePath, console string, opts launchOptions) []string {
+	cmdline := strings.TrimSpace(
+		cfg.Cmdline + " console=" + console + " net.ifnames=0 compass.vsock_port=" +
+			strconv.FormatUint(uint64(cfg.VsockPort), 10),
+	)
 	// compass.gateway_port carries the host-served AgentGateway port to guestd's
 	// unix→vsock forwarder (record §(b)/§(d)); a zero port (a V2a-era boot or a
 	// hermetic harness that starts no gateway) is omitted so the guest starts no

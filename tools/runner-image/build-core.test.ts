@@ -9,6 +9,7 @@ import {
 	buildArgs,
 	buildctlArgs,
 	closureRoots,
+	hostPlatform,
 	kernelImagePath,
 	outputSpec,
 	parseOutPaths,
@@ -37,19 +38,31 @@ describe("parseOutPaths", () => {
 	});
 });
 
+describe("hostPlatform", () => {
+	test("maps supported Node architectures", () => {
+		expect(hostPlatform("x64")).toBe("linux/amd64");
+		expect(hostPlatform("arm64")).toBe("linux/arm64");
+	});
+
+	test("rejects unsupported Node architectures", () => {
+		expect(() => hostPlatform("ia32")).toThrow();
+	});
+});
+
 describe("kernelImagePath", () => {
-	// The kernel derivation is a directory (bzImage + System.map); the rootfs and
-	// initrd derivations ARE files. Booting the directory would fail at the VMM.
-	test("points at the bzImage inside the kernel derivation directory", () => {
-		expect(kernelImagePath("/nix/store/ccc-linux")).toBe(
+	test("selects the kernel file for each platform", () => {
+		expect(kernelImagePath("/nix/store/ccc-linux", "linux/amd64")).toBe(
 			"/nix/store/ccc-linux/bzImage",
+		);
+		expect(kernelImagePath("/nix/store/ccc-linux", "linux/arm64")).toBe(
+			"/nix/store/ccc-linux/Image",
 		);
 	});
 });
 
 describe("buildArgs", () => {
-	test("maps each artifact to the env the Runner reads, kernel suffixed and the file assets bare", () => {
-		expect(buildArgs(outputs)).toEqual({
+	test("maps each artifact to the env the Runner reads for each platform", () => {
+		expect(buildArgs(outputs, "linux/amd64")).toEqual({
 			VMM_BIN: "/nix/store/bbb-compass-stack-env/bin/cloud-hypervisor",
 			VIRTIOFSD_BIN: "/nix/store/bbb-compass-stack-env/bin/virtiofsd",
 			STACK_BIN_DIR: "/nix/store/bbb-compass-stack-env/bin",
@@ -57,6 +70,9 @@ describe("buildArgs", () => {
 			GUEST_ROOTFS: "/nix/store/ddd-rootfs.erofs",
 			GUEST_INITRD: "/nix/store/eee-initrd",
 		});
+		expect(buildArgs(outputs, "linux/arm64").GUEST_KERNEL).toBe(
+			"/nix/store/ccc-linux/Image",
+		);
 	});
 });
 
@@ -138,6 +154,12 @@ describe("outputSpec", () => {
 });
 
 describe("buildctlArgs", () => {
+	test("uses its platform for the guest kernel build arg", () => {
+		const args = buildctlArgs("/ctx", outputs, "linux/arm64", "type=oci");
+		expect(args).toContain("platform=linux/arm64");
+		expect(args).toContain("build-arg:GUEST_KERNEL=/nix/store/ccc-linux/Image");
+	});
+
 	test("passes every build-arg the Dockerfile declares", () => {
 		const args = buildctlArgs(
 			"/repo/runner-image",
@@ -146,11 +168,10 @@ describe("buildctlArgs", () => {
 			"type=oci,dest=/repo/runner-image/out,tar=false",
 		);
 		const joined = args.join(" ");
-		for (const name of Object.keys(buildArgs(outputs))) {
+		for (const name of Object.keys(buildArgs(outputs, "linux/amd64"))) {
 			expect(joined).toContain(`build-arg:${name}=`);
 		}
 	});
-
 	test("build-arg order is deterministic, so two identical builds produce identical argv", () => {
 		const once = buildctlArgs("/ctx", outputs, "linux/amd64", "type=oci");
 		const twice = buildctlArgs("/ctx", outputs, "linux/amd64", "type=oci");
@@ -174,7 +195,9 @@ describe("buildctlArgs", () => {
 		// SOURCE_DATE_EPOCH is consumed by the frontend itself and supplied by
 		// buildctlArgs directly, not through the artifact mapping.
 		declared.delete("SOURCE_DATE_EPOCH");
-		expect(new Set(Object.keys(buildArgs(outputs)))).toEqual(declared);
+		expect(Object.keys(buildArgs(outputs, "linux/amd64")).sort()).toEqual(
+			[...declared].sort(),
+		);
 	});
 
 	test("uses the dockerfile.v0 frontend against the staged context", () => {

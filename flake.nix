@@ -16,7 +16,7 @@
       # A manual forAllSystems (no flake-utils). x86_64-linux is load-bearing: it
       # builds every package including the gtk4 cgo app. aarch64-darwin is a
       # follow-up, not blocked on here.
-      systems = [ "x86_64-linux" ];
+      systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
 
       # All binaries share one version stamp; trim `version.txt` so its newline does

@@ -27,7 +27,7 @@ tasks:
   test:
     # The pure core (run-core.ts) over fixtures: the out-path parsing + env
     # mapping, incl. the fail-closed drift edges.
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock', '/tools/runner-image/*-core.ts']
   ci:
     deps: ['typecheck', 'test']
     options:

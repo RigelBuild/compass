@@ -77,11 +77,15 @@ export function digestRef(repo: string, digest: string): string {
 
 /** The build-addressability tag for a commit. A tag is a convenience for
  * finding the build; nothing deployed resolves through it. */
-export function buildTag(repo: string, sha12: string): string {
+export function buildTag(
+	repo: string,
+	sha12: string,
+	archSuffix?: "amd64" | "arm64",
+): string {
 	if (!/^[0-9a-f]{12}$/.test(sha12)) {
 		throw new Error(`not a 12-char commit sha: ${sha12}`);
 	}
-	return `${repo}:git-${sha12}`;
+	return `${repo}:git-${sha12}${archSuffix === undefined ? "" : `-${archSuffix}`}`;
 }
 
 /**
@@ -106,6 +110,7 @@ export function tagArgs(
 	digest: string,
 	sha12: string,
 	authFile: string,
+	archSuffix?: "amd64" | "arm64",
 ): string[] {
 	return [
 		"copy",
@@ -114,7 +119,7 @@ export function tagArgs(
 		"--dest-authfile",
 		authFile,
 		`docker://${digestRef(repo, digest)}`,
-		`docker://${buildTag(repo, sha12)}`,
+		`docker://${buildTag(repo, sha12, archSuffix)}`,
 	];
 }
 
@@ -137,12 +142,17 @@ export type PublishResult =
  * what the release re-tag promotes, so a failed check must leave no tag.
  */
 export function publishVerified(
-	input: { repo: string; sha12: string; localDigest: string; authFile: string },
+	input: {
+		repo: string;
+		sha12: string;
+		localDigest: string;
+		authFile: string;
+		archSuffix?: "amd64" | "arm64";
+	},
 	io: PublishIO,
 ): PublishResult {
-	const { repo, sha12, localDigest, authFile } = input;
-	// Fail on a bad sha before any registry write.
-	buildTag(repo, sha12);
+	const { repo, sha12, localDigest, authFile, archSuffix } = input;
+	buildTag(repo, sha12, archSuffix);
 
 	const push = io.push();
 	if (push.status !== 0) {
@@ -171,7 +181,7 @@ export function publishVerified(
 		};
 	}
 
-	const args = tagArgs(repo, pushedDigest, sha12, authFile);
+	const args = tagArgs(repo, pushedDigest, sha12, authFile, archSuffix);
 	const tag = io.skopeo(args);
 	if (tag.status !== 0) {
 		return {
