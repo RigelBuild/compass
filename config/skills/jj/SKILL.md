@@ -135,11 +135,12 @@ vcs_workspace { action: "forget", name: "ws-router" }   # then delete the direct
 ```
 
 - **Subagents edit files only.** You commit their work with
-  `vcs_commit { workspace }`, which runs in that workspace's root.
+  `vcs_commit { workspace, bookmark, subject, sections }` (or `text` for a later
+  commit), which runs in that workspace's root.
 - **Bookmarks are shared across workspaces.** Give each subagent a distinct
   bookmark name.
 - **A stale workspace** (it fell behind a concurrent operation) is repaired with
-  `vcs_workspace { action: "update-stale" }`.
+  `vcs_workspace { action: "update-stale", name: "ws-router" }`.
 
 ## Another agent's PR in your line
 

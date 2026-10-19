@@ -15,6 +15,9 @@ import {
 
 interface JsonSchema {
 	properties?: Record<string, JsonSchema>;
+	required?: string[];
+	// Set on a map field such as `issues` or `sections`, whose keys are data, not field names.
+	additionalProperties?: unknown;
 }
 
 const schemas: Record<string, JsonSchema> = Object.fromEntries(
@@ -45,6 +48,43 @@ function fieldsOf(body: string): [string, string[]][] {
 		out.push([m[1] ?? "", nested]);
 	}
 	return out;
+}
+
+/** Names the unknown and missing fields of one object literal against its schema. */
+function shapeProblems(
+	path: string,
+	schema: JsonSchema | undefined,
+	names: string[],
+): string[] {
+	if (!schema) return [`${path}: no such tool or field`];
+	// A map field such as `issues` or `sections` takes data keys, not field names.
+	if (schema.additionalProperties !== undefined) return [];
+	const known = Object.keys(schema.properties ?? {});
+	return [
+		...names
+			.filter((n) => !known.includes(n))
+			.map((n) => `${path}.${n}: unknown`),
+		...(schema.required ?? [])
+			.filter((r) => !names.includes(r))
+			.map((r) => `${path}: needs ${r}`),
+	];
+}
+
+function callProblems(tool: string, body: string): string[] {
+	const schema = schemas[tool];
+	const fields = fieldsOf(body);
+	return [
+		...shapeProblems(
+			tool,
+			schema,
+			fields.map(([field]) => field),
+		),
+		...fields
+			.filter(([, nested]) => nested.length > 0)
+			.flatMap(([field, nested]) =>
+				shapeProblems(`${tool}.${field}`, schema?.properties?.[field], nested),
+			),
+	];
 }
 
 // The shipped prompt and skill teach the agent its push path; a stale one sends it to a tool it no longer has.
@@ -93,26 +133,17 @@ describe("shipped VCS guidance", () => {
 		expect(setup).toContain("vcs_submit");
 	});
 
-	// The doc's call shapes are what the agent copies; a renamed or invented field makes every such call fail.
-	test("every documented vcs_* call uses the tool's real fields", () => {
+	// The doc's call shapes are what the agent copies; a renamed, invented, or missing required field makes every such call fail.
+	test("every documented vcs_* call uses the tool's real and required fields", () => {
 		const calls = [
 			...`${manager}\n${skill}`.matchAll(
-				/\b(vcs_[a-z_]+) \{ ((?:[^{}]|\{[^{}]*\})*) \}/g,
+				/\b(vcs_[a-z_]+) +\{ ((?:[^{}]|\{[^{}]*\})*) \}/g,
 			),
 		];
 		expect(calls.length).toBeGreaterThan(10);
-		for (const [, tool = "", body = ""] of calls) {
-			const props = schemas[tool]?.properties;
-			expect(props, tool).toBeDefined();
-			for (const [field, nested] of fieldsOf(body)) {
-				expect(Object.keys(props ?? {}), `${tool}.${field}`).toContain(field);
-				for (const inner of nested)
-					expect(
-						Object.keys(props?.[field]?.properties ?? {}),
-						`${tool}.${field}.${inner}`,
-					).toContain(inner);
-			}
-		}
+		expect(
+			calls.flatMap(([, tool = "", body = ""]) => callProblems(tool, body)),
+		).toEqual([]);
 	});
 
 	test("the older-PR move copies the line instead of renaming in place", () => {
