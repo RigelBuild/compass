@@ -254,6 +254,9 @@ message ForgeCallRequest {
     TransitionIssueStateRequest transition_issue_state = 14;
     TransitionPullRequestStateRequest transition_pull_request_state = 15;
     EditIssueRequest edit_issue = 17;
+    SubmitStackRequest submit_stack = 18;
+    StackStatusRequest stack_status = 19;
+    RetireHeadRequest retire_head = 20;
   }
   // Which forge the call addresses. UNSET selects the default (configured
   // GitHub) forge — additive, existing callers unchanged. An unknown/unconfigured
@@ -264,7 +267,7 @@ message ForgeCallRequest {
   // Whole-chain idempotency key for create and mirror_messages calls. A retry
   // with the same key returns the original result without posting again.
   // Distinct from call_id, which is correlation-only. Field 13 is collision-free:
-  // call_id=1, oneof arms 2-11, 14-16, forge=12.
+  // call_id=1, oneof arms 2-11, 14-19, forge=12.
   string client_request_id = 13;
 }
 
@@ -295,6 +298,7 @@ message ForgeCallResult {
     UnsubscribeForgeResponse unsubscribed = 8;
     ForgeCallError error = 9;
     ReviewRef review = 10;                  // submit_review (write ack: url + review_id)
+    StackResult stack = 11;
   }
 }
 
@@ -412,6 +416,45 @@ message TransitionPullRequestStateRequest {
   string repo = 1;            // REQUIRED
   uint64 pr_number = 2;
   string state = 3;           // "open" | "closed"
+}
+message StackEntry {
+  string head_ref = 1;
+  string base_ref = 2;
+  string title = 3;
+  string body = 4;
+  string issue_ref = 5;  // user's format; required when the PR is created
+  bool replace_text = 6;
+}
+message SubmitStackRequest {
+  string repo = 1;
+  repeated StackEntry entries = 2;  // bottom to top
+  string ready_head_ref = 3;        // empty = no entry leaves draft
+  bytes bundle = 4;                 // git bundle of the own commits (OQ-8)
+}
+message RetireHeadRequest {
+  string repo = 1;
+  string head_ref = 2;
+}
+message StackStatusRequest {
+  string repo = 1;
+  repeated string head_refs = 2;
+}
+enum StackEntryStatus {
+  STACK_ENTRY_STATUS_UNSPECIFIED = 0;
+  STACK_ENTRY_STATUS_DONE = 1;
+  STACK_ENTRY_STATUS_FAILED = 2;
+  STACK_ENTRY_STATUS_SKIPPED = 3;  // an entry below failed
+}
+message StackEntryResult {
+  string head_ref = 1;
+  compass.v1.PullRequest pull_request = 2;
+  bool created = 3;
+  bool authored = 4;  // the caller authored this PR
+  ForgeCallError error = 5;
+  StackEntryStatus status = 6;
+}
+message StackResult {
+  repeated StackEntryResult entries = 1;
 }
 
 // Subscribe/unsubscribe a forge artifact for change notifications (DL-053). The

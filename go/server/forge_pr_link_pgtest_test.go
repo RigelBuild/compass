@@ -55,6 +55,7 @@ func TestForgeCreatePullRequestShowsOnLinkedIssue(t *testing.T) {
 	author.CreatePRResult = forge.PullRequest{Number: 31, State: "open", CreatedAt: created}
 
 	res, err := svc.ExecuteForgeCallAsAccount(ctx, agent.ID, "sess", &compassv1internal.ForgeCallRequest{
+		ClientRequestId: "req-prlink",
 		Call: &compassv1internal.ForgeCallRequest_CreatePullRequest{CreatePullRequest: &compassv1internal.CreatePullRequestRequest{
 			Repo: "Owner/PRLink", Title: "t", Body: "b", HeadRef: "f", BaseRef: "main",
 			Issue: &compassv1internal.PullRequestIssueLink{Number: 4},

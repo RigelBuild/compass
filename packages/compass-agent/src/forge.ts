@@ -773,6 +773,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 						}),
 					},
 					forge: forgeRef(params),
+					clientRequestId: broker.idempotencyKey(toolCallId),
 				}),
 			);
 			if (result.result.case !== "issueComment")
@@ -808,6 +809,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 							}),
 						},
 						forge: forgeRef(params),
+						clientRequestId: broker.idempotencyKey(toolCallId),
 					}),
 				);
 				if (result.result.case !== "prComment")
@@ -855,6 +857,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 						}),
 					},
 					forge: forgeRef(params),
+					clientRequestId: broker.idempotencyKey(toolCallId),
 				}),
 			);
 			if (result.result.case !== "review")
