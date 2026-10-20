@@ -6,3 +6,4 @@ Exec=compass-app
 Icon=compass
 Terminal=false
 Categories=Development;
+StartupWMClass=compass-app
