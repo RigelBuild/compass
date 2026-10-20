@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	enrollHandle      = "enroll-agent"
-	enrollFirstMarker = "enroll-first-drive"
-	enrollFirstReply  = "enroll first reply"
-	enrollMarker      = "enroll-resume-drive"
-	enrollReply       = "enroll resumed reply"
-	enrollTokenFile   = "runner.token"
-	enrollFallbackTxt = "enroll unrouted turn"
+	enrollHandle         = "enroll-agent"
+	enrollTurnlessHandle = "enroll-turnless"
+	enrollFirstMarker    = "enroll-first-drive"
+	enrollFirstReply     = "enroll first reply"
+	enrollMarker         = "enroll-resume-drive"
+	enrollReply          = "enroll resumed reply"
+	enrollTokenFile      = "runner.token"
+	enrollFallbackTxt    = "enroll unrouted turn"
 )
 
 // TestLegEnrollHardening runs on its own stack: the revoked-token half leaves the
@@ -44,6 +45,7 @@ func TestLegEnrollHardening(t *testing.T) {
 	t.Cleanup(st.Close)
 
 	t.Run("restart resumes delivery", func(t *testing.T) { enrollRestartResumesDelivery(ctx, t, f, st) })
+	t.Run("restart wakes a turnless session", func(t *testing.T) { enrollRestartWakesTurnless(ctx, t, f, st) })
 	t.Run("revoked token fails closed", func(t *testing.T) { enrollRevokedTokenFailsClosed(ctx, t, f, st) })
 }
 
@@ -113,6 +115,47 @@ func enrollRestartResumesDelivery(ctx context.Context, t *testing.T, f *Fixture,
 	}
 	if latest != sessionID {
 		t.Fatalf("latest session = %q, want the resumed %q (the wake minted a new session)", latest, sessionID)
+	}
+}
+
+// enrollRestartWakesTurnless restarts the Runner under a session that never took
+// a turn. With no transcript to resume, the wake must fresh-start the agent so
+// the post is delivered; the delivery cursor passing it proves the injection.
+func enrollRestartWakesTurnless(ctx context.Context, t *testing.T, f *Fixture, st *store.Store) {
+	t.Helper()
+	accountID, err := f.CreateAgent(ctx, enrollTurnlessHandle, "Enroll turnless agent")
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	container, err := f.Provision(ctx, accountID, "enroll-turnless-provision")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	t.Cleanup(func() { _ = podmanRemoveForce(ctx, container) })
+	turnless, err := f.StartSession(ctx, container)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	acc, err := adminAgentByHandle(ctx, st, enrollTurnlessHandle)
+	if err != nil {
+		t.Fatalf("AgentByHandle: %v", err)
+	}
+	if err := f.Stack().RestartRunner(ctx); err != nil {
+		t.Fatalf("RestartRunner: %v", err)
+	}
+	if err := f.waitRunnerEnrolled(ctx); err != nil {
+		t.Fatalf("waitRunnerEnrolled: %v", err)
+	}
+	postID, err := f.PostMessage(ctx, string(acc.Agent.HomeChannelID), "general", "after restart "+enrollMarker)
+	if err != nil {
+		t.Fatalf("PostMessage after restart: %v", err)
+	}
+	if err := f.waitDeliveryCursorPast(ctx, st, acc.ID, acc.Agent.HomeChannelID, store.MessageID(postID)); err != nil {
+		t.Fatalf("post after restart was never delivered: %v", err)
+	}
+	latest, ok, err := st.LatestSessionForAccount(ctx, acc.ID)
+	if err != nil || !ok || latest == turnless {
+		t.Fatalf("latest session = %q (ok=%v err=%v), want a fresh session replacing %q", latest, ok, err, turnless)
 	}
 }
 

@@ -270,6 +270,36 @@ func TestWakeAgentNeverStartedFreshStarts(t *testing.T) {
 	}
 }
 
+// A session that ended before its first turn has no transcript, so its body
+// cannot be rebuilt. The wake must fresh-start the placed container instead of
+// failing, or the agent stays offline with its message owed.
+func TestWakeAgentTurnlessPriorSessionFreshStarts(t *testing.T) {
+	ctx := context.Background() // test root
+	f, lc := newWakeFixture(t)
+
+	const turnless = "sess-wake-turnless"
+	if err := f.store.RecordAgentSession(ctx, turnless, f.agentID); err != nil {
+		t.Fatalf("RecordAgentSession: %v", err)
+	}
+	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
+		t.Fatalf("RecordAgentPlacement: %v", err)
+	}
+	f.runner.forget()
+
+	lc.WakeAgent(ctx, f.agentID)
+
+	body, sawStart := relayedStartResumeBody(t, f.runner)
+	if !sawStart || f.runner.startCount() != 1 {
+		t.Fatalf("WakeAgent(turnless prior session) Starts = %d, want 1 fresh start (commands: %v)", f.runner.startCount(), f.runner.commands())
+	}
+	if body != "" {
+		t.Fatalf("fresh start relayed resume_body = %q, want empty", body)
+	}
+	if got := sessionRowCount(t, ctx, f.dsn, fakeSessionID); got != 1 {
+		t.Fatalf("session rows for the fresh session %q = %d, want 1", fakeSessionID, got)
+	}
+}
+
 // An offline agent with neither session nor placement is a logged no-op until
 // a natural start; it must not push a Runner Start.
 func TestWakeAgentNoPlacementIsNoOp(t *testing.T) {
