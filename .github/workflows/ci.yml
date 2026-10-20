@@ -1770,8 +1770,9 @@ jobs:
     # bundle is complete + mountable. The job-level `if:` ANDs the dispatch-aware
     # gate guard with the darwin affected gate: on a PR it runs only when setup
     # found the shell surface (go/cmd/compass-app/ or a GTK closure input), the
-    # macos-bundle tool, or the sidecar surface (the four sidecar cmd dirs plus
-    # every first-party package they compile in) changed (darwin_affected), and
+    # macos-bundle tool, the sidecar surface (the four sidecar cmd dirs plus
+    # every first-party package they compile in), or a UI build input that shapes
+    # the staged dist/index.html changed (darwin_affected), and
     # always on push/schedule
     # and on a base-re-point re-trigger (DL-263 cadence — full sweep on main +
     # nightly ALWAYS, plus affected-on-PR). The in-step affected guard stays as
