@@ -3,10 +3,13 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/RigelBuild/compass/go/internal/appconfig"
 	"github.com/RigelBuild/compass/go/internal/embedded"
 )
 
@@ -78,5 +81,53 @@ func TestBringUpTimeoutBudgetsDarwinColdProvisioning(t *testing.T) {
 	}
 	if linux <= 0 {
 		t.Errorf("BringUpTimeoutFor(linux) = %v, want a positive backstop", linux)
+	}
+}
+
+func TestShellGlobalsMiddlewareUsesLiveState(t *testing.T) {
+	svc := newSetupBridgeService(nil, nil, &setupWiring{gate: &firstRunGate{}, picks: &caPicks{}})
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := shellGlobalsMiddleware(svc)(next)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/compass-shell-globals.js", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("setup response status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if got, want := response.Header().Get("Content-Type"), "text/javascript; charset=utf-8"; got != want {
+		t.Errorf("setup Content-Type = %q, want %q", got, want)
+	}
+	if got, want := response.Header().Get("Cache-Control"), "no-store"; got != want {
+		t.Errorf("setup Cache-Control = %q, want %q", got, want)
+	}
+	if got, want := response.Body.String(), `window.__COMPASS_MODE__="setup";`; got != want {
+		t.Errorf("setup script = %q, want %q", got, want)
+	}
+	if nextCalled {
+		t.Fatal("globals route called next")
+	}
+
+	const serverURL = "https://live.example:8443"
+	svc.conn.Store(&connection{mode: appconfig.ModeClient.String(), serverURL: serverURL})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/compass-shell-globals.js", nil))
+	if got, want := response.Body.String(), `window.__COMPASS_MODE__="client";window.__COMPASS_SERVER_URL__="`+serverURL+`";`; got != want {
+		t.Errorf("client script = %q, want %q", got, want)
+	}
+	if nextCalled {
+		t.Fatal("globals route called next")
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/other", nil))
+	if !nextCalled {
+		t.Fatal("other path did not call next")
+	}
+	if response.Code != http.StatusNoContent {
+		t.Errorf("other path status = %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
