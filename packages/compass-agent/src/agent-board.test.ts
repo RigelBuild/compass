@@ -289,6 +289,9 @@ describe("compass_update_board parameters", () => {
 		expect(ok({ focus: "f".repeat(65) })).toBe(false);
 		expect(ok({ remove: Array.from({ length: 31 }, String) })).toBe(false);
 		expect(ok({ remove: ["r".repeat(65)] })).toBe(false);
+		// A key renders verbatim only in the attribute shape.
+		expect(ok({ tasks: [{ key: "has space" }] })).toBe(false);
+		expect(ok({ tasks: [{ key: "RIG-1/pr:2_x.y" }] })).toBe(true);
 		// Exactly at each cap is accepted.
 		expect(ok({ tasks: [{ key: "k".repeat(64) }] })).toBe(true);
 		expect(ok({ focus: "f".repeat(64) })).toBe(true);

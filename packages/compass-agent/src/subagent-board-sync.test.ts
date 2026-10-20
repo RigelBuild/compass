@@ -247,6 +247,34 @@ describe("subagent board synchronization", () => {
 		void h.detach();
 	});
 
+	test("every run queued behind a pending settle reaches its own task", async () => {
+		const h = attached("first");
+		h.transport.addTask("second");
+		h.transport.addTask("third");
+		h.freshness.noteBoard(h.transport.board);
+		const focus = (key: string) => {
+			h.transport.focus = key;
+			h.freshness.noteBoard(h.transport.board);
+		};
+		h.emit("a", "started");
+		await h.window();
+		h.emit("a", "completed");
+		focus("second");
+		h.emit("a", "started");
+		h.emit("a", "completed");
+		focus("third");
+		h.emit("a", "started");
+		for (let i = 0; i < 4; i++) await h.window();
+		const rows = (key: string) =>
+			h.transport.board.tasks
+				.find((t) => t.key === key)
+				?.subagents.map((s) => `${s.id}:${s.status}`);
+		expect(rows("first")).toEqual(["a:completed"]);
+		expect(rows("second")).toEqual(["a:completed"]);
+		expect(rows("third")).toEqual(["a:started"]);
+		void h.detach();
+	});
+
 	test("a settle during its start's write follows the start's task", async () => {
 		const h = attached("first", { seeded: false });
 		h.transport.addTask("second");

@@ -24,6 +24,12 @@ const SUBAGENTS_TASK_KEY = "subagents";
 const SETTLED_ID_LIMIT = 256;
 const SHUTDOWN_FLUSH_MS = 5_000;
 
+interface Run {
+	row: BoardSubagent;
+	// The task focused when the run started; unset when the board was not yet known.
+	key?: string;
+}
+
 interface LifecycleEvent {
 	id: string;
 	agent: string;
@@ -80,6 +86,8 @@ const TRANSIENT_CODES = new Set([
 // The server also reports some lasting faults as internal, so a batch gets this many
 // transient retries before its rows retry alone, then drop.
 const TRANSIENT_RETRIES = 3;
+// Bounds memory when one id restarts faster than its settles are written.
+const MAX_QUEUED_RUNS = 8;
 
 const transient = (result: CommsCallResult): boolean =>
 	result.result.case === "error" &&
@@ -138,9 +146,9 @@ export function attachSubagentBoardSync(
 	const refused = new Set<string>();
 	// Transient faults per id; past the limit the rows take the refusal path.
 	const faults = new Map<string, number>();
-	// A follow-up run's events under an id whose settle is not yet written; the run
-	// takes the id once that settle lands, so the earlier task's row does not stay open.
-	const next = new Map<string, { row: BoardSubagent; key?: string }>();
+	// Follow-up runs under an id whose settle is not yet written, oldest first; each
+	// takes the id once the run before it lands, so no task's row stays open.
+	const next = new Map<string, Run[]>();
 	const changed = new Set<string>();
 	let cancel: (() => void) | undefined;
 	let inFlight: Promise<void> | undefined;
@@ -253,12 +261,14 @@ export function attachSubagentBoardSync(
 	};
 
 	const promote = (id: string): void => {
-		const waiting = next.get(id);
-		if (waiting === undefined) return;
-		next.delete(id);
+		const queue = next.get(id);
+		const run = queue?.shift();
+		if (run === undefined) return;
+		if (queue?.length === 0) next.delete(id);
 		settled.delete(id);
-		byId.set(id, waiting.row);
-		if (waiting.key !== undefined) taskById.set(id, waiting.key);
+		byId.set(id, run.row);
+		if (run.key === undefined) taskById.delete(id);
+		else taskById.set(id, run.key);
 		changed.add(id);
 		arm();
 	};
@@ -443,17 +453,27 @@ export function attachSubagentBoardSync(
 		event: LifecycleEvent,
 		starting: boolean,
 	): boolean => {
-		const waiting = next.get(event.id);
+		const queue = next.get(event.id) ?? [];
 		const current = byId.get(event.id);
+		const last = queue.at(-1);
 		if (
-			waiting === undefined &&
+			last === undefined &&
 			!(starting && current !== undefined && current.endedAtUnixMs !== 0n)
 		)
 			return false;
-		next.set(event.id, {
-			row: rowFor(event, starting, starting ? undefined : waiting?.row),
-			key: starting ? startKey() : waiting?.key,
-		});
+		if (!starting && last !== undefined) {
+			last.row = rowFor(event, false, last.row);
+			return true;
+		}
+		const key = startKey();
+		// The server keys rows by id, so a later run on the same task replaces it there too.
+		if (last !== undefined && last.key === key) queue.pop();
+		queue.push({ row: rowFor(event, true, undefined), key });
+		if (queue.length > MAX_QUEUED_RUNS) {
+			queue.shift();
+			logSync("run dropped", new Error(`id ${event.id} restarted too often`));
+		}
+		next.set(event.id, queue);
 		return true;
 	};
 
@@ -489,7 +509,9 @@ export function attachSubagentBoardSync(
 	// a pass that sends nothing ends the drain.
 	const drain = async (): Promise<void> => {
 		await inFlight;
-		let passes = 2 * (changed.size + next.size) + 2;
+		let queued = 0;
+		for (const q of next.values()) queued += q.length;
+		let passes = 2 * (changed.size + queued) + 2;
 		while (changed.size > 0 && passes > 0 && !closed) {
 			passes -= 1;
 			if (!(await run())) return;

@@ -82,16 +82,20 @@ function withinChars(value: string, max: number): boolean {
 }
 
 const KEY_CHARS = 64;
+// The board renders keys verbatim only in this shape, so the model can patch what it reads.
+const KEY_SHAPE = /^[\w.:/-]+$/;
 
-const nonBlank = (description: string) =>
+const taskKey = (description: string) =>
 	type("string")
 		.narrow(
 			(value, ctx) =>
-				(value.trim().length > 0 && withinChars(value, KEY_CHARS)) ||
-				ctx.mustBe(`non-blank, at most ${KEY_CHARS} characters`),
+				(KEY_SHAPE.test(value) && withinChars(value, KEY_CHARS)) ||
+				ctx.mustBe(
+					`letters, digits, _ . : / - only, at most ${KEY_CHARS} characters`,
+				),
 		)
 		.describe(
-			`${description}; must not be blank; at most ${KEY_CHARS} characters`,
+			`${description}; letters, digits, _ . : / - only; at most ${KEY_CHARS} characters`,
 		);
 
 // The server counts characters as code points, so the cap does too.
@@ -104,7 +108,7 @@ const capped = (max: number, description: string) =>
 		.describe(`${description}; at most ${max} characters`);
 
 const boardTaskParameters = type({
-	key: nonBlank("Stable key for the task"),
+	key: taskKey("Stable key for the task"),
 	"title?": capped(120, "Short task title; required when creating a new task"),
 	"primary_ref?": type("string").describe(
 		"Primary issue or pull-request reference",
@@ -348,7 +352,7 @@ export function createAgentBoardTools(
 		label: "Update agent board",
 		approval: "write",
 		description:
-			"Update your status board with tasks, focus, waits, references, or a halt reason. Omitted fields stay unchanged; empty values clear fields and lists.",
+			"Update your status board with tasks, focus, waits, references, or a halt reason. Omitted fields stay unchanged; inside a task, an empty refs or waiting list clears it.",
 		parameters: updateAgentBoardParameters,
 		execute: async (toolCallId, params) => {
 			const result = await broker.call(
