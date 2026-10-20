@@ -32,7 +32,7 @@ const refusal = (
 		},
 	});
 
-/** A comms transport over one stored board; updates apply like the server's. */
+/** A comms transport over one stored board; it applies task titles and subagent rows. */
 export class FakeTransport implements CommsTransport {
 	readonly requests: CommsCallRequest[] = [];
 	failNext = false;
