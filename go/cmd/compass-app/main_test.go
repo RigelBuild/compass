@@ -5,7 +5,9 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,9 +94,13 @@ func TestShellGlobalsMiddlewareUsesLiveState(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	handler := shellGlobalsMiddleware(svc)(next)
+	get := func(path string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
+		return response
+	}
 
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/compass-shell-globals.js", nil))
+	response := get(shellGlobalsPath)
 	if response.Code != http.StatusOK {
 		t.Fatalf("setup response status = %d, want %d", response.Code, http.StatusOK)
 	}
@@ -107,27 +113,33 @@ func TestShellGlobalsMiddlewareUsesLiveState(t *testing.T) {
 	if got, want := response.Body.String(), `window.__COMPASS_MODE__="setup";`; got != want {
 		t.Errorf("setup script = %q, want %q", got, want)
 	}
-	if nextCalled {
-		t.Fatal("globals route called next")
-	}
 
 	const serverURL = "https://live.example:8443"
 	svc.conn.Store(&connection{mode: appconfig.ModeClient.String(), serverURL: serverURL})
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/compass-shell-globals.js", nil))
-	if got, want := response.Body.String(), `window.__COMPASS_MODE__="client";window.__COMPASS_SERVER_URL__="`+serverURL+`";`; got != want {
-		t.Errorf("client script = %q, want %q", got, want)
+	wantClient := `window.__COMPASS_MODE__="client";window.__COMPASS_SERVER_URL__="` + serverURL + `";`
+	if got := get(shellGlobalsPath).Body.String(); got != wantClient {
+		t.Errorf("client script = %q, want %q", got, wantClient)
 	}
 	if nextCalled {
 		t.Fatal("globals route called next")
 	}
 
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/other", nil))
-	if !nextCalled {
-		t.Fatal("other path did not call next")
+	if response := get("/other"); !nextCalled || response.Code != http.StatusNoContent {
+		t.Errorf("other path: next called = %v, status = %d; want true, %d", nextCalled, response.Code, http.StatusNoContent)
 	}
-	if response.Code != http.StatusNoContent {
-		t.Errorf("other path status = %d, want %d", response.Code, http.StatusNoContent)
+}
+
+// TestIndexLoadsShellGlobalsBeforeBundle pins the UI side of the contract: a
+// renamed route or a reordered tag silently drops the app into browser boot.
+func TestIndexLoadsShellGlobalsBeforeBundle(t *testing.T) {
+	raw, err := os.ReadFile("../../../apps/ui/index.html")
+	if err != nil {
+		t.Fatalf("reading index.html: %v", err)
+	}
+	html := string(raw)
+	globals := strings.Index(html, `src="`+shellGlobalsPath+`"`)
+	module := strings.Index(html, `type="module"`)
+	if globals < 0 || module < 0 || globals > module {
+		t.Fatalf("index.html: globals script at %d, module at %d; want globals first", globals, module)
 	}
 }

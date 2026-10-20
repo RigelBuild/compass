@@ -4,7 +4,8 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>Compass</title>
-		<script src="/compass-shell-globals.js"></script>
+		<!-- The desktop shell serves this before the bundle reads its boot mode; browsers get a 404. -->
+		<script vite-ignore src="/compass-shell-globals.js"></script>
 	</head>
 	<body>
 		<div id="root"></div>

@@ -181,11 +181,14 @@ func windowOptions(name, title string) application.WebviewWindowOptions {
 	}
 }
 
+// shellGlobalsPath is loaded by apps/ui/index.html ahead of the module bundle.
+const shellGlobalsPath = "/compass-shell-globals.js"
+
 // shellGlobalsMiddleware serves startup globals from the service's current state.
 func shellGlobalsMiddleware(svc *bridgeService) application.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/compass-shell-globals.js" || r.Method != http.MethodGet {
+			if r.URL.Path != shellGlobalsPath || r.Method != http.MethodGet {
 				next.ServeHTTP(w, r)
 				return
 			}
