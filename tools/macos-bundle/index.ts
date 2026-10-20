@@ -102,6 +102,7 @@ export function renderInfoPlist(opts: InfoPlistOptions): string {
 
 /** The startup-globals script the desktop shell serves; see go/cmd/compass-app. */
 export const SHELL_GLOBALS_SRC = "/compass-shell-globals.js";
+const SHELL_GLOBALS_SRC_ATTR = /\ssrc="\/compass-shell-globals\.js"/;
 
 /**
  * Returns why index.html would boot without shell globals, or null. The script
@@ -110,7 +111,7 @@ export const SHELL_GLOBALS_SRC = "/compass-shell-globals.js";
 export function checkShellGlobalsScript(html: string): string | null {
 	const tag = html
 		.match(/<script\b[^>]*>/gi)
-		?.find((t) => new RegExp(`\\ssrc="${SHELL_GLOBALS_SRC}"`).test(t));
+		?.find((t) => SHELL_GLOBALS_SRC_ATTR.test(t));
 	if (!tag) return `no <script src="${SHELL_GLOBALS_SRC}">`;
 	if (/\s(async|defer|type)\b/i.test(tag))
 		return `${tag} is not a classic sync script`;
