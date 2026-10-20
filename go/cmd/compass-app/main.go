@@ -32,7 +32,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/RigelBuild/compass/go/internal/appconfig"
 	"github.com/RigelBuild/compass/go/internal/bridge"
@@ -142,16 +141,11 @@ func run(ctx context.Context) error {
 		}
 	})
 
-	// Wails runs each menu click on its own goroutine; a held Cmd+N would
-	// otherwise race two windows onto the same free name.
-	var newWindowMu sync.Mutex
-	actions := appMenuActions{
-		newWindow: func() {
-			newWindowMu.Lock()
-			defer newWindowMu.Unlock()
-			newAppWindow(app, svc, nextWindowName(app), "Compass")
-		},
-	}
+	openNext := serialOpener(
+		func(n string) bool { _, ok := app.Window.GetByName(n); return ok },
+		func(name string) { newAppWindow(app, svc, name, "Compass") },
+	)
+	actions := appMenuActions{newWindow: openNext}
 	if quitter != nil {
 		quitter.quit = app.Quit
 		// stopStackAndQuit derives its bounded teardown deadline from the run root.
@@ -219,15 +213,16 @@ func newAppWindow(app *application.App, svc *bridgeService, name, title string) 
 	})
 }
 
-// nextWindowName returns the first window name that has no live window on app.
-// The default window is defaultWindowName ("bridge"); additional windows are
-// suffixed bridge-2, bridge-3, … The live-window check goes through the app, so
-// the pure name selection is factored into firstFreeName for unit testing.
-func nextWindowName(app *application.App) string {
-	return firstFreeName(defaultWindowName, func(n string) bool {
-		_, ok := app.Window.GetByName(n)
-		return ok
-	})
+// serialOpener returns a func that opens the next free bridge, bridge-2, …
+// window. Wails runs each menu click on its own goroutine, so naming and
+// creation share one lock; create must register the name before it returns.
+func serialOpener(taken func(string) bool, create func(name string)) func() {
+	sem := make(chan struct{}, 1)
+	return func() {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+		create(firstFreeName(defaultWindowName, taken))
+	}
 }
 
 // firstFreeName returns base if exists(base) is false, else the first

@@ -3,7 +3,7 @@
 package main
 
 // Compass multi-window M2 name-suffix allocator gate. firstFreeName is the pure
-// seam behind nextWindowName: it returns the first name not reported taken by
+// seam behind serialOpener: it returns the first name not reported taken by
 // the exists predicate, starting at the base then base-2, base-3, … No test
 // constructs a real *application.App or opens a window (no display in CI).
 

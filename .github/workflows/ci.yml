@@ -1978,14 +1978,15 @@ jobs:
           #     `podman machine init` can fit inside.
           #   - ShellGlobalsMiddleware*: the startup-globals script the UI reads
           #     before its bundle picks a boot mode.
-          #   - BuildAppMenu: the Edit > Paste item macOS needs for Cmd+V.
+          #   - BuildAppMenu: the editing keys macOS needs for Cmd+C/V/X/A.
+          #   - SerialOpener*: New Window never gives two windows one name.
           # `-run` alone exits 0 when it matches nothing (a rename → false
           # green), so require each group's own PASS line — a rename or skip
           # reds. The filter is explicit rather than the whole compass-app
           # package because that package also holds GUI E2E tests that need a
           # display; the machine and preflight tests live in internal/embedded.
           CGO_ENABLED=1 go -C go test -trimpath \
-            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout|TestShellGlobalsMiddleware|TestBuildAppMenu' \
+            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout|TestShellGlobalsMiddleware|TestBuildAppMenu|TestSerialOpener' \
             -count=1 -v \
             ./cmd/compass-app/ ./internal/embedded/ | tee /tmp/darwin-unit.log
           for t in TestDistDirForExecutable \
@@ -1998,7 +1999,8 @@ jobs:
                    TestClassifyPreflightUnwiredDarwinMachineIsFatal \
                    TestBringUpTimeoutBudgetsDarwinColdProvisioning \
                    TestShellGlobalsMiddlewareUsesLiveState \
-                   TestBuildAppMenu; do
+                   TestBuildAppMenu \
+                   TestSerialOpenerNamesConcurrentOpensUniquely; do
             grep -q "^--- PASS: $t" /tmp/darwin-unit.log || {
               echo "::error::darwin: $t did not run+pass (renamed or skipped?)"
               exit 1

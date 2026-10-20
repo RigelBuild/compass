@@ -305,8 +305,9 @@ chooser. In the first window, choose **Connect to a server**.
 Check native text editing in the server-URL field. Type `https://example.test`,
 press Backspace rapidly several times, and confirm the characters delete in
 order. Select the field (Ctrl+A), cut it (Ctrl+X), and paste it back (Ctrl+V);
-confirm the text returns once. Then copy it (Ctrl+C) and paste at the end;
-confirm it appears twice. The Linux menu bar has no Edit menu, so these keys
+confirm the text returns once. Then select only `example` with the mouse, copy
+it (Ctrl+C), click at the end, and paste (Ctrl+V); confirm the field ends in
+`example`, not a second full URL. The Linux menu bar has no Edit menu, so these keys
 go straight to WebKitGTK. On macOS, repeat the whole check, rapid Backspace
 included, with Cmd+A, Cmd+X, Cmd+C, and Cmd+V; those reach the webview only through
 the **Edit** menu, which also binds Backspace to Delete.
@@ -487,8 +488,8 @@ rm -rf "$CCONFIG" "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
       the invalid-URL checks and connect in the first window, then confirm the
       second window leaves the chooser and reaches the board (§Part (b), 3)
 - [ ] in the server-URL field, rapid Backspace deletes in order, Ctrl+A, Ctrl+X,
-      Ctrl+V round-trips the text once, and Ctrl+C then Ctrl+V doubles it (Cmd on
-      macOS) (§Part (b), 3)
+      Ctrl+V round-trips the text once, and copying just `example` then pasting
+      appends only `example` (Cmd on macOS) (§Part (b), 3)
 - [ ] before the successful connection, `http://x` and `https://h/p` each show a
       validation message and leave `app.toml` absent (§Part (b), 3)
 - [ ] a valid connection writes client `app.toml` with the normalized origin and
