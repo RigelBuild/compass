@@ -463,6 +463,10 @@ const (
 // despawn; wakeOnce maps it to benign no-placement rather than returning it.
 var errWakeNoPlacement = errors.New("agent wake: no placement for prior-sessioned agent")
 
+// errWakeNoTranscript marks a prior session that ended before its first turn:
+// there is no body to resume, so wakeOnce fresh-starts the placed container.
+var errWakeNoTranscript = errors.New("agent wake: prior session has no transcript")
+
 // wakeOnce returns a logged outcome rather than an error; faults become failed.
 func (l *lifecycleService) wakeOnce(ctx context.Context, agent store.AccountID) string {
 	sessionID, ok, err := l.store.LatestSessionForAccount(ctx, agent)
@@ -478,6 +482,8 @@ func (l *lifecycleService) wakeOnce(ctx context.Context, agent store.AccountID) 
 			// A prior session without placement is a routine no-op: despawn removes
 			// placement but keeps session rows. Do not emit an error-rate alert.
 			return wakeOutcomeNoPlacement
+		case errors.Is(err, errWakeNoTranscript):
+			return l.freshStart(ctx, agent)
 		default:
 			slog.ErrorContext(ctx, "agent wake: resume failed", "agent_account_id", agent, "session_id", sessionID, "error", err)
 			return wakeOutcomeFailed
@@ -500,6 +506,9 @@ func (l *lifecycleService) resumeSession(ctx context.Context, agent store.Accoun
 		return fmt.Errorf("resolving placement: %w", err)
 	}
 	body, err := l.hub.ReconstructSessionBody(ctx, sessionID)
+	if connect.CodeOf(err) == connect.CodeNotFound {
+		return errWakeNoTranscript
+	}
 	if err != nil {
 		return fmt.Errorf("reconstructing session body: %w", err)
 	}
