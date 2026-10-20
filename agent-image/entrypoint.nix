@@ -12,8 +12,8 @@ let
   # Per-system pins: the FOD covers the platform-specific optionalDependency,
   # and the addon set differs by arch (x64 two, arm64 one).
   outputHashBySystem = {
-    "x86_64-linux" = "sha256-5xK8aKaDAXVu+otqOF3CIvqNuor8KPk3uJDW1m3tFB0=";
-    "aarch64-linux" = "sha256-kMha5mgsD9+gZk8F3YgmMUGjVORxPCS229if7Kc5ys8=";
+    "x86_64-linux" = "sha256-/tpKBNdq5lNDkhCcvLW5hf9QpGmL6Z3CJ3LLxEY8Ch8=";
+    "aarch64-linux" = "sha256-lxzCW2siMCyoVyiXiosebtp3n2wRRXLz5i9VNdyX4bk=";
   };
   nativeBySystem = {
     "x86_64-linux" = {
