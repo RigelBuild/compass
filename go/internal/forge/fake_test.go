@@ -206,12 +206,17 @@ func TestFakeScriptedUnsupported(t *testing.T) {
 
 func TestFakeNewProviderMethods(t *testing.T) {
 	f := NewFakeProvider("test-forge")
+	f.DefaultBranchResult = "trunk"
 	f.UpdatePRResult = PullRequest{Number: 9, Title: "updated"}
 	f.FindPRResult = PullRequest{Number: 10, HeadRef: "feature"}
 	f.FindPRFound = true
 	f.FindWriteResult = WrittenRef{Number: 11, Key: "12"}
 	f.FindWriteFound = true
 
+	branch, err := f.DefaultBranch(t.Context(), "org/repo")
+	if err != nil || branch != "trunk" {
+		t.Fatalf("DefaultBranch = (%q, %v), want (trunk, nil)", branch, err)
+	}
 	updated, err := f.UpdatePullRequest(t.Context(), "org/repo", 9, UpdatePR{Title: "updated"})
 	if err != nil || updated.Number != 9 {
 		t.Fatalf("UpdatePullRequest = (%+v, %v)", updated, err)
@@ -223,6 +228,10 @@ func TestFakeNewProviderMethods(t *testing.T) {
 	foundRef, found, err := f.FindByWriteMarker(t.Context(), "org/repo", WriteKindReview, 10, "intent", time.Time{})
 	if err != nil || !found || foundRef.Key != "12" {
 		t.Fatalf("FindByWriteMarker = (%+v, %v, %v)", foundRef, found, err)
+	}
+	calls := f.Calls()
+	if calls[0].Method != "DefaultBranch" || calls[0].Repo != "org/repo" {
+		t.Fatalf("DefaultBranch call = %+v", calls[0])
 	}
 }
 

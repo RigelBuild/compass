@@ -761,6 +761,9 @@ func TestLinearUnsupportedOps(t *testing.T) {
 	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
 	ctx := context.Background()
 
+	if _, err := l.DefaultBranch(ctx, "SEA"); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("DefaultBranch err = %v, want ErrUnsupported", err)
+	}
 	if _, err := l.CreatePullRequest(ctx, "SEA", CreatePR{}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("CreatePullRequest err = %v, want ErrUnsupported", err)
 	}

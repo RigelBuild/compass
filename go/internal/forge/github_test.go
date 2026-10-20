@@ -979,6 +979,24 @@ func TestGitHubListCommentsSinceWalksPages(t *testing.T) {
 	}
 }
 
+func TestDefaultBranchRequestAndDecode(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: http.StatusOK, body: `{"default_branch":"trunk"}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.DefaultBranch(context.Background(), "org/repo")
+	if err != nil {
+		t.Fatalf("DefaultBranch: %v", err)
+	}
+	if got != "trunk" {
+		t.Fatalf("DefaultBranch = %q, want trunk", got)
+	}
+	if rt.calls != 1 || rt.requests[0].Method != http.MethodGet || rt.requests[0].URL.Path != "/repos/org/repo" {
+		t.Fatalf("request = %+v, calls=%d; want one GET /repos/org/repo", rt.requests, rt.calls)
+	}
+}
+
 func TestCreatePullRequestRequestAndDecode(t *testing.T) {
 	const respBody = `{
 		"number": 13,

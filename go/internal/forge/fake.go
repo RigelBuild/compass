@@ -56,6 +56,8 @@ type FakeProvider struct {
 	GetIssueResult Issue
 	// ListIssuesResult is returned by ListIssues when no error is scripted.
 	ListIssuesResult []Issue
+	// DefaultBranchResult is returned by DefaultBranch when no error is scripted.
+	DefaultBranchResult string
 	// CreatePRResult is returned by CreatePullRequest when no error is scripted.
 	CreatePRResult PullRequest
 	// UpdatePRResult is returned by UpdatePullRequest when no error is scripted.
@@ -179,6 +181,14 @@ func (f *FakeProvider) ListIssues(_ context.Context, repo string, filter IssueFi
 		return nil, err
 	}
 	return f.ListIssuesResult, nil
+}
+
+// DefaultBranch records the lookup and returns its scripted result.
+func (f *FakeProvider) DefaultBranch(_ context.Context, repo string) (string, error) {
+	if err := f.record(Call{Method: "DefaultBranch", Repo: repo}); err != nil {
+		return "", err
+	}
+	return f.DefaultBranchResult, nil
 }
 
 // CreatePullRequest records the call and returns the scripted result or error.

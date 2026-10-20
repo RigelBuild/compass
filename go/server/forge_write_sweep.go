@@ -35,16 +35,18 @@ const (
 
 // writeTarget names one create made for an agent.
 type writeTarget struct {
-	rf        resolvedForge
-	id        callerIdentity
-	caller    store.AccountID
-	session   string
-	repo      string
-	kind      forge.WriteKind
-	parent    uint64
-	headRef   string
-	baseRef   string
-	issueLink *store.ForgeCoord
+	rf      resolvedForge
+	id      callerIdentity
+	caller  store.AccountID
+	session string
+	repo    string
+	kind    forge.WriteKind
+	parent  uint64
+	headRef string
+	baseRef string
+	// defaultBase marks a base resolved from the repo default, which may move between same-key retries.
+	defaultBase bool
+	issueLink   *store.ForgeCoord
 }
 
 // beginWrite records the create's intent before any forge call. A non-nil ref
@@ -124,7 +126,7 @@ func sameWriteTarget(in store.WriteIntent, t writeTarget) bool {
 		return false
 	}
 	if t.kind == forge.WriteKindPullRequest &&
-		((t.baseRef != "" && in.BaseRef != "" && in.BaseRef != t.baseRef) ||
+		((!t.defaultBase && t.baseRef != "" && in.BaseRef != "" && in.BaseRef != t.baseRef) ||
 			(t.issueLink != nil && in.IssueLink != nil && !sameForgeCoord(in.IssueLink, t.issueLink))) {
 		return false
 	}
@@ -211,10 +213,11 @@ func (s *forgeService) findWrite(ctx context.Context, in store.WriteIntent) (for
 		if err != nil || !found {
 			return forge.WrittenRef{}, nil, false, err
 		}
-		// A reused head can carry an older PR, so adopt only one created after the intent.
-		// An empty base asked for the default branch, which is not resolved here, so only an explicit base is compared.
-		if (in.BaseRef != "" && pr.BaseRef != in.BaseRef) ||
-			pr.CreatedAt.IsZero() || pr.CreatedAt.Before(in.CreatedAt.Add(-writePRClockSkew)) {
+		// A reused head is ambiguous without the intent's base, so recover only a newer PR with that base.
+		baseMatches := in.BaseRef != "" && pr.BaseRef == in.BaseRef
+		createdAfterIntent := !pr.CreatedAt.IsZero() &&
+			!pr.CreatedAt.Before(in.CreatedAt.Add(-writePRClockSkew))
+		if !baseMatches || !createdAfterIntent {
 			return forge.WrittenRef{}, nil, false, nil
 		}
 		return forge.WrittenRef{Number: pr.Number, URL: pr.URL}, &pr, true, nil

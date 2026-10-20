@@ -404,6 +404,17 @@ func (g *GitHub) CommentOnIssue(ctx context.Context, repo string, number uint64,
 	return out.toComment(), nil
 }
 
+// DefaultBranch returns the repository's configured default branch.
+func (g *GitHub) DefaultBranch(ctx context.Context, repo string) (string, error) {
+	var out struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if _, err := g.getJSON(ctx, g.apiBase()+"/repos/"+repo, &out); err != nil {
+		return "", fmt.Errorf("forge: github get default branch %q: %w", repo, err)
+	}
+	return out.DefaultBranch, nil
+}
+
 // CreatePullRequest opens a pull request on repo. in.Body is PRE-stamped.
 func (g *GitHub) CreatePullRequest(ctx context.Context, repo string, in CreatePR) (PullRequest, error) {
 	body := struct {
