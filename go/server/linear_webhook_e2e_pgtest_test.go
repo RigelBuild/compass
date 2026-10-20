@@ -213,6 +213,7 @@ type linE2EWire struct {
 	supervisor store.Account
 	manager    store.Account
 	routingCh  store.ChannelID
+	commsBus   *events.Bus[*compassv1.SubscribeCommsResponse]
 }
 
 func newLinE2EWire(t *testing.T) *linE2EWire {
@@ -290,7 +291,7 @@ func newLinE2EWire(t *testing.T) *linE2EWire {
 	_, handler := NewLinearWebhookHandler(func(context.Context) ([]byte, error) { return secret, nil }, nil, d, nil)
 	return &linE2EWire{
 		st: st, cm: cm, linear: linear, handler: handler, resolver: resolver, secret: secret,
-		adminID: admin.ID, bridgeID: bridge.ID, supervisor: supervisor, manager: manager, routingCh: routingCh,
+		adminID: admin.ID, bridgeID: bridge.ID, supervisor: supervisor, manager: manager, routingCh: routingCh, commsBus: commsBus,
 	}
 }
 
@@ -449,6 +450,7 @@ func (w *linE2EWire) scenarioCreatedRecordedOwner(t *testing.T) {
 	if msg.TopicID != row.TopicID {
 		t.Errorf("post topic = %s, want the associated topic %s", msg.TopicID, row.TopicID)
 	}
+	w.assertTopicAnnouncedFirst(t, row.TopicID)
 
 	var thoughts, updates []linE2ECall
 	for _, c := range w.linear.callsFor(sessionID) {
@@ -465,6 +467,50 @@ func (w *linE2EWire) scenarioCreatedRecordedOwner(t *testing.T) {
 	wantURL := sessionLinkFor(linE2EPublicURL, sessionID)
 	if len(updates) != 1 || updates[0].Status != http.StatusOK || len(updates[0].ExternalURLs) != 1 || updates[0].ExternalURLs[0].URL != wantURL {
 		t.Errorf("session updates = %+v, want one accepted update with external URL %s", updates, wantURL)
+	}
+}
+
+// assertTopicAnnouncedFirst checks the bus carries the topic's TopicUpserted
+// and then a MessagePosted in it, so a live topic index never misses the topic.
+// The post may still be publishing after its commit, so it also reads Live.
+func (w *linE2EWire) assertTopicAnnouncedFirst(t *testing.T, topicID string) {
+	t.Helper()
+	sub, err := w.commsBus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("commsBus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+	announced := false
+	check := func(p *compassv1.SubscribeCommsResponse) bool {
+		if p.GetTopicUpserted().GetTopic().GetId() == topicID {
+			announced = true
+		}
+		if p.GetMessagePosted().GetMessage().GetTopicId() != topicID {
+			return false
+		}
+		if !announced {
+			t.Fatalf("MessagePosted in topic %s arrived before its TopicUpserted", topicID)
+		}
+		return true
+	}
+	for _, ev := range sub.Replay {
+		if check(ev.Payload) {
+			return
+		}
+	}
+	deadline := timeAfter()
+	for {
+		select {
+		case ev, ok := <-sub.Live:
+			if !ok {
+				t.Fatal("comms bus closed before the topic's MessagePosted")
+			}
+			if check(ev.Payload) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("no MessagePosted for topic %s on the comms bus (announced=%v)", topicID, announced)
+		}
 	}
 }
 

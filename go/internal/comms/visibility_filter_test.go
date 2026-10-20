@@ -359,6 +359,51 @@ func TestSubscribeCommsTopicCreateUpsertsBeforePost(t *testing.T) {
 	}
 }
 
+// GetOrCreateTopic serves producers that post by id afterwards, so it must
+// announce a topic it creates or revives, and nothing on a plain get.
+func TestGetOrCreateTopicAnnouncesCreateAndRevive(t *testing.T) {
+	h := newStreamHarness(t)
+	ctx := context.Background()
+
+	member := mustUser(t, h.store, "member")
+	ch, err := h.store.CreateChannel(ctx, member.ID, store.NewChannel{Name: "room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	getOrCreate := func() string {
+		t.Helper()
+		id, err := h.svc.GetOrCreateTopic(ctx, string(ch.ID), testTopic, member.ID)
+		if err != nil {
+			t.Fatalf("GetOrCreateTopic: %v", err)
+		}
+		return id
+	}
+	topicID := getOrCreate()
+	if again := getOrCreate(); again != topicID {
+		t.Fatalf("repeat get = %q, want %q", again, topicID)
+	}
+	archived := true
+	if _, err := h.svc.UpdateTopic(WithActor(ctx, member.ID), &compassv1.UpdateTopicRequest{TopicId: topicID, Archived: &archived}); err != nil {
+		t.Fatalf("UpdateTopic(archive): %v", err)
+	}
+	if revived := getOrCreate(); revived != topicID {
+		t.Fatalf("revive get = %q, want the archived topic %q", revived, topicID)
+	}
+	getOrCreate()
+
+	canary := mkCanary(t, h, "canary")
+	var archivedStates []bool
+	for _, e := range drainReplayAsActor(t, h, member.ID, canary) {
+		if tu := e.GetTopicUpserted(); tu.GetTopic().GetId() == topicID {
+			archivedStates = append(archivedStates, tu.GetTopic().GetArchived())
+		}
+	}
+	// create, archive (UpdateTopic), revive; neither repeat get announces.
+	if want := []bool{false, true, false}; fmt.Sprint(archivedStates) != fmt.Sprint(want) {
+		t.Fatalf("TopicUpserted archived states = %v, want %v", archivedStates, want)
+	}
+}
+
 // TestSubscribeCommsChannelChangedSharedVisibleToNonMember pins that
 // ChannelChanged is gated on full channel visibility, NOT bare membership: a
 // SHARED-grouped channel's ChannelChanged reaches a non-member viewer (at

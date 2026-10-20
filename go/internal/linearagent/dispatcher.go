@@ -89,7 +89,7 @@ type DispatcherParams struct {
 	Poster CommsPoster
 	// Members is the channel-membership seam (*store.Store).
 	Members Memberships
-	// Topics is the topic get-or-create seam.
+	// Topics is the topic get-or-create seam (*comms.Comms, which announces new topics).
 	Topics Topics
 	// Associations is the T3 store association seam (*store.Store).
 	Associations Associations

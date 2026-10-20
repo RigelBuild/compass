@@ -621,6 +621,19 @@ func (c *Comms) UpdateTopic(
 	return &compassv1.UpdateTopicResponse{Topic: topicToWire(topic)}, nil
 }
 
+// GetOrCreateTopic is the in-process get-or-create for producers that post by
+// topic id afterwards; it announces a created or revived topic like PostMessage.
+func (c *Comms) GetOrCreateTopic(ctx context.Context, channelID, name string, author store.AccountID) (string, error) {
+	id, topic, err := c.store.GetOrCreateTopic(ctx, channelID, name, author)
+	if err != nil {
+		return "", err
+	}
+	if topic != nil {
+		c.publishTopicUpserted(ctx, *topic)
+	}
+	return id, nil
+}
+
 // ---- manager-comms-substrate RPCs (RIG-1740 T1) ----
 // GetRoster, SetChannelPolicy, and UpdatePinnedBoard land the T1 proto contract
 // proto-first (real bodies are T2/T4/T6); until then they return CodeUnimplemented
