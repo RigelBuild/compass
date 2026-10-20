@@ -1676,7 +1676,7 @@ jobs:
           rc=0
           WAYLAND_DISPLAY="$wl_sock" GDK_BACKEND=wayland \
             dbus-run-session --config-file="$dbus_conf" -- \
-            go test -tags 'unix gtk4' -run 'E2E' -count=1 -v -timeout 10m \
+            go test -tags 'unix gtk4' -run 'E2E|TestBuildAppMenu' -count=1 -v -timeout 10m \
             ./cmd/compass-app/ >/tmp/gtk4-e2e.log 2>&1 || rc=$?
           cp /tmp/gtk4-e2e.log /tmp/gtk4-e2e-wayland.log
           kill "$weston_pid" 2>/dev/null || true
@@ -1686,6 +1686,11 @@ jobs:
             wl_pass=1
             echo "--- weston compositor log (bring-up diagnostics) ---"
             cat /tmp/weston.log 2>/dev/null || echo "(no weston log)"
+          fi
+          # The menu composition pins Linux-only choices (no Edit menu, one Close).
+          if ! grep -q -- '--- PASS: TestBuildAppMenu' /tmp/gtk4-e2e-wayland.log; then
+            echo "::error::gtk4 (wayland): TestBuildAppMenu did not run+pass"
+            wl_pass=1
           fi
 
           # --- SECONDARY: X11 regression lane (GTK4 retains the X11 backend).
@@ -1973,13 +1978,14 @@ jobs:
           #     `podman machine init` can fit inside.
           #   - ShellGlobalsMiddleware*: the startup-globals script the UI reads
           #     before its bundle picks a boot mode.
+          #   - BuildAppMenu: the Edit > Paste item macOS needs for Cmd+V.
           # `-run` alone exits 0 when it matches nothing (a rename → false
           # green), so require each group's own PASS line — a rename or skip
           # reds. The filter is explicit rather than the whole compass-app
           # package because that package also holds GUI E2E tests that need a
           # display; the machine and preflight tests live in internal/embedded.
           CGO_ENABLED=1 go -C go test -trimpath \
-            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout|TestShellGlobalsMiddleware' \
+            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout|TestShellGlobalsMiddleware|TestBuildAppMenu' \
             -count=1 -v \
             ./cmd/compass-app/ ./internal/embedded/ | tee /tmp/darwin-unit.log
           for t in TestDistDirForExecutable \
@@ -1991,7 +1997,8 @@ jobs:
                    TestRealPreflightDepsWiresDarwinMachineAdapter \
                    TestClassifyPreflightUnwiredDarwinMachineIsFatal \
                    TestBringUpTimeoutBudgetsDarwinColdProvisioning \
-                   TestShellGlobalsMiddlewareUsesLiveState; do
+                   TestShellGlobalsMiddlewareUsesLiveState \
+                   TestBuildAppMenu; do
             grep -q "^--- PASS: $t" /tmp/darwin-unit.log || {
               echo "::error::darwin: $t did not run+pass (renamed or skipped?)"
               exit 1

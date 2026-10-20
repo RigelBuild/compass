@@ -30,8 +30,13 @@ func submenuLabels(menu *application.Menu) map[string][]string {
 func TestBuildAppMenu(t *testing.T) {
 	// Role constructors read the app name from the Wails global. New returns the
 	// existing app when the GTK e2e harness already created one.
-	quitLabel := "Quit " + application.New(application.Options{Name: "Compass"}).Config().Name
+	name := application.New(application.Options{Name: "Compass"}).Config().Name
 	darwin := runtime.GOOS == "darwin"
+	// Wails names the app in the Quit label, and titles the app menu, only on darwin.
+	quitMenu, quitLabel := "File", "Quit"
+	if darwin {
+		quitMenu, quitLabel = name, "Quit "+name
+	}
 	for _, embedded := range []bool{false, true} {
 		actions := appMenuActions{newWindow: func() {}}
 		if embedded {
@@ -43,17 +48,16 @@ func TestBuildAppMenu(t *testing.T) {
 			t.Errorf("embedded=%v: File has stop-stack item = %v", embedded, got)
 		}
 		// Plain Quit must never be the stack teardown: it stays the standard role.
-		quitMenu := "File"
-		if darwin {
-			quitMenu = "Compass"
-		}
 		if !slices.Contains(menus[quitMenu], quitLabel) {
-			t.Errorf("embedded=%v: %s menu lacks the standard Quit: %v", embedded, quitMenu, menus[quitMenu])
+			t.Errorf("embedded=%v: %s menu lacks %q: %v", embedded, quitMenu, quitLabel, menus[quitMenu])
 		}
-		// darwin delivers Cmd+V to the webview only through Edit; Linux must not
-		// register Edit accelerators over WebKitGTK's own handling.
-		if _, hasEdit := menus["Edit"]; hasEdit != darwin {
-			t.Errorf("embedded=%v: Edit menu present = %v, want %v", embedded, hasEdit, darwin)
+		// darwin delivers Cmd+V to the webview only through Edit > Paste; Linux
+		// must not register Edit accelerators over WebKitGTK's own handling.
+		if got := slices.Contains(menus["Edit"], "Paste"); got != darwin {
+			t.Errorf("embedded=%v: Edit > Paste present = %v, want %v", embedded, got, darwin)
+		}
+		if _, hasEdit := menus["Edit"]; !darwin && hasEdit {
+			t.Errorf("embedded=%v: Edit menu present off darwin", embedded)
 		}
 		closeCount := 0
 		for _, items := range menus {

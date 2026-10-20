@@ -306,7 +306,8 @@ Check native text editing in the server-URL field. Type `https://example.test`,
 press Backspace rapidly several times, and confirm the characters delete in
 order. Select the field (Ctrl+A), cut it (Ctrl+X), and paste it back (Ctrl+V);
 confirm the text returns once. The Linux menu bar has no Edit menu, so these keys
-go straight to WebKitGTK.
+go straight to WebKitGTK. On macOS, repeat the round-trip with Cmd+A, Cmd+X, and
+Cmd+V; those reach the webview only through the **Edit** menu.
 
 Test each rejected URL in the first window's form. Enter `http://x` and a
 temporary non-secret value in the token field, then click **Connect**. Confirm
@@ -484,7 +485,7 @@ rm -rf "$CCONFIG" "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
       the invalid-URL checks and connect in the first window, then confirm the
       second window leaves the chooser and reaches the board (§Part (b), 3)
 - [ ] in the server-URL field, rapid Backspace deletes in order and Ctrl+A,
-      Ctrl+X, Ctrl+V round-trips the text once (§Part (b), 3)
+      Ctrl+X, Ctrl+V (Cmd on macOS) round-trips the text once (§Part (b), 3)
 - [ ] before the successful connection, `http://x` and `https://h/p` each show a
       validation message and leave `app.toml` absent (§Part (b), 3)
 - [ ] a valid connection writes client `app.toml` with the normalized origin and
