@@ -15,5 +15,5 @@ name the working copy explicitly and use a positive control with the same filter
 
 Treat tool arguments as executable input: pass only the intended value, keep
 untrusted content out of shell syntax, and do not expose secrets in commands or
-output. For version-control operations, follow the `jj` skill and DL-142; do not
-invent an alternate workflow.
+output. For version-control operations, use the `vcs_*` tools as the `jj` skill
+describes (DL-558); do not invent an alternate workflow.

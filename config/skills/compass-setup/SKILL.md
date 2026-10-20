@@ -46,6 +46,18 @@ prerequisites so every downstream agent lands in a working shell.
 - Confirm each shell activates cleanly before you rely on it.
 - Do this per repo — a multi-service workspace has one shell per project, not one
   shared shell.
+- Give each repo a basic pre-push hook if it has none. `vcs_submit` runs Git's
+  installed `pre-push` hook before every push, so the hook is the cheap local
+  gate and CI stays the main one. A runner config file alone (`lefthook.yml`,
+  `.pre-commit-config.yaml`, a devenv `git-hooks` block) does not prove the hook
+  runs: check with `git hook list pre-push` in a fresh shell on the repo, which
+  must name the hook. If there is none, add a `pre-push` hook that runs only the
+  repo's formatter check and linter — no test suites — and must finish well
+  under 120 s. Ship it in the repo, never only in `.git/hooks`: through the
+  repo's hook runner, or as a committed script that the repo's dev shell
+  installs on entry (for example by setting `core.hooksPath`). Ship it as a
+  reviewed PR like any other change, then check `git hook list pre-push` again
+  in a fresh clone.
 
 ## Step 3 — Import the operator's existing agentic config
 
