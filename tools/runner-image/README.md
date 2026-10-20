@@ -33,6 +33,11 @@ digest to `main-<n>-<sha12>`. Here `n` is the head commit's first-parent count.
 The job needs full git history and both closure path sets; it uses
 `REGISTRY_AUTH_FILE` for destination writes.
 
+Each lane's publish gate (`publish-gate.ts`) compares the head with the newest
+published `:git-<sha12>` ancestor, not with the push's `before` sha. So when
+merges land back to back, every head whose closure differs from a published
+image publishes its own, and no head tags an image older than its closure.
+
 ## Credentials
 
 `publish.ts` reads `DOCKER_CONFIG/config.json` for BuildKit and `skopeo` GHCR

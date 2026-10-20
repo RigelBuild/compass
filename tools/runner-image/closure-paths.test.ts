@@ -23,7 +23,11 @@ const workflow = Bun.YAML.parse(
 				"cancel-in-progress": boolean;
 				queue: string;
 			};
-			steps?: { uses?: string; with?: Record<string, unknown> }[];
+			steps?: {
+				uses?: string;
+				run?: string;
+				with?: Record<string, unknown>;
+			}[];
 		}
 	>;
 };
@@ -72,6 +76,23 @@ describe("P6 paired main tags", () => {
 				"server",
 			),
 		).toEqual([source]);
+	});
+	test("each lane gate diffs from the newest published image, not the before sha", () => {
+		for (const lane of ["runner", "server"]) {
+			const steps = workflow.jobs[`publish-${lane}-gate`]?.steps ?? [];
+			const gate = steps.find((step) =>
+				step.run?.includes("tools/runner-image/publish-gate.ts"),
+			);
+			expect(gate?.run).toContain(`--lane ${lane}`);
+			expect(gate?.run).not.toContain("BEFORE_SHA");
+			expect(
+				steps.some(
+					(step) =>
+						step.uses?.startsWith("actions/checkout@") &&
+						step.with?.["fetch-depth"] === 0,
+				),
+			).toBe(true);
+		}
 	});
 	test("tag-main-images waits for both indexes and checks out full history", () => {
 		const job = workflow.jobs["tag-main-images"];
@@ -155,7 +176,7 @@ describe("P7 multi-arch release publishers", () => {
 			);
 			for (const stage of ["image", "index"]) {
 				expect(job?.if).toContain(
-					`contains(fromJSON('[\"success\", \"skipped\"]'), needs.publish-${lane}-${stage}.result)`,
+					`contains(fromJSON('["success", "skipped"]'), needs.publish-${lane}-${stage}.result)`,
 				);
 			}
 		}
