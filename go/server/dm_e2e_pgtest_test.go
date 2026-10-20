@@ -40,6 +40,7 @@ type dmE2EWire struct {
 	lc       *lifecycleService
 	runner   *recordingRunner
 	adminID  store.AccountID // the human owner of every seeded/spawned agent
+	commsBus *events.Bus[*compassv1.SubscribeCommsResponse]
 }
 
 // Builds the store, hub, fake Runner door, comms service, and delivery consumer.
@@ -112,6 +113,7 @@ func newDME2EWire(t *testing.T) *dmE2EWire {
 		lc:       lc,
 		runner:   runner,
 		adminID:  admin.ID,
+		commsBus: commsBus,
 	}
 }
 

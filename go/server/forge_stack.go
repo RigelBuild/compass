@@ -19,9 +19,8 @@ import (
 )
 
 const (
-	foreignRebaseMessage = "forge: foreign PR rebase not yet supported"
-	noIssueMessage       = "forge: a new pull request needs issue_ref; find an issue that fits with forge_list_issues, or create one with forge_create_issue, then submit again"
-	mirrorOffMessage     = "forge: the Server git mirror is not configured"
+	noIssueMessage   = "forge: a new pull request needs issue_ref; find an issue that fits with forge_list_issues, or create one with forge_create_issue, then submit again"
+	mirrorOffMessage = "forge: the Server git mirror is not configured"
 )
 
 // stackRun carries one submit_stack call's resolved context across its entries.
@@ -34,6 +33,14 @@ type stackRun struct {
 	repo    string
 	key     string
 	bundled bool
+	// pushed holds heads the foreign rebase already pushed, so ensure does not push them twice.
+	pushed map[string]bool
+}
+
+// foreignBase is a same-owner agent's open PR that the caller's line sits on.
+type foreignBase struct {
+	pr    forge.PullRequest
+	agent store.AccountID
 }
 
 // submitStack pushes the agent's bundle and writes one PR per entry, bottom to
@@ -63,12 +70,16 @@ func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, 
 	if fe := s.applyStackBundle(ctx, req.GetRepo(), req.GetBundle(), entries); fe != nil {
 		return forgeErrorResult(fe)
 	}
-	r := &stackRun{s: s, rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), key: call.GetClientRequestId(), bundled: len(req.GetBundle()) > 0}
+	r := &stackRun{s: s, rf: rf, id: id, caller: caller, session: sessionID, repo: req.GetRepo(), key: call.GetClientRequestId(), bundled: len(req.GetBundle()) > 0, pushed: map[string]bool{}}
 
 	out := make([]*compassv1internal.StackEntryResult, len(entries))
 	prs := make([]forge.PullRequest, len(entries))
 	failed := -1
-	if fe := r.checkForeignBase(ctx, entries[0].GetBaseRef()); fe != nil {
+	foreign, fe := r.checkForeignBase(ctx, entries[0].GetBaseRef())
+	if fe == nil && foreign != nil {
+		fe = r.rebaseForeign(ctx, foreign, entries)
+	}
+	if fe != nil {
 		out[0], failed = failedEntry(entries[0].GetHeadRef(), fe), 0
 	}
 	for i := 0; failed < 0 && i < len(entries); i++ {
@@ -85,18 +96,14 @@ func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, 
 	}
 	// The restamp runs only when every entry has its PR, so each block names the whole line.
 	if failed < 0 {
-		lines := make([]forge.StackLine, 0, len(entries))
-		for i, e := range entries {
-			title := prs[i].Title
-			if e.GetReplaceText() {
-				title = e.GetTitle()
+		lines := stackLines(foreign, entries, prs)
+		if foreign != nil {
+			if fe := r.restampForeign(ctx, foreign.pr, lines); fe != nil {
+				out[0], failed = failedEntry(entries[0].GetHeadRef(), fe), 0
 			}
-			lines = append(lines, forge.StackLine{Number: prs[i].Number, Title: title})
 		}
-		if len(lines) < 2 {
-			lines = nil
-		}
-		for i, e := range entries {
+		for i := 0; failed < 0 && i < len(entries); i++ {
+			e := entries[i]
 			pr, fe := r.restamp(ctx, e, prs[i], stackBase(entries, i), lines, e.GetHeadRef() == req.GetReadyHeadRef())
 			if fe != nil {
 				out[i], failed = failedEntry(e.GetHeadRef(), fe), i
@@ -111,6 +118,25 @@ func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, 
 		}
 	}
 	return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_Stack{Stack: &compassv1internal.StackResult{Entries: out}}}
+}
+
+// stackLines lists the line bottom to top, a foreign base first; a lone PR gets no block.
+func stackLines(foreign *foreignBase, entries []*compassv1internal.StackEntry, prs []forge.PullRequest) []forge.StackLine {
+	lines := make([]forge.StackLine, 0, len(entries)+1)
+	if foreign != nil {
+		lines = append(lines, forge.StackLine{Number: foreign.pr.Number, Title: foreign.pr.Title})
+	}
+	for i, e := range entries {
+		title := prs[i].Title
+		if e.GetReplaceText() {
+			title = e.GetTitle()
+		}
+		lines = append(lines, forge.StackLine{Number: prs[i].Number, Title: title})
+	}
+	if len(lines) < 2 {
+		return nil
+	}
+	return lines
 }
 
 // validateStack refuses a malformed line before any store or forge touch.
@@ -166,26 +192,101 @@ func (s *forgeService) applyStackBundle(ctx context.Context, repo string, bundle
 	return nil
 }
 
-// checkForeignBase refuses a base that is another agent's open PR.
-func (r *stackRun) checkForeignBase(ctx context.Context, base string) *compassv1internal.ForgeCallError {
+// checkForeignBase returns the base PR when another agent of the caller's owner
+// opened it, and refuses a base PR any other owner opened.
+func (r *stackRun) checkForeignBase(ctx context.Context, base string) (*foreignBase, *compassv1internal.ForgeCallError) {
 	pr, found, err := r.rf.author.FindPullRequestByHead(ctx, r.repo, base)
 	if err != nil {
-		return mapForgeError(err, r.op(0))
+		return nil, mapForgeError(err, r.op(0))
 	}
 	if !found || pr.State != store.TransitionStateOpen {
-		return nil
+		return nil, nil
 	}
 	row, ok, fe := r.s.prAuthor(ctx, r.rf, r.repo, pr.Number)
 	switch {
 	case fe != nil:
-		return fe
+		return nil, fe
 	case ok && row.AgentAccountID == r.caller:
-		return nil
+		return nil, nil
 	case ok && row.OwnerUserID == r.id.ownerID:
-		return forgeErr(connect.CodeFailedPrecondition, foreignRebaseMessage)
+		return &foreignBase{pr: pr, agent: row.AgentAccountID}, nil
 	default:
-		return forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: base %q is pull request #%d, which this agent's owner did not create", base, pr.Number))
+		return nil, forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: base %q is pull request #%d, which this agent's owner did not create", base, pr.Number))
 	}
+}
+
+// rebaseForeign replays the foreign bookmark and the caller's bookmarks onto the
+// foreign PR's current base in one replay, then pushes every moved ref with leases.
+// A conflict pushes nothing and asks the owning agent to resolve.
+func (r *stackRun) rebaseForeign(ctx context.Context, f *foreignBase, entries []*compassv1internal.StackEntry) *compassv1internal.ForgeCallError {
+	if r.s.mirror == nil {
+		return forgeErr(connect.CodeFailedPrecondition, mirrorOffMessage)
+	}
+	foreignRef := "refs/heads/" + f.pr.HeadRef
+	oldHead, err := r.s.mirror.SeedRef(ctx, r.repo, foreignRef)
+	if err != nil {
+		return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: read base %s: %v", f.pr.HeadRef, err))
+	}
+	line := []string{foreignRef}
+	for _, e := range entries {
+		ref := "refs/heads/" + e.GetHeadRef()
+		// Without a bundle the caller's bookmarks are already on the forge.
+		if !r.bundled {
+			if _, err := r.s.mirror.SeedRef(ctx, r.repo, ref); err != nil {
+				return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: read %s: %v", e.GetHeadRef(), err))
+			}
+		}
+		line = append(line, ref)
+	}
+	onto := "refs/remotes/origin/" + f.pr.BaseRef
+	heads, conflict, err := r.s.mirror.Rebase(ctx, r.repo, line, onto)
+	if err != nil {
+		return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: rebase base %s: %v", f.pr.HeadRef, err))
+	}
+	if conflict {
+		r.notify(ctx, f, fmt.Sprintf("Your bookmark %s (PR #%d) conflicts with %s, so I could not rebase my line onto it. Please rebase it onto %s, resolve the conflict, and push. I will submit again after that.", f.pr.HeadRef, f.pr.Number, f.pr.BaseRef, f.pr.BaseRef))
+		return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: base %s (pull request #%d) conflicts with %s; its agent was asked to resolve it", f.pr.HeadRef, f.pr.Number, f.pr.BaseRef))
+	}
+	if len(heads) == 0 {
+		return nil
+	}
+	if err := r.s.mirror.Push(ctx, r.repo, heads); err != nil {
+		return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: push rebased line on %s: %v; sync and submit again", f.pr.HeadRef, err))
+	}
+	for ref := range heads {
+		r.pushed[strings.TrimPrefix(ref, "refs/heads/")] = true
+	}
+	r.notify(ctx, f, fmt.Sprintf("I rebased your bookmark %s (PR #%d) onto %s so my line could build on it. Old head %s, new head %s. Sync before you push again.", f.pr.HeadRef, f.pr.Number, f.pr.BaseRef, oldHead, heads[foreignRef]))
+	return nil
+}
+
+// notify posts a notice from the caller in its DM with the owning agent. The
+// rebase already happened, so a failed notice is logged rather than failing the call.
+func (r *stackRun) notify(ctx context.Context, f *foreignBase, text string) {
+	if r.s.notifier == nil {
+		slog.WarnContext(ctx, "forge: no notifier for a foreign rebase notice", "pr", f.pr.Number)
+		return
+	}
+	if err := r.s.notifyAgent(ctx, r.caller, f.agent, r.key+":notice:"+f.pr.HeadRef, text); err != nil {
+		slog.WarnContext(ctx, "forge: foreign rebase notice failed", "pr", f.pr.Number, "error", err)
+	}
+}
+
+// restampForeign rewrites only the foreign PR's stack block; its owner's text,
+// title, base, and draft state stay as they are.
+func (r *stackRun) restampForeign(ctx context.Context, pr forge.PullRequest, lines []forge.StackLine) *compassv1internal.ForgeCallError {
+	body := forge.StampStack(pr.Body, forge.RenderStack(lines, pr.Number))
+	op := r.op(len(body))
+	if r.rf.bodyLimit > 0 && len(body) > r.rf.bodyLimit {
+		return mapForgeError(forge.ErrBodyTooLarge, op)
+	}
+	if body == pr.Body {
+		return nil
+	}
+	if _, err := r.rf.author.UpdatePullRequest(ctx, r.repo, pr.Number, forge.UpdatePR{Title: pr.Title, Body: body, BaseRef: pr.BaseRef}); err != nil {
+		return mapForgeError(err, op)
+	}
+	return nil
 }
 
 // ensure finds or creates the entry's PR and pushes its head. It writes no
@@ -223,7 +324,7 @@ func (r *stackRun) requireOwn(ctx context.Context, pr forge.PullRequest, head st
 	case row.AgentAccountID == r.caller:
 		return nil
 	case row.OwnerUserID == r.id.ownerID:
-		return forgeErr(connect.CodeFailedPrecondition, foreignRebaseMessage)
+		return forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: head %q is pull request #%d, which another agent created; only a foreign base is rebased", head, pr.Number))
 	default:
 		return forgeErr(connect.CodePermissionDenied, fmt.Sprintf("forge: head %q is pull request #%d, which this agent's owner did not create", head, pr.Number))
 	}
@@ -380,7 +481,7 @@ func (r *stackRun) body(text, block string) (string, error) {
 
 // push sends the bundle's commit for head, leased on the forge's current head.
 func (r *stackRun) push(ctx context.Context, head string) *compassv1internal.ForgeCallError {
-	if !r.bundled {
+	if !r.bundled || r.pushed[head] {
 		return nil
 	}
 	ref := "refs/heads/" + head
