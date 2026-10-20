@@ -654,6 +654,47 @@ describe("subagent board synchronization", () => {
 		]);
 	});
 
+	type Rows = {
+		tasks: { key: string; subagents: { id: string; status: string }[] }[];
+	};
+	const statuses = (h: { transport: { board: Rows } }, key: string) =>
+		h.transport.board.tasks
+			.find((t) => t.key === key)
+			?.subagents.map((s) => [s.id, s.status]);
+
+	test("a stale row whose id is reused on another task is still closed", async () => {
+		const h = attached("live-task", { seeded: false });
+		h.transport.addTask("old-task");
+		h.transport.addOpenRows("old-task", ["Reviewer"]);
+		h.emit("Reviewer", "started");
+		h.freshness.seed(1n, 1_000, h.transport.board);
+		await h.window();
+		expect(statuses(h, "old-task")).toEqual([["Reviewer", "aborted"]]);
+		expect(statuses(h, "live-task")).toEqual([["Reviewer", "started"]]);
+		void h.detach();
+	});
+
+	test("a stale row whose id is reused on the same task takes the live row", async () => {
+		const h = attached("parent-task", { seeded: false });
+		h.transport.addOpenRows("parent-task", ["Reviewer"]);
+		h.emit("Reviewer", "started");
+		h.freshness.seed(1n, 1_000, h.transport.board);
+		await h.window();
+		expect(h.writes()).toHaveLength(1);
+		expect(statuses(h, "parent-task")).toEqual([["Reviewer", "started"]]);
+		void h.detach();
+	});
+
+	test("detaching closes a queued restart instead of starting it", async () => {
+		const h = attached("parent-task");
+		h.emit("a", "started");
+		await h.window();
+		h.emit("a", "completed");
+		h.emit("a", "started");
+		await h.detach();
+		expect(statuses(h, "parent-task")).toEqual([["a", "aborted"]]);
+	});
+
 	test("a canceled call is transient: the rows retry without a re-read", async () => {
 		const h = attached("parent-task");
 		h.transport.faultCode = "canceled";

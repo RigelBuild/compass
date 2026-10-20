@@ -187,12 +187,10 @@ export function attachSubagentBoardSync(
 	const startKey = (): string | undefined =>
 		freshness.boardKnown() ? focusKey() : undefined;
 
-	const request = (sent: BoardSubagent[], keys: Map<string, string>) => {
+	const requestFor = (rows: { key: string; row: BoardSubagent }[]) => {
 		const byTask = new Map<string, BoardSubagent[]>();
-		for (const s of sent) {
-			const key = keys.get(s.id) ?? SUBAGENTS_TASK_KEY;
-			byTask.set(key, [...(byTask.get(key) ?? []), s]);
-		}
+		for (const { key, row } of rows)
+			byTask.set(key, [...(byTask.get(key) ?? []), row]);
 		const tasks = [...byTask].map(([key, upsertSubagents]) =>
 			create(BoardTaskPatchSchema, {
 				key,
@@ -213,6 +211,11 @@ export function attachSubagentBoardSync(
 			},
 		});
 	};
+
+	const request = (sent: BoardSubagent[], keys: Map<string, string>) =>
+		requestFor(
+			sent.map((row) => ({ key: keys.get(row.id) ?? SUBAGENTS_TASK_KEY, row })),
+		);
 
 	// A transient failure keeps the rows pending. A permanent refusal drops them: the
 	// write would be refused too, and guessing the tasks could rename one.
@@ -420,14 +423,38 @@ export function attachSubagentBoardSync(
 		});
 
 	// A stored open row this session never started cannot settle, and it holds a slot
-	// in the task's open-row cap, so it is closed once as aborted.
-	const sweep = (): void => {
+	// in the task's open-row cap, so it is closed once as aborted. An id this session
+	// reuses on the same task needs nothing: the live row replaces it.
+	const sweep = (): { key: string; row: BoardSubagent }[] => {
 		sweepPending = false;
+		const strays: { key: string; row: BoardSubagent }[] = [];
 		for (const { key, row } of freshness.allOpenRows()) {
-			if (byId.has(row.id) || next.has(row.id)) continue;
-			byId.set(row.id, aborted(row));
-			taskById.set(row.id, key);
-			changed.add(row.id);
+			if (!byId.has(row.id) && !next.has(row.id)) {
+				byId.set(row.id, aborted(row));
+				taskById.set(row.id, key);
+				changed.add(row.id);
+			} else if (keyFor(row.id) !== key)
+				strays.push({ key, row: aborted(row) });
+		}
+		return strays;
+	};
+
+	// A stray row shares a live run's id, so it cannot join the pending rows; it is
+	// closed in one best-effort write of its own.
+	const closeStrays = async (
+		strays: { key: string; row: BoardSubagent }[],
+	): Promise<void> => {
+		try {
+			const result = await broker.call(requestFor(strays));
+			const board = boardIn(result);
+			if (board !== undefined) freshness.noteBoard(board);
+			else
+				logSync(
+					"stray close failed",
+					boardError(result, "subagent board sync", "update_board"),
+				);
+		} catch (error) {
+			logSync("stray close failed", error);
 		}
 	};
 
@@ -435,7 +462,11 @@ export function attachSubagentBoardSync(
 	const send = async (): Promise<boolean> => {
 		if (!freshness.boardKnown() && !(await readBoard())) return false;
 		if (closed) return false;
-		if (sweepPending) sweep();
+		if (sweepPending) {
+			const strays = sweep();
+			if (strays.length > 0) await closeStrays(strays);
+			if (closed) return false;
+		}
 		const { sent, keys } = nextBatch();
 		if (sent.length === 0) return false;
 		await write(sent, keys);
