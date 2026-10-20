@@ -23,10 +23,7 @@ const (
 // The re-exec waits until the dialog app's loop has exited, so the new process
 // never starts while the old GTK/AppKit loop still owns the display.
 func restartOlderStack(ctx context.Context, params embedded.Params, down func(context.Context, []string) error) error {
-	app := application.New(application.Options{
-		Name:        "compass-app",
-		Description: "Compass native desktop shell",
-	})
+	app := application.New(appOptions())
 	result := make(chan error, 1)
 	restart := false
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {

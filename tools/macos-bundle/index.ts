@@ -559,8 +559,14 @@ async function main(): Promise<void> {
 	await rm(stageRoot, { recursive: true, force: true });
 	await mkdir(macosDir, { recursive: true });
 	await mkdir(resourcesDir, { recursive: true });
-	const iconsetDir = join(stageRoot, "AppIcon.iconset");
-	await mkdir(iconsetDir);
+	// Outside stageRoot: hdiutil packs everything under it into the dmg.
+	const iconsetDir = join(
+		dirname(args.out),
+		"macos-bundle-icon",
+		"AppIcon.iconset",
+	);
+	await rm(dirname(iconsetDir), { recursive: true, force: true });
+	await mkdir(iconsetDir, { recursive: true });
 	for (const [filename, size] of [
 		["icon_16x16.png", 16],
 		["icon_16x16@2x.png", 32],
@@ -576,6 +582,7 @@ async function main(): Promise<void> {
 	}
 	await cp(appIcon, join(iconsetDir, "icon_512x512@2x.png"));
 	await $`iconutil -c icns ${iconsetDir} -o ${join(resourcesDir, "AppIcon.icns")}`.quiet();
+	await rm(dirname(iconsetDir), { recursive: true, force: true });
 
 	// Contents/MacOS/compass-app — the darwin shell binary.
 	const stagedBinary = join(macosDir, SHELL_EXECUTABLE_NAME);
