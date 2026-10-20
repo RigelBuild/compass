@@ -52,48 +52,63 @@ func TestBuildAppMenu(t *testing.T) {
 	if darwin {
 		quitMenu, quitLabel = name, "Quit "+name
 	}
-	for _, embedded := range []bool{false, true} {
-		actions := appMenuActions{newWindow: func() {}}
-		if embedded {
-			actions.stopStackAndQuit = func() {}
-		}
-		menu := buildAppMenu(actions)
-		menus := submenuLabels(menu)
-
-		if got := slices.Contains(menus["File"], "Quit and stop stack"); got != embedded {
-			t.Errorf("embedded=%v: File has stop-stack item = %v", embedded, got)
-		}
-		if !slices.Contains(menus["File"], "New Window") || slices.Contains(menus["Window"], "New Window") {
-			t.Errorf("embedded=%v: New Window must be in File only: File %v, Window %v",
-				embedded, menus["File"], menus["Window"])
-		}
-		// Plain Quit must never be the stack teardown: it stays the standard role.
-		if !slices.Contains(menus[quitMenu], quitLabel) {
-			t.Errorf("embedded=%v: %s menu lacks %q: %v", embedded, quitMenu, quitLabel, menus[quitMenu])
-		}
-		// darwin delivers Cmd+C/V/X/A/Z and Backspace to the webview only through
-		// Edit; Linux must bind none of them over WebKitGTK's own handling.
-		bound := accelerators(menu)
-		for _, key := range editingAccelerators(t) {
-			if got := slices.Contains(bound, key); got != darwin {
-				t.Errorf("embedded=%v: accelerator %q bound = %v, want %v", embedded, key, got, darwin)
+	for _, tc := range []struct {
+		name     string
+		embedded bool
+	}{{"client", false}, {"embedded", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			actions := appMenuActions{newWindow: func() {}}
+			if tc.embedded {
+				actions.stopStackAndQuit = func() {}
 			}
-		}
-		closeCount := 0
-		for _, items := range menus {
-			for _, label := range items {
-				if label == "Close" || label == "Close Window" {
-					closeCount++
+			menu := buildAppMenu(actions)
+			menus := submenuLabels(menu)
+
+			if got := slices.Contains(menus["File"], "Quit and stop stack"); got != tc.embedded {
+				t.Errorf("File has stop-stack item = %v", got)
+			}
+			if !slices.Contains(menus["File"], "New Window") || slices.Contains(menus["Window"], "New Window") {
+				t.Errorf("New Window must be in File only: File %v, Window %v", menus["File"], menus["Window"])
+			}
+			// Plain Quit must never be the stack teardown: it stays the standard role.
+			if !slices.Contains(menus[quitMenu], quitLabel) {
+				t.Errorf("%s menu lacks %q: %v", quitMenu, quitLabel, menus[quitMenu])
+			}
+			// darwin delivers Cmd+C/V/X/A/Z and Backspace to the webview only through
+			// Edit; Linux must bind none of them over WebKitGTK's own handling.
+			bound := accelerators(menu)
+			for _, key := range editingAccelerators(t) {
+				if got := slices.Contains(bound, key); got != darwin {
+					t.Errorf("accelerator %q bound = %v, want %v", key, got, darwin)
 				}
 			}
-		}
-		if closeCount != 1 {
-			t.Errorf("embedded=%v: %d Close items, want 1: %v", embedded, closeCount, menus)
-		}
-		for _, label := range menus["View"] {
-			if label == "Reload" || label == "Force Reload" || label == "Open Developer Tools" {
-				t.Errorf("embedded=%v: View menu has %q", embedded, label)
+			checkCloseAndView(t, menus)
+			// The Front role has no darwin selector, so a Front item does nothing.
+			if menu.FindByRole(application.Front) != nil {
+				t.Errorf("menu has a Front-role item; want BringAllToFront")
 			}
+			if got := menu.FindByRole(application.BringAllToFront) != nil; got != darwin {
+				t.Errorf("BringAllToFront present = %v, want %v", got, darwin)
+			}
+		})
+	}
+}
+
+// checkCloseAndView: one Close item across menus, and no reload or devtools in View.
+func checkCloseAndView(t *testing.T, menus map[string][]string) {
+	t.Helper()
+	closeCount := 0
+	for _, items := range menus {
+		closeCount += len(slices.DeleteFunc(slices.Clone(items), func(l string) bool {
+			return l != "Close" && l != "Close Window"
+		}))
+	}
+	if closeCount != 1 {
+		t.Errorf("%d Close items, want 1: %v", closeCount, menus)
+	}
+	for _, label := range menus["View"] {
+		if label == "Reload" || label == "Force Reload" || label == "Open Developer Tools" {
+			t.Errorf("View menu has %q", label)
 		}
 	}
 }

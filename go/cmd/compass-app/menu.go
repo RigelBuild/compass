@@ -57,5 +57,10 @@ func buildAppMenu(actions appMenuActions) *application.Menu {
 	viewMenu.AddSeparator()
 	viewMenu.AddRole(application.ToggleFullscreen)
 	menu.AddRole(application.WindowMenu)
+	// The darwin Window role's "Bring All to Front" carries the Front role, which
+	// has no selector; BringAllToFront maps to arrangeInFront:.
+	if front := menu.FindByRole(application.Front); front != nil {
+		front.SetRole(application.BringAllToFront)
+	}
 	return menu
 }

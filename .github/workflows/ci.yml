@@ -1615,7 +1615,7 @@ jobs:
             cat "$log"
             for t in TestMultiWindowCloseCancelsOnlyClosingWindowE2E TestNewWindowOpenerOpensUniqueWindowsE2E; do
               if ! grep -q -- "--- PASS: $t" "$log"; then
-                echo "::error::gtk4 e2e gate ($backend) did not PASS $t — it skipped (no display came up), the build tag broke, or the test did not run"
+                echo "::error::gtk4 e2e gate ($backend) did not PASS $t — see the log above for a FAIL; otherwise it skipped (no display), the build tag broke, or it did not run"
                 return 1
               fi
             done
