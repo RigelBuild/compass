@@ -15,8 +15,8 @@ import (
 var appIcon []byte
 
 // appOptions is the shared identity for every Wails app the shell creates.
-// Linux.ApplicationID stays unset so GLib keeps prgname compass-app: WebKitGTK's
-// data dir and the X11 WM_CLASS (StartupWMClass in compass.desktop) key on it.
+// Linux.ApplicationID stays unset: Wails would also hand it to g_set_prgname,
+// and WebKitGTK keys its data directory on prgname, so stored state would reset.
 func appOptions() application.Options {
 	return application.Options{
 		Name:        "Compass",

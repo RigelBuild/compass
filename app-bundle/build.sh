@@ -84,7 +84,7 @@ nix build -f "$REPO_ROOT/tools/toolchain/secretspec-env.nix" secretspecRelease \
   -o "$SCRIPT_DIR/result-secretspec"
 install -m 755 "$SCRIPT_DIR/result-secretspec/bin/secretspec" "$STAGE/bin/secretspec"
 
-# --- 5. Stage the rest of the layout — dist + desktop + LICENSE (§156-168).
+# --- 5. Stage the rest of the layout — dist + desktop + icon + LICENSE (§156-168).
 
 # dist: the compass-ui:build output (apps/ui/dist), staged beside the shell.
 UI_DIST="$REPO_ROOT/apps/ui/dist"
