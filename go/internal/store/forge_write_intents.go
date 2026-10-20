@@ -20,6 +20,8 @@ import (
 type WriteState string
 
 const (
+	// WriteStateHeld reserves a request key for one target; nothing was sent yet.
+	WriteStateHeld    WriteState = "held"
 	WriteStatePending WriteState = "pending"
 	WriteStateDone    WriteState = "done"
 	WriteStateFailed  WriteState = "failed"
@@ -50,6 +52,85 @@ type WriteIntent struct {
 // RecordWriteIntent commits an idempotency record before any forge create.
 // It returns an existing non-failed attempt for the same agent and request key.
 func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteIntent, error) {
+	in, err := normalizedWriteIntent(in)
+	if err != nil {
+		return WriteIntent{}, err
+	}
+	row, err := s.q.RecordForgeWriteIntent(ctx, db.RecordForgeWriteIntentParams{
+		ID:              in.ID,
+		ForgeProvider:   int16(in.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum.
+		ForgeHost:       in.Host,
+		Repo:            in.Repo,
+		Kind:            int16(in.Kind),
+		ParentNumber:    int64(in.Parent), //nolint:gosec // G115: normalizedWriteIntent bounds Parent to MaxInt64.
+		HeadRef:         in.HeadRef,
+		AgentAccountID:  string(in.AgentAccountID),
+		OwnerUserID:     string(in.OwnerUserID),
+		SessionID:       in.SessionID,
+		ClientRequestID: in.RequestKey,
+	})
+	if err != nil {
+		if pgErrIs(err, pgUniqueViolation) {
+			return WriteIntent{}, fmt.Errorf("%w: write intent key or pull request head is already claimed", ErrConflict)
+		}
+		if pgErrIs(err, pgForeignKeyViolation) {
+			return WriteIntent{}, fmt.Errorf("%w: unknown agent or owner account", ErrInvalidArgument)
+		}
+		return WriteIntent{}, fmt.Errorf("store: record forge write intent: %w", err)
+	}
+	return writeIntentFromRow(row), nil
+}
+
+// HoldWriteIntent reserves the agent's request key for in's target without
+// claiming a PR head. It returns the existing non-failed attempt for the key if
+// there is one, so two calls racing on a key agree on one target.
+func (s *Store) HoldWriteIntent(ctx context.Context, in WriteIntent) (WriteIntent, error) {
+	in, err := normalizedWriteIntent(in)
+	if err != nil {
+		return WriteIntent{}, err
+	}
+	row, err := s.q.HoldForgeWriteIntent(ctx, db.HoldForgeWriteIntentParams{
+		ID:              in.ID,
+		ForgeProvider:   int16(in.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum.
+		ForgeHost:       in.Host,
+		Repo:            in.Repo,
+		Kind:            int16(in.Kind),
+		ParentNumber:    int64(in.Parent), //nolint:gosec // G115: normalizedWriteIntent bounds Parent to MaxInt64.
+		HeadRef:         in.HeadRef,
+		AgentAccountID:  string(in.AgentAccountID),
+		OwnerUserID:     string(in.OwnerUserID),
+		SessionID:       in.SessionID,
+		ClientRequestID: in.RequestKey,
+	})
+	if err != nil {
+		if pgErrIs(err, pgForeignKeyViolation) {
+			return WriteIntent{}, fmt.Errorf("%w: unknown agent or owner account", ErrInvalidArgument)
+		}
+		return WriteIntent{}, fmt.Errorf("store: hold forge write intent: %w", err)
+	}
+	return writeIntentFromRow(row), nil
+}
+
+// PromoteWriteIntent turns a held attempt pending just before its create is
+// sent. ErrConflict means it is no longer held, or another attempt holds the PR head.
+func (s *Store) PromoteWriteIntent(ctx context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: write intent id is required", ErrInvalidArgument)
+	}
+	affected, err := s.q.PromoteForgeWriteIntent(ctx, id)
+	if err != nil {
+		if pgErrIs(err, pgUniqueViolation) {
+			return fmt.Errorf("%w: pull request head is already claimed", ErrConflict)
+		}
+		return fmt.Errorf("store: promote forge write intent: %w", err)
+	}
+	if affected != 1 {
+		return fmt.Errorf("%w: write intent %q is not held", ErrConflict, id)
+	}
+	return nil
+}
+
+func normalizedWriteIntent(in WriteIntent) (WriteIntent, error) {
 	if err := validCoordinate(in.Provider, in.Host, in.Repo); err != nil {
 		return WriteIntent{}, err
 	}
@@ -80,29 +161,7 @@ func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteInt
 		return WriteIntent{}, fmt.Errorf("%w: write intent id must be a UUID", ErrInvalidArgument)
 	}
 	in.Repo = (ForgeCoord{Provider: in.Provider, Repo: in.Repo}).Normalized().Repo
-	row, err := s.q.RecordForgeWriteIntent(ctx, db.RecordForgeWriteIntentParams{
-		ID:              in.ID,
-		ForgeProvider:   int16(in.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum.
-		ForgeHost:       in.Host,
-		Repo:            in.Repo,
-		Kind:            int16(in.Kind),
-		ParentNumber:    int64(in.Parent),
-		HeadRef:         in.HeadRef,
-		AgentAccountID:  string(in.AgentAccountID),
-		OwnerUserID:     string(in.OwnerUserID),
-		SessionID:       in.SessionID,
-		ClientRequestID: in.RequestKey,
-	})
-	if err != nil {
-		if pgErrIs(err, pgUniqueViolation) {
-			return WriteIntent{}, fmt.Errorf("%w: write intent key or pull request head is already claimed", ErrConflict)
-		}
-		if pgErrIs(err, pgForeignKeyViolation) {
-			return WriteIntent{}, fmt.Errorf("%w: unknown agent or owner account", ErrInvalidArgument)
-		}
-		return WriteIntent{}, fmt.Errorf("store: record forge write intent: %w", err)
-	}
-	return writeIntentFromRow(row), nil
+	return in, nil
 }
 
 // PRIntentForHead returns the newest attempt associated with a pull-request head.
@@ -125,22 +184,6 @@ func (s *Store) PRIntentForHead(ctx context.Context, provider ForgeProvider, hos
 			return WriteIntent{}, fmt.Errorf("%w: pull request intent for head %q", ErrNotFound, headRef)
 		}
 		return WriteIntent{}, fmt.Errorf("store: read forge write intent by head: %w", err)
-	}
-	return writeIntentFromRow(row), nil
-}
-
-// LiveWriteIntentByKey returns the agent's non-failed attempt for a request key,
-// the row RecordWriteIntent would replay, without claiming the key.
-func (s *Store) LiveWriteIntentByKey(ctx context.Context, agent AccountID, key string) (WriteIntent, error) {
-	if agent == "" || key == "" {
-		return WriteIntent{}, fmt.Errorf("%w: agent and client request id are required", ErrInvalidArgument)
-	}
-	row, err := s.q.LiveWriteIntentByKey(ctx, db.LiveWriteIntentByKeyParams{AgentAccountID: string(agent), ClientRequestID: key})
-	if err != nil {
-		if noRows(err) {
-			return WriteIntent{}, fmt.Errorf("%w: write intent for key %q", ErrNotFound, key)
-		}
-		return WriteIntent{}, fmt.Errorf("store: read forge write intent by key: %w", err)
 	}
 	return writeIntentFromRow(row), nil
 }
@@ -245,6 +288,22 @@ func (s *Store) EndWriteIntent(ctx context.Context, id string, state WriteState)
 		return fmt.Errorf("store: read forge write intent after state change: %w", err)
 	}
 	return fmt.Errorf("%w: write intent %q is no longer pending", ErrConflict, id)
+}
+
+// DeleteExpiredHeldWriteIntents removes up to limit held keys older than
+// olderThan, oldest first; past that age a same-key retry is outside the idempotency window.
+func (s *Store) DeleteExpiredHeldWriteIntents(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
+	if limit < 1 || int64(limit) > math.MaxInt32 {
+		return 0, fmt.Errorf("%w: held write intent limit must be between 1 and %d", ErrInvalidArgument, math.MaxInt32)
+	}
+	n, err := s.q.DeleteExpiredHeldWriteIntents(ctx, db.DeleteExpiredHeldWriteIntentsParams{
+		OlderThan:  pgtype.Timestamptz{Time: olderThan, Valid: true},
+		QueryLimit: int32(limit),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("store: delete expired held forge write intents: %w", err)
+	}
+	return n, nil
 }
 
 // PendingWriteIntents returns pending intents older than olderThan, oldest first.

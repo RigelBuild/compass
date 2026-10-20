@@ -46,14 +46,28 @@ SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
 FROM forge_write_intents
 WHERE id = sqlc.arg(id);
 
--- name: LiveWriteIntentByKey :one
-SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
-       agent_account_id, owner_user_id, session_id, client_request_id,
-       forge_key, state, created_at, tenant_id
-FROM forge_write_intents
-WHERE agent_account_id = sqlc.arg(agent_account_id)
-  AND client_request_id = sqlc.arg(client_request_id)
-  AND state <> 'failed';
+-- name: HoldForgeWriteIntent :one
+INSERT INTO forge_write_intents (
+    id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+    agent_account_id, owner_user_id, session_id, client_request_id, state
+)
+VALUES (
+    sqlc.arg(id), sqlc.arg(forge_provider), sqlc.arg(forge_host), sqlc.arg(repo),
+    sqlc.arg(kind), sqlc.arg(parent_number), sqlc.arg(head_ref),
+    sqlc.arg(agent_account_id), sqlc.arg(owner_user_id), sqlc.arg(session_id),
+    sqlc.arg(client_request_id), 'held'
+)
+ON CONFLICT (tenant_id, agent_account_id, client_request_id)
+    WHERE state <> 'failed'
+DO UPDATE SET id = forge_write_intents.id
+RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+          agent_account_id, owner_user_id, session_id, client_request_id,
+          forge_key, state, created_at, tenant_id;
+
+-- name: PromoteForgeWriteIntent :execrows
+UPDATE forge_write_intents
+SET state = 'pending', created_at = now()
+WHERE id = sqlc.arg(id) AND state = 'held';
 
 -- name: LockWriteIntent :one
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
@@ -76,6 +90,17 @@ FROM forge_write_intents
 WHERE state = 'pending' AND created_at < sqlc.arg(older_than)::timestamptz
 ORDER BY created_at ASC, id ASC
 LIMIT sqlc.arg(query_limit);
+
+-- name: DeleteExpiredHeldWriteIntents :execrows
+-- The outer predicate rechecks state, so a row promoted to pending meanwhile survives.
+DELETE FROM forge_write_intents
+WHERE state = 'held' AND created_at < sqlc.arg(older_than)::timestamptz
+  AND (tenant_id, id) IN (
+    SELECT tenant_id, id FROM forge_write_intents
+    WHERE state = 'held' AND created_at < sqlc.arg(older_than)::timestamptz
+    ORDER BY created_at ASC, id ASC
+    LIMIT sqlc.arg(query_limit)
+);
 
 -- name: AuthoredArtifactByCoordinateFold :one
 SELECT forge_provider, forge_host, repo, kind, number,

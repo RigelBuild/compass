@@ -37,8 +37,10 @@ type fakeForgeStore struct {
 	accounts map[store.AccountID]store.Account
 	intents  []store.WriteIntent
 	recorded []store.AuthoredArtifact
-	getErr   error // if set, GetAccount returns it verbatim
-	recErr   error // if set, every store write after the forge create returns it verbatim
+	// beforeHold runs inside HoldWriteIntent before the key is read, to interleave another call.
+	beforeHold func()
+	getErr     error // if set, GetAccount returns it verbatim
+	recErr     error // if set, every store write after the forge create returns it verbatim
 	// clock stamps a new intent's CreatedAt.
 	clock func() time.Time
 
@@ -198,13 +200,29 @@ func (f *fakeForgeStore) RecordWriteIntent(_ context.Context, in store.WriteInte
 	return in, nil
 }
 
-func (f *fakeForgeStore) LiveWriteIntentByKey(_ context.Context, agent store.AccountID, key string) (store.WriteIntent, error) {
+func (f *fakeForgeStore) HoldWriteIntent(_ context.Context, in store.WriteIntent) (store.WriteIntent, error) {
+	if f.beforeHold != nil {
+		f.beforeHold()
+	}
 	for _, w := range f.intents {
-		if w.AgentAccountID == agent && w.RequestKey == key && w.State != store.WriteStateFailed {
+		if w.AgentAccountID == in.AgentAccountID && w.RequestKey == in.RequestKey && w.State != store.WriteStateFailed {
 			return w, nil
 		}
 	}
-	return store.WriteIntent{}, fmt.Errorf("%w: write intent for key %q", store.ErrNotFound, key)
+	in.State = store.WriteStateHeld
+	in.CreatedAt = f.clock()
+	f.intents = append(f.intents, in)
+	return in, nil
+}
+
+func (f *fakeForgeStore) PromoteWriteIntent(_ context.Context, id string) error {
+	for i := range f.intents {
+		if f.intents[i].ID == id && f.intents[i].State == store.WriteStateHeld {
+			f.intents[i].State = store.WriteStatePending
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: write intent %q is not held", store.ErrConflict, id)
 }
 
 // CompleteWriteIntent writes the ownership row (issue, PR) or keeps the forge
@@ -251,6 +269,22 @@ func (f *fakeForgeStore) PendingWriteIntents(_ context.Context, olderThan time.T
 		}
 	}
 	return out, nil
+}
+
+// DeleteExpiredHeldWriteIntents drops held keys created before olderThan; the
+// fake keeps insertion order, which is oldest first.
+func (f *fakeForgeStore) DeleteExpiredHeldWriteIntents(_ context.Context, olderThan time.Time, limit int) (int64, error) {
+	var n int64
+	kept := f.intents[:0]
+	for _, w := range f.intents {
+		if w.State == store.WriteStateHeld && w.CreatedAt.Before(olderThan) && n < int64(limit) {
+			n++
+			continue
+		}
+		kept = append(kept, w)
+	}
+	f.intents = kept
+	return n, nil
 }
 
 func (f *fakeForgeStore) AuthoredArtifactByCoordinateFold(_ context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64) (store.AuthoredArtifact, error) {

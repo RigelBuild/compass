@@ -4,6 +4,9 @@ package store
 
 import (
 	"errors"
+	"fmt"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -75,28 +78,52 @@ func TestRecordWriteIntentFailedAttemptAndLostReplay(t *testing.T) {
 	}
 }
 
-func TestLiveWriteIntentByKeyReadsWithoutClaiming(t *testing.T) {
+// A held key is reserved for its target and replayed to a racing claim, but it
+// claims no PR head and is not swept until it is promoted to pending.
+func TestHoldWriteIntentReservesKeyWithoutClaimingHead(t *testing.T) {
 	s := newTestStore(t)
-	in := writeIntentFixture(t, s, "intent-by-key", "key-read", "feature/read")
-	if _, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("read before record = %v, want ErrNotFound", err)
+	in := writeIntentFixture(t, s, "intent-hold", "key-hold", "feature/hold")
+	held, err := s.HoldWriteIntent(t.Context(), in)
+	if err != nil || held.State != WriteStateHeld {
+		t.Fatalf("HoldWriteIntent = %+v, %v; want a held row", held, err)
 	}
-	if _, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("second read = %v, want ErrNotFound (a read claims nothing)", err)
+	other := in
+	other.Repo = "Owner/Other"
+	if got, err := s.HoldWriteIntent(t.Context(), other); err != nil || got.ID != held.ID || got.Repo != held.Repo {
+		t.Fatalf("hold on another target = %+v, %v; want the first hold %+v", got, err, held)
 	}
-	rec, err := s.RecordWriteIntent(t.Context(), in)
+	if got, err := s.RecordWriteIntent(t.Context(), other); err != nil || got.ID != held.ID {
+		t.Fatalf("record on another target = %+v, %v; want the first hold", got, err)
+	}
+	// Another agent may still claim the same head: a hold is not a PR-head claim.
+	rival := writeIntentFixture(t, s, "intent-hold-rival", "key-rival", in.HeadRef)
+	if _, err := s.RecordWriteIntent(t.Context(), rival); err != nil {
+		t.Fatalf("rival head claim = %v, want allowed while the key is only held", err)
+	}
+	if pending, err := s.PendingWriteIntents(t.Context(), time.Now().Add(time.Hour), 10); err != nil || slices.ContainsFunc(pending, func(w WriteIntent) bool { return w.ID == held.ID }) {
+		t.Fatalf("pending = %+v, %v; want the held row excluded", pending, err)
+	}
+	if err := s.PromoteWriteIntent(t.Context(), held.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("promote onto a claimed head = %v, want ErrConflict", err)
+	}
+}
+
+func TestPromoteWriteIntentOnlyMovesHeldRows(t *testing.T) {
+	s := newTestStore(t)
+	in := writeIntentFixture(t, s, "intent-promote", "key-promote", "feature/promote")
+	held, err := s.HoldWriteIntent(t.Context(), in)
 	if err != nil {
-		t.Fatalf("RecordWriteIntent: %v", err)
+		t.Fatalf("HoldWriteIntent: %v", err)
 	}
-	got, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey)
-	if err != nil || got != rec {
-		t.Fatalf("read = %+v, %v; want %+v", got, err, rec)
+	if err := s.PromoteWriteIntent(t.Context(), held.ID); err != nil {
+		t.Fatalf("PromoteWriteIntent: %v", err)
 	}
-	if err := s.EndWriteIntent(t.Context(), rec.ID, WriteStateFailed); err != nil {
-		t.Fatalf("EndWriteIntent(failed): %v", err)
+	got, err := s.RecordWriteIntent(t.Context(), in)
+	if err != nil || got.ID != held.ID || got.State != WriteStatePending {
+		t.Fatalf("replay after promote = %+v, %v; want the same row pending", got, err)
 	}
-	if _, err := s.LiveWriteIntentByKey(t.Context(), in.AgentAccountID, in.RequestKey); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("read after failure = %v, want ErrNotFound", err)
+	if err := s.PromoteWriteIntent(t.Context(), held.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second promote = %v, want ErrConflict", err)
 	}
 }
 
@@ -315,5 +342,166 @@ func TestAuthoredArtifactByCoordinateFoldReturnsOldestCaseVariant(t *testing.T) 
 	}
 	if got.AgentAccountID != firstAgent || got.Repo != first.Repo {
 		t.Fatalf("folded lookup = %+v, want oldest case variant by agent %q repo %q", got, firstAgent, first.Repo)
+	}
+}
+
+// Only held rows past the cutoff go; fresh held rows and every other state stay.
+func TestDeleteExpiredHeldWriteIntentsDropsOnlyOldHeldRows(t *testing.T) {
+	s := newTestStore(t)
+	record := func(handle, state string) WriteIntent {
+		t.Helper()
+		in := writeIntentFixture(t, s, "expire-"+handle, "key-"+handle, "feature/"+handle)
+		var (
+			got WriteIntent
+			err error
+		)
+		if state == "held" {
+			got, err = s.HoldWriteIntent(t.Context(), in)
+		} else {
+			got, err = s.RecordWriteIntent(t.Context(), in)
+		}
+		if err != nil {
+			t.Fatalf("record %s: %v", handle, err)
+		}
+		if state == "done" || state == "lost" {
+			if _, err := s.pool.Exec(t.Context(), "UPDATE forge_write_intents SET state = $2, forge_key = '1' WHERE id = $1", got.ID, state); err != nil {
+				t.Fatalf("set %s state: %v", handle, err)
+			}
+		}
+		return got
+	}
+	oldHeld, freshHeld := record("old-held", "held"), record("fresh-held", "held")
+	others := []WriteIntent{record("old-pending", "pending"), record("old-done", "done"), record("old-lost", "lost")}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, in := range append([]WriteIntent{oldHeld}, others...) {
+		if _, err := s.pool.Exec(t.Context(), "UPDATE forge_write_intents SET created_at = $2 WHERE id = $1", in.ID, cutoff.Add(-time.Hour)); err != nil {
+			t.Fatalf("age %s: %v", in.ID, err)
+		}
+	}
+
+	n, err := s.DeleteExpiredHeldWriteIntents(WithSystemRole(t.Context()), cutoff, 10)
+	if err != nil || n != 1 {
+		t.Fatalf("DeleteExpiredHeldWriteIntents = %d, %v; want 1 deleted", n, err)
+	}
+	var ids []string
+	rows, err := s.pool.Query(t.Context(), "SELECT id FROM forge_write_intents ORDER BY id")
+	if err != nil {
+		t.Fatalf("list intents: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate intents: %v", err)
+	}
+	want := []string{freshHeld.ID, others[0].ID, others[1].ID, others[2].ID}
+	slices.Sort(want)
+	if !slices.Equal(ids, want) {
+		t.Fatalf("rows left = %v, want %v (old held %s deleted)", ids, want, oldHeld.ID)
+	}
+}
+
+// A promote committed while the expiry DELETE waits on the row must keep the now-pending intent.
+func TestDeleteExpiredHeldWriteIntentsSparesRowPromotedMidDelete(t *testing.T) {
+	s := newTestStore(t)
+	held, err := s.HoldWriteIntent(t.Context(), writeIntentFixture(t, s, "expire-race", "key-expire-race", "feature/expire-race"))
+	if err != nil {
+		t.Fatalf("HoldWriteIntent: %v", err)
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	if _, err := s.pool.Exec(t.Context(), "UPDATE forge_write_intents SET created_at = $2 WHERE id = $1", held.ID, cutoff.Add(-time.Hour)); err != nil {
+		t.Fatalf("age held intent: %v", err)
+	}
+	// The promote holds the row lock until commit, so the DELETE must wait and then recheck.
+	promote, err := s.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin promote: %v", err)
+	}
+	defer func() { _ = promote.Rollback(t.Context()) }()
+	if _, err := promote.Exec(t.Context(), "UPDATE forge_write_intents SET state = 'pending' WHERE id = $1 AND state = 'held'", held.ID); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	done := make(chan error, 1)
+	var deleted int64
+	go func() {
+		var err error
+		deleted, err = s.DeleteExpiredHeldWriteIntents(WithSystemRole(t.Context()), cutoff, 10)
+		done <- err
+	}()
+	waitForExpiryDeleteLockWait(t, s, done)
+	if err := promote.Commit(t.Context()); err != nil {
+		t.Fatalf("commit promote: %v", err)
+	}
+	if err := <-done; err != nil || deleted != 0 {
+		t.Fatalf("DeleteExpiredHeldWriteIntents = %d, %v; want 0 deleted", deleted, err)
+	}
+	var state string
+	if err := s.pool.QueryRow(t.Context(), "SELECT state FROM forge_write_intents WHERE id = $1", held.ID).Scan(&state); err != nil || state != string(WriteStatePending) {
+		t.Fatalf("promoted intent state = %q, %v; want pending", state, err)
+	}
+}
+
+// waitForExpiryDeleteLockWait returns once the expiry DELETE waits on a row lock.
+func waitForExpiryDeleteLockWait(t *testing.T, s *Store, done <-chan error) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		var waiting int
+		if err := s.pool.QueryRow(t.Context(), "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%DELETE FROM forge_write_intents%' AND pid <> pg_backend_pid()").Scan(&waiting); err != nil {
+			t.Fatalf("read lock waits: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("expiry DELETE finished before the promote committed: %v", err)
+		case <-deadline:
+			t.Fatal("expiry DELETE never waited on the promoted row")
+		case <-tick.C:
+		}
+	}
+}
+
+// Two holds on one key with different targets race from a shared start: one
+// target is kept and both calls get that row back.
+func TestHoldWriteIntentConcurrentTargetsKeepOne(t *testing.T) {
+	s := newTestStore(t)
+	agent, owner := seedAgent(t, s, "intent-hold-race")
+	for i := range 40 {
+		key := fmt.Sprintf("race-%d", i)
+		target := func(repo string) WriteIntent {
+			return WriteIntent{Provider: ForgeProviderGitHub, Host: "github.com", Repo: repo, Kind: forge.WriteKindPullRequest, HeadRef: "feature/race",
+				AgentAccountID: agent, OwnerUserID: owner, SessionID: "s", RequestKey: key}
+		}
+		start := make(chan struct{})
+		got := make([]WriteIntent, 2)
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		for j, repo := range []string{"owner/a", "owner/b"} {
+			wg.Go(func() {
+				<-start
+				got[j], errs[j] = s.HoldWriteIntent(t.Context(), target(repo))
+			})
+		}
+		close(start)
+		wg.Wait()
+		if errs[0] != nil || errs[1] != nil {
+			t.Fatalf("round %d holds: %v, %v", i, errs[0], errs[1])
+		}
+		if got[0].ID != got[1].ID || got[0].Repo != got[1].Repo {
+			t.Fatalf("round %d holds = %+v and %+v, want one row returned to both", i, got[0], got[1])
+		}
+		var count int
+		if err := s.pool.QueryRow(t.Context(), "SELECT count(*) FROM forge_write_intents WHERE client_request_id = $1", key).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("round %d rows = %d, %v; want 1", i, count, err)
+		}
 	}
 }

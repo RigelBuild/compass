@@ -77,6 +77,31 @@ func (q *Queries) CompleteForgeWriteIntent(ctx context.Context, arg CompleteForg
 	return result.RowsAffected(), nil
 }
 
+const deleteExpiredHeldWriteIntents = `-- name: DeleteExpiredHeldWriteIntents :execrows
+DELETE FROM forge_write_intents
+WHERE state = 'held' AND created_at < $1::timestamptz
+  AND (tenant_id, id) IN (
+    SELECT tenant_id, id FROM forge_write_intents
+    WHERE state = 'held' AND created_at < $1::timestamptz
+    ORDER BY created_at ASC, id ASC
+    LIMIT $2
+)
+`
+
+type DeleteExpiredHeldWriteIntentsParams struct {
+	OlderThan  pgtype.Timestamptz
+	QueryLimit int32
+}
+
+// The outer predicate rechecks state, so a row promoted to pending meanwhile survives.
+func (q *Queries) DeleteExpiredHeldWriteIntents(ctx context.Context, arg DeleteExpiredHeldWriteIntentsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredHeldWriteIntents, arg.OlderThan, arg.QueryLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const endForgeWriteIntent = `-- name: EndForgeWriteIntent :execrows
 UPDATE forge_write_intents
 SET state = $1
@@ -96,23 +121,53 @@ func (q *Queries) EndForgeWriteIntent(ctx context.Context, arg EndForgeWriteInte
 	return result.RowsAffected(), nil
 }
 
-const liveWriteIntentByKey = `-- name: LiveWriteIntentByKey :one
-SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
-       agent_account_id, owner_user_id, session_id, client_request_id,
-       forge_key, state, created_at, tenant_id
-FROM forge_write_intents
-WHERE agent_account_id = $1
-  AND client_request_id = $2
-  AND state <> 'failed'
+const holdForgeWriteIntent = `-- name: HoldForgeWriteIntent :one
+INSERT INTO forge_write_intents (
+    id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+    agent_account_id, owner_user_id, session_id, client_request_id, state
+)
+VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10,
+    $11, 'held'
+)
+ON CONFLICT (tenant_id, agent_account_id, client_request_id)
+    WHERE state <> 'failed'
+DO UPDATE SET id = forge_write_intents.id
+RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+          agent_account_id, owner_user_id, session_id, client_request_id,
+          forge_key, state, created_at, tenant_id
 `
 
-type LiveWriteIntentByKeyParams struct {
+type HoldForgeWriteIntentParams struct {
+	ID              string
+	ForgeProvider   int16
+	ForgeHost       string
+	Repo            string
+	Kind            int16
+	ParentNumber    int64
+	HeadRef         string
 	AgentAccountID  string
+	OwnerUserID     string
+	SessionID       string
 	ClientRequestID string
 }
 
-func (q *Queries) LiveWriteIntentByKey(ctx context.Context, arg LiveWriteIntentByKeyParams) (ForgeWriteIntent, error) {
-	row := q.db.QueryRow(ctx, liveWriteIntentByKey, arg.AgentAccountID, arg.ClientRequestID)
+func (q *Queries) HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIntentParams) (ForgeWriteIntent, error) {
+	row := q.db.QueryRow(ctx, holdForgeWriteIntent,
+		arg.ID,
+		arg.ForgeProvider,
+		arg.ForgeHost,
+		arg.Repo,
+		arg.Kind,
+		arg.ParentNumber,
+		arg.HeadRef,
+		arg.AgentAccountID,
+		arg.OwnerUserID,
+		arg.SessionID,
+		arg.ClientRequestID,
+	)
 	var i ForgeWriteIntent
 	err := row.Scan(
 		&i.ID,
@@ -264,6 +319,20 @@ func (q *Queries) PendingForgeWriteIntents(ctx context.Context, arg PendingForge
 		return nil, err
 	}
 	return items, nil
+}
+
+const promoteForgeWriteIntent = `-- name: PromoteForgeWriteIntent :execrows
+UPDATE forge_write_intents
+SET state = 'pending', created_at = now()
+WHERE id = $1 AND state = 'held'
+`
+
+func (q *Queries) PromoteForgeWriteIntent(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, promoteForgeWriteIntent, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const recordForgeWriteIntent = `-- name: RecordForgeWriteIntent :one
