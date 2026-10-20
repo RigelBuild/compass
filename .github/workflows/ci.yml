@@ -2750,11 +2750,13 @@ jobs:
           CGO_ENABLED: '1'
         run: |
           rc=0
-          go test -tags 'podman uitier' -count=1 -p 1 -v -timeout 20m -run '^TestUITierPostAndReply$' ./e2e/ >/tmp/ui-tier.log 2>&1 || rc=$?
+          go test -tags 'podman uitier' -count=1 -p 1 -v -timeout 20m -run '^TestUITier' ./e2e/ >/tmp/ui-tier.log 2>&1 || rc=$?
           cat /tmp/ui-tier.log
           [ "$rc" -eq 0 ] || exit "$rc"
-          # A podman skip also exits 0, so require the PASS line.
-          grep -qE '^--- PASS: TestUITierPostAndReply ' /tmp/ui-tier.log || { echo "::error::UI-tier e2e did not report PASS"; exit 1; }
+          # A podman skip also exits 0, so require each PASS line.
+          for name in TestUITierPostAndReply TestUITierLiveChannel; do
+            grep -qE "^--- PASS: $name " /tmp/ui-tier.log || { echo "::error::UI-tier e2e did not report PASS for $name"; exit 1; }
+          done
 
       - name: Save the Go build + module caches
         # Never on workflow_dispatch: a `pr` dispatch runs PR code under main's
