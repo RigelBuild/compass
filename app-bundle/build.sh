@@ -96,6 +96,9 @@ cp -R "$UI_DIST" "$STAGE/bin/dist"
 
 # desktop template (inert as shipped, §466-469) + LICENSE (AGPL-3.0-only).
 cp "$SCRIPT_DIR/compass.desktop" "$STAGE/share/applications/compass.desktop"
+# Icon=compass in the desktop entry resolves through the hicolor theme.
+install -D -m 644 "$REPO_ROOT/apps/ui/src/assets/compass-needle.svg" \
+  "$STAGE/share/icons/hicolor/scalable/apps/compass.svg"
 cp "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
 
 # --- 6. Sanity assertions (§256-261). A green build means a COMPLETE bundle.

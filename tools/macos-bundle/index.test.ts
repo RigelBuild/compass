@@ -24,6 +24,7 @@ function plistOpts() {
 		name: "Compass",
 		executable: "compass-app",
 		identifier: "build.rigel.compass",
+		iconFile: "AppIcon",
 		version: "1.4.2",
 	};
 }
@@ -121,6 +122,14 @@ describe("renderInfoPlist — required CFBundle keys carry the passed values", (
 		expect(plistValue(renderInfoPlist(plistOpts()), "CFBundleIdentifier")).toBe(
 			"build.rigel.compass",
 		);
+	});
+	test("CFBundleIconFile carries the passed file name", () => {
+		expect(
+			plistValue(
+				renderInfoPlist({ ...plistOpts(), iconFile: "CustomIcon" }),
+				"CFBundleIconFile",
+			),
+		).toBe("CustomIcon");
 	});
 
 	test("CFBundlePackageType is APPL", () => {

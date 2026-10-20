@@ -61,6 +61,7 @@ tasks:
       - '/tools/toolchain/versions/go.nix'
       - '/devenv.lock'
       - '/LICENSE'
+      - '/apps/ui/src/assets/compass-needle.svg'
       - 'build.sh'
       - 'compass.desktop'
 

@@ -18,6 +18,8 @@ export type InfoPlistOptions = {
 	executable: string;
 	/** CFBundleIdentifier — reverse-DNS bundle id (build.rigel.compass). */
 	identifier: string;
+	/** Required by macOS to find the icon in Contents/Resources. */
+	iconFile: string;
 	/** CFBundleShortVersionString + CFBundleVersion — the clean semver. */
 	version: string;
 };
@@ -75,6 +77,7 @@ export function renderInfoPlist(opts: InfoPlistOptions): string {
 	const executable = escapeXml(opts.executable);
 	const identifier = escapeXml(opts.identifier);
 	const version = escapeXml(opts.version);
+	const iconFile = escapeXml(opts.iconFile);
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -91,6 +94,8 @@ export function renderInfoPlist(opts: InfoPlistOptions): string {
 	<string>${version}</string>
 	<key>CFBundleVersion</key>
 	<string>${version}</string>
+	<key>CFBundleIconFile</key>
+	<string>${iconFile}</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>${CF_BUNDLE_INFO_DICTIONARY_VERSION}</string>
 	<key>LSMinimumSystemVersion</key>
@@ -529,6 +534,11 @@ async function main(): Promise<void> {
 	// Fail loud on missing inputs BEFORE staging (build.sh §256-261 posture): a
 	// green bundle means a COMPLETE bundle.
 	await assertExists(args.binary, "compass-app binary");
+	const appIcon = join(
+		import.meta.dir,
+		"../../go/cmd/compass-app/icon/appicon.png",
+	);
+	await assertExists(appIcon, "Compass app icon");
 	const indexHtml = join(args.dist, "index.html");
 	await assertExists(indexHtml, "UI dist (index.html)");
 	const globalsError = checkShellGlobalsScript(
@@ -549,6 +559,23 @@ async function main(): Promise<void> {
 	await rm(stageRoot, { recursive: true, force: true });
 	await mkdir(macosDir, { recursive: true });
 	await mkdir(resourcesDir, { recursive: true });
+	const iconsetDir = join(stageRoot, "AppIcon.iconset");
+	await mkdir(iconsetDir);
+	for (const [filename, size] of [
+		["icon_16x16.png", 16],
+		["icon_16x16@2x.png", 32],
+		["icon_32x32.png", 32],
+		["icon_32x32@2x.png", 64],
+		["icon_128x128.png", 128],
+		["icon_128x128@2x.png", 256],
+		["icon_256x256.png", 256],
+		["icon_256x256@2x.png", 512],
+		["icon_512x512.png", 512],
+	] as const) {
+		await $`sips -z ${size} ${size} ${appIcon} --out ${join(iconsetDir, filename)}`.quiet();
+	}
+	await cp(appIcon, join(iconsetDir, "icon_512x512@2x.png"));
+	await $`iconutil -c icns ${iconsetDir} -o ${join(resourcesDir, "AppIcon.icns")}`.quiet();
 
 	// Contents/MacOS/compass-app — the darwin shell binary.
 	const stagedBinary = join(macosDir, SHELL_EXECUTABLE_NAME);
@@ -577,6 +604,7 @@ async function main(): Promise<void> {
 			name: "Compass",
 			executable: SHELL_EXECUTABLE_NAME,
 			identifier: "build.rigel.compass",
+			iconFile: "AppIcon",
 			version: args.version,
 		}),
 	);

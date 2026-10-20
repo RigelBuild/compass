@@ -112,9 +112,12 @@ func run(ctx context.Context) error {
 		services = append(services, application.NewService(setup), application.NewService(dialog))
 	}
 	app := application.New(application.Options{
-		Name:        "compass-app",
+		Name:        "Compass",
 		Description: "Compass native desktop shell",
-		Services:    services,
+		Icon:        appIcon,
+		// Matches the .desktop file's StartupWMClass so the launcher icon groups the windows.
+		Linux:    application.LinuxOptions{ApplicationID: appID},
+		Services: services,
 		Assets: application.AssetOptions{
 			Handler:    application.BundledAssetFileServer(os.DirFS(assetsDir)),
 			Middleware: shellGlobalsMiddleware(svc),
