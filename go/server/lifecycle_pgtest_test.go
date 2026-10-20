@@ -31,6 +31,7 @@ type lifecycleFixture struct {
 	placementFixture
 	lc         *lifecycleService
 	ownerAdmin store.AccountID // the fixture agent's owner (admin)
+	commsBus   *events.Bus[*compassv1.SubscribeCommsResponse]
 }
 
 // newLifecycleFixture builds the placement fixture, constructs the lifecycleService
@@ -51,10 +52,12 @@ func newLifecycleFixture(t *testing.T) lifecycleFixture {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
 	commsSvc := comms.NewComms(t.Context(), pf.store, commsBus, nil, owner)
+	commsSvc.RegisterCoordinationHook(pf.store) // as serve wires it: spawn's parent edge reconciles
 	return lifecycleFixture{
 		placementFixture: pf,
 		lc:               newLifecycleService(pf.store, pf.hub, commsSvc),
 		ownerAdmin:       owner,
+		commsBus:         commsBus,
 	}
 }
 
@@ -142,6 +145,63 @@ func TestSpawnSetsParentToCaller(t *testing.T) {
 	if acc.Agent.ParentAgentID != f.agentID {
 		t.Fatalf("spawned peer parent = %q, want the spawning caller %q", acc.Agent.ParentAgentID, f.agentID)
 	}
+}
+
+// An open client sees a spawned peer only through the comms stream: the account,
+// its home channel, and the spawner's coordination channel gaining a member.
+// A re-spawn of a placed peer creates nothing to announce.
+func TestSpawnPublishesAccountAndChannels(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+
+	req := &compassv1internal.SpawnPeerRequest{Handle: "peer-events", ClientRequestId: "spawn-events-1", Role: "manager"}
+	resp, err := f.lc.SpawnAsAccount(ctx, f.agentID, req)
+	if err != nil {
+		t.Fatalf("SpawnAsAccount = %v, want success", err)
+	}
+	acc, err := f.store.GetAccount(ctx, store.AccountID(resp.GetAgentAccountId()))
+	if err != nil || acc.Agent == nil {
+		t.Fatalf("GetAccount(spawned) = (%+v, %v), want the spawned agent", acc, err)
+	}
+	want := spawnEvents{accounts: 1, homes: 1, coordination: 1}
+	if got := countSpawnEvents(t, f.commsBus, acc); got != want {
+		t.Fatalf("after spawn: events = %+v, want %+v", got, want)
+	}
+
+	req.ClientRequestId = "spawn-events-2"
+	if _, err := f.lc.SpawnAsAccount(ctx, f.agentID, req); err != nil {
+		t.Fatalf("SpawnAsAccount(re-spawn) = %v, want success", err)
+	}
+	if got := countSpawnEvents(t, f.commsBus, acc); got != want {
+		t.Fatalf("after re-spawn: events = %+v, want still %+v", got, want)
+	}
+}
+
+type spawnEvents struct{ accounts, homes, coordination int }
+
+// countSpawnEvents counts retained comms events for a spawned peer: its account,
+// its home channel, and coordination channels that list it as a member.
+func countSpawnEvents(t *testing.T, bus *events.Bus[*compassv1.SubscribeCommsResponse], peer store.Account) spawnEvents {
+	t.Helper()
+	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
+	if err != nil {
+		t.Fatalf("commsBus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+	var got spawnEvents
+	for _, ev := range sub.Replay {
+		if ev.Payload.GetAccountChanged().GetAccount().GetId() == string(peer.ID) {
+			got.accounts++
+		}
+		ch := ev.Payload.GetChannelChanged().GetChannel()
+		switch {
+		case ch.GetId() == string(peer.Agent.HomeChannelID):
+			got.homes++
+		case strings.HasSuffix(ch.GetName(), "-coordination") && slices.Contains(ch.GetMemberAccountIds(), string(peer.ID)):
+			got.coordination++
+		}
+	}
+	return got
 }
 
 // TestSpawnSameClientRequestIdRetryJoins pins the idempotent-resume contract: a
@@ -834,8 +894,12 @@ func TestSpawnIdempotentReturnsSameDMName(t *testing.T) {
 	}
 }
 
-// errDMOpener is a dmOpener that always fails — the R8 failure-injection seam.
-type errDMOpener struct{}
+// errDMOpener is a spawnComms whose DM open always fails — the R8 failure-injection seam.
+type errDMOpener struct{ store *store.Store }
+
+func (e errDMOpener) CreateAgentAccount(ctx context.Context, owner store.AccountID, n store.NewAgent) (store.Account, error) {
+	return e.store.CreateAgent(ctx, owner, n)
+}
 
 func (errDMOpener) OpenDMAsAccount(context.Context, store.AccountID, *compassv1.OpenDMRequest) (*compassv1.OpenDMResponse, error) {
 	return nil, errors.New("dm open failed")
@@ -856,7 +920,7 @@ func TestSpawnDMOpenFailureNeverRollsBackSpawn(t *testing.T) {
 	t.Run("failing opener", func(t *testing.T) {
 		pf := newPlacementFixture(t)
 		pf.runner.forget()
-		lc := newLifecycleService(pf.store, pf.hub, errDMOpener{})
+		lc := newLifecycleService(pf.store, pf.hub, errDMOpener{store: pf.store})
 
 		resp, err := lc.SpawnAsAccount(context.Background(), pf.agentID, &compassv1internal.SpawnPeerRequest{
 			Handle:          "peer-dm-fail",

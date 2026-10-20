@@ -22,20 +22,21 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// dmOpener is the narrow Comms seam lifecycleService uses to open a
-// manager-to-peer DM after spawn; *comms.Comms satisfies it.
-type dmOpener interface {
+// spawnComms is the narrow Comms seam lifecycleService uses for spawn: it
+// creates and announces the peer, then opens the manager-to-peer DM.
+// *comms.Comms satisfies it.
+type spawnComms interface {
+	CreateAgentAccount(ctx context.Context, owner store.AccountID, n store.NewAgent) (store.Account, error)
 	OpenDMAsAccount(ctx context.Context, account store.AccountID, req *compassv1.OpenDMRequest) (*compassv1.OpenDMResponse, error)
 }
 
 // lifecycleService handles LifecycleCaller requests with the store, runner hub,
-// and DM opener used after spawn to open the manager-peer DM.
+// and the comms seam spawn uses to announce the peer and open its DM.
 type lifecycleService struct {
 	store *store.Store
 	hub   *runnerhub.Hub
-	// dm opens the post-spawn manager-peer DM; nil for the waker, which never
-	// spawns and therefore has no channel name to return.
-	dm dmOpener
+	// comms is nil for the waker, which never spawns, and in tests that skip events.
+	comms spawnComms
 	// wakeGroup coalesces concurrent WakeAgent calls per agent into one start.
 	// The zero-value group needs no initialization.
 	wakeGroup singleflight.Group
@@ -43,8 +44,8 @@ type lifecycleService struct {
 
 // newLifecycleService constructs the caller. Serve wires it after hub creation
 // to break the hub-service cycle.
-func newLifecycleService(st *store.Store, hub *runnerhub.Hub, dm dmOpener) *lifecycleService {
-	return &lifecycleService{store: st, hub: hub, dm: dm}
+func newLifecycleService(st *store.Store, hub *runnerhub.Hub, cm spawnComms) *lifecycleService {
+	return &lifecycleService{store: st, hub: hub, comms: cm}
 }
 
 // Compile-time proof lifecycleService satisfies the seam the hub delegates into.
@@ -190,7 +191,7 @@ func (l *lifecycleService) SpawnAsAccount(
 	// owner-acts model the caller's OWNER is the authority. Role is caller-SELECTED
 	// but server-VALIDATED (above); persona is free-text. Both stored via
 	// CreateAgent and threaded to the Runner from the CREATED account, never the request.
-	created, err := l.store.CreateAgent(ctx, callerOwner, store.NewAgent{
+	created, err := l.createAgent(ctx, callerOwner, store.NewAgent{
 		Handle:      req.GetHandle(),
 		DisplayName: req.GetDisplayName(),
 		Persona:     req.GetPersona(),
@@ -321,10 +322,19 @@ func (l *lifecycleService) resolveDespawnTarget(ctx context.Context, callerOwner
 	return acc.ID, nil
 }
 
+// createAgent mints through comms so open clients see the peer; without comms
+// (tests, the waker) there is no stream to announce to.
+func (l *lifecycleService) createAgent(ctx context.Context, owner store.AccountID, n store.NewAgent) (store.Account, error) {
+	if l.comms == nil {
+		return l.store.CreateAgent(ctx, owner, n)
+	}
+	return l.comms.CreateAgentAccount(ctx, owner, n)
+}
+
 // autoOpenSpawnDM opens the manager-peer DM after spawn. Failures are logged,
 // never roll back the spawn, and can be recovered through comms_open_dm.
 func (l *lifecycleService) autoOpenSpawnDM(ctx context.Context, caller, peerID store.AccountID) string {
-	if l.dm == nil {
+	if l.comms == nil {
 		return ""
 	}
 	peer, err := l.store.GetAccount(ctx, peerID)
@@ -333,7 +343,7 @@ func (l *lifecycleService) autoOpenSpawnDM(ctx context.Context, caller, peerID s
 			"error", err.Error(), "peer", string(peerID))
 		return ""
 	}
-	resp, err := l.dm.OpenDMAsAccount(ctx, caller, &compassv1.OpenDMRequest{PeerHandle: peer.Handle})
+	resp, err := l.comms.OpenDMAsAccount(ctx, caller, &compassv1.OpenDMRequest{PeerHandle: peer.Handle})
 	if err != nil {
 		slog.WarnContext(ctx, "spawn: auto-open manager<->peer DM failed; recoverable via comms_open_dm",
 			"error", err.Error(), "peer", string(peerID))

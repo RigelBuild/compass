@@ -105,6 +105,21 @@ func (c *Comms) PublishAccountRename(ctx context.Context, account store.Account,
 	}
 }
 
+// CreateAgentAccount creates an agent and, after commit, publishes the account,
+// its home channel, and any coordination channel the parent edge reconciled.
+// Every agent mint goes through it so an open client sees the agent without reloading.
+func (c *Comms) CreateAgentAccount(ctx context.Context, owner store.AccountID, n store.NewAgent) (store.Account, error) {
+	ctx, coordChanges := withCoordChanges(ctx)
+	acc, err := c.store.CreateAgent(ctx, owner, n)
+	if err != nil {
+		return store.Account{}, err
+	}
+	ctx = context.WithoutCancel(ctx)
+	c.publishAgentCreated(ctx, acc)
+	c.emitCoordChanges(ctx, coordChanges)
+	return acc, nil
+}
+
 // SetBoardForges sets the configured forge coordinates used for board reads.
 func (c *Comms) SetBoardForges(forges board.Forges) {
 	c.boardForges = forges
@@ -188,11 +203,7 @@ func (c *Comms) CreateAgent(
 			return nil, edgeError(notFoundHandle(store.ErrNotFound, parent))
 		}
 	}
-	// Install the coordination emit buffer so the store's in-tx coordination hook
-	// (fired inside CreateAgent when this agent has a parent) records its channel
-	// change here; drained + emitted post-commit below (RIG-1722 T5).
-	ctx, coordChanges := withCoordChanges(ctx)
-	acc, err := c.store.CreateAgent(ctx, owner, store.NewAgent{
+	acc, err := c.CreateAgentAccount(ctx, owner, store.NewAgent{
 		Handle:        req.GetHandle(),
 		DisplayName:   req.GetDisplayName(),
 		Persona:       req.GetPersona(),
@@ -202,9 +213,6 @@ func (c *Comms) CreateAgent(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishAccountChanged(ctx, acc)
-	c.publishHomeChannelChanged(ctx, acc.Agent.HomeChannelID)
-	c.emitCoordChanges(ctx, coordChanges)
 	return &compassv1.CreateAgentResponse{Account: accountToWire(acc)}, nil
 }
 

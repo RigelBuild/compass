@@ -36,14 +36,14 @@ func TestCreateAgentEmitsHomeChannelChanged(t *testing.T) {
 
 // The event follows a committed create, so a caller that has already hung up
 // must not suppress it for every other open client.
-func TestPublishHomeChannelChangedSurvivesCanceledRequest(t *testing.T) {
+func TestPublishAgentCreatedSurvivesCanceledRequest(t *testing.T) {
 	h := newStreamHarness(t)
 	owner := mustUser(t, h.store, "home-cancel-owner")
 	agent := mustAgent(t, h.store, owner.ID, "home-cancel-agent")
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	h.svc.publishHomeChannelChanged(canceled, agent.Agent.HomeChannelID)
+	h.svc.publishAgentCreated(canceled, agent)
 
 	canary := mkCanary(t, h, "home-cancel-canary")
 	evts := drainReplayAsActor(t, h, owner.ID, canary)
