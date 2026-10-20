@@ -229,12 +229,11 @@ export class CompassAgent {
 		this.#sink.emit({ kind: "session", value });
 	}
 
-	// A terminal READY whose flush started a re-prompt is held; the re-prompt's own
-	// READY replaces it, so watchers see the two turns settle once.
+	// A READY that a re-prompt follows, or one inside the re-prompt run, is held;
+	// the next READY replaces it, so watchers see the turn and re-prompt settle once.
 	#holdsFrame(event: AgentSessionEvent, out: OutboundFrame): boolean {
 		if (out.kind !== "session" || event.type !== "agent_end") return false;
 		if (out.value.state !== AgentSessionState.READY) return false;
-		if (event.isTerminal === false) return false;
 		if (this.#holdReady) return true;
 		this.#heldReady = undefined;
 		return false;
@@ -623,7 +622,8 @@ export class CompassAgent {
 		// A started turn's `agent_end` owns whatever queues next, so the window closes.
 		this.#cancelBatch();
 		const { boardReprompt, delivers, forges } = this.#takeTurnEndQueues();
-		this.#holdReady = boardReprompt;
+		// A nonterminal end inside the re-prompt run keeps holding until its terminal end.
+		this.#holdReady = boardReprompt || (this.#repromptTurn && this.#runOpen);
 		if (
 			delivers.length === 0 &&
 			forges.length === 0 &&

@@ -727,9 +727,16 @@ describe("CompassAgent board freshness", () => {
 		} as AgentSessionEvent);
 		h.session.agent.state.isStreaming = true;
 		h.agent.deliver(deliverMsg("later", "queued reply"));
+		const readies = () =>
+			h.frames.filter(
+				(f) =>
+					f.kind === "session" && f.value.state === AgentSessionState.READY,
+			).length;
 		h.drive({ type: "agent_end", isTerminal: false } as AgentSessionEvent);
+		expect(readies()).toBe(0);
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
 		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		expect(readies()).toBe(1);
 		expect(h.session.agent.prompts.filter((p) => p === REPROMPT)).toHaveLength(
 			1,
 		);

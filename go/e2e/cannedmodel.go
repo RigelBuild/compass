@@ -41,6 +41,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -189,9 +190,9 @@ func lastUserText(body []byte) string {
 	if json.Unmarshal(body, &req) != nil {
 		return ""
 	}
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == "user" {
-			return messageText(req.Messages[i].Content)
+	for _, m := range slices.Backward(req.Messages) {
+		if m.Role == "user" {
+			return messageText(m.Content)
 		}
 	}
 	return ""
@@ -395,8 +396,9 @@ func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http
 	}
 
 	// An agent's turn-end board re-prompt also carries its leg's marker in history;
-	// settling it off-script keeps every leg's slots aligned to its triggers.
-	if strings.Contains(lastUserText(body), boardRepromptText) {
+	// settling it off-script keeps every leg's slots aligned to its triggers. The
+	// re-prompt runs alone, so only an exact final message matches.
+	if strings.TrimSpace(lastUserText(body)) == boardRepromptText {
 		c.writeTextTurn(w, flusher, boardRepromptReply)
 		return
 	}

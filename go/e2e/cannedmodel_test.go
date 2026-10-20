@@ -909,9 +909,13 @@ func TestCannedBoardRepromptRoutesOffScript(t *testing.T) {
 	if got := readCannedTurnBody(ctx, t, url, reprompt); got.content != boardRepromptReply {
 		t.Fatalf("re-prompt POST content = %q, want %q", got.content, boardRepromptReply)
 	}
+	embedded := `{"model":"x","messages":[{"role":"user","content":"` + marker + `: quote ` + boardRepromptText + `"}]}`
+	if got := readCannedTurnBody(ctx, t, url, embedded); got.content != first {
+		t.Fatalf("marker request quoting the re-prompt content = %q, want the first marker slot %q", got.content, first)
+	}
 	next := `{"model":"x","messages":[{"role":"user","content":"` + boardRepromptText + `"},` +
 		`{"role":"user","content":"` + marker + `: next"}]}`
-	if got := readCannedTurnBody(ctx, t, url, next); got.content != first {
-		t.Fatalf("trigger after re-prompt content = %q, want the first marker slot %q", got.content, first)
+	if got := readCannedTurnBody(ctx, t, url, next); got.content != second {
+		t.Fatalf("trigger after re-prompt content = %q, want the second marker slot %q", got.content, second)
 	}
 }
