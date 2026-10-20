@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/agentidentity"
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -1508,7 +1509,15 @@ func TestForgeScopeGateAllowsEveryGrantedWrite(t *testing.T) {
 			// The PR arms act only on the caller's own open PR.
 			seedOwnPR(st, 1, testAgentID)
 			author.FindPRResult, author.FindPRFound = forge.PullRequest{Number: 1, State: "open", HeadRef: "feature", BaseRef: "main"}, true
-			svc.mirror = &fakeMirror{events: &[]string{}}
+			svc.mirror = &fakeMirror{
+				events: &[]string{},
+				identities: map[string][2]string{
+					"default": {
+						agentidentity.AgentCommitEmail(string(testAgentID)),
+						agentidentity.AgentCommitEmail(string(testAgentID)),
+					},
+				},
+			}
 
 			res := svc.ExecuteForgeCallAsAccountMust(t, call)
 			if fe := res.GetError(); fe != nil {

@@ -11,6 +11,47 @@ import (
 	"testing"
 )
 
+func TestExecSpecExportsCommitIdentityOnlyWhenAgentKnown(t *testing.T) {
+	tests := []struct {
+		name           string
+		agentAccountID string
+		want           map[string]string
+	}{
+		{
+			name:           "known agent exports jj and git identity",
+			agentAccountID: "acct-runner",
+			want: map[string]string{
+				"JJ_USER":             "acct-runner",
+				"JJ_EMAIL":            "acct-runner@agents.compass.invalid",
+				"GIT_AUTHOR_EMAIL":    "acct-runner@agents.compass.invalid",
+				"GIT_COMMITTER_EMAIL": "acct-runner@agents.compass.invalid",
+				"GIT_AUTHOR_NAME":     "acct-runner",
+				"GIT_COMMITTER_NAME":  "acct-runner",
+			},
+		},
+		{name: "empty agent identity is omitted", want: map[string]string{}},
+	}
+	keys := []string{
+		"JJ_USER", "JJ_EMAIL", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL",
+		"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME",
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := AgentEnv{
+				UID: 1000, HomeDir: "/home/coder", Workdir: "/srv/checkout",
+				AgentAccountID: tc.agentAccountID,
+			}.execSpec()
+			for _, key := range keys {
+				got, ok := spec.Env[key]
+				want, present := tc.want[key]
+				if ok != present || (ok && got != want) {
+					t.Errorf("%s = %q (present %v), want %q (present %v)", key, got, ok, want, present)
+				}
+			}
+		})
+	}
+}
+
 // The workdir must reach the agent by BOTH mechanisms, from the one Workdir
 // value: podman's --workdir (the process's real cwd) and COMPASS_WORKDIR (what
 // the agent reads to locate the checkout). They are independent paths that must

@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/agentidentity"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/refs"
@@ -88,7 +89,10 @@ func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, 
 		if fe = r.applyBundle(ctx, req.GetBundle(), entries); fe != nil {
 			return forgeErrorResult(fe)
 		}
-		foreign, failed, fe = r.prepareStack(ctx, entries, found)
+		failed, fe = r.requireBundleCommitIdentity(ctx, entries)
+		if fe == nil {
+			foreign, failed, fe = r.prepareStack(ctx, entries, found)
+		}
 	}
 	if fe != nil {
 		out[failed] = failedEntry(entries[failed].GetHeadRef(), fe)
@@ -319,6 +323,32 @@ func (r *stackRun) applyBundle(ctx context.Context, bundle []byte, entries []*co
 	}
 	maps.Copy(r.leases, leases)
 	return nil
+}
+
+// requireBundleCommitIdentity keeps the line clean: each bundled tip must be the
+// agent's own commit by author or committer email. Not a security boundary.
+func (r *stackRun) requireBundleCommitIdentity(ctx context.Context, entries []*compassv1internal.StackEntry) (int, *compassv1internal.ForgeCallError) {
+	if !r.bundled {
+		return -1, nil
+	}
+	want := agentidentity.AgentCommitEmail(string(r.caller))
+	for i, entry := range entries {
+		head := entry.GetHeadRef()
+		authorEmail, committerEmail, err := r.s.mirror.CommitIdentities(ctx, r.repo, "refs/heads/"+head)
+		if err != nil {
+			return i, forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: read commit identity for head %q: %v", head, err))
+		}
+		isAuthor := strings.EqualFold(authorEmail, want)
+		isCommitter := strings.EqualFold(committerEmail, want)
+		if isAuthor || isCommitter {
+			continue
+		}
+		return i, forgeErr(connect.CodePermissionDenied, fmt.Sprintf(
+			"forge: head %q's tip's author and committer are not this agent; the commit must be made by the agent itself via vcs_commit",
+			head,
+		))
+	}
+	return -1, nil
 }
 
 // checkForeignBase returns the base PR when another agent of the caller's owner

@@ -10,9 +10,11 @@ import (
 	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/agentidentity"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"maps"
 )
 
 // stackProvider is a FakeProvider that keeps PRs by head, so a line of several
@@ -110,12 +112,13 @@ func (p *stackProvider) count(prefix string) int {
 // fakeMirror records applies and pushes into the shared event log. remote holds
 // forge branch heads; a push is checked against its leases like a real lease.
 type fakeMirror struct {
-	events  *[]string
-	applied [][]string
-	pushes  []map[string]string
-	leases  []forge.Leases
-	pushErr error
-	remote  map[string]string
+	events     *[]string
+	applied    [][]string
+	pushes     []map[string]string
+	leases     []forge.Leases
+	pushErr    error
+	remote     map[string]string
+	identities map[string][2]string
 	// rebases records each Rebase line and its onto; conflict scripts the result.
 	rebases  [][]string
 	ontos    []string
@@ -200,6 +203,14 @@ func (m *fakeMirror) SeedRef(_ context.Context, _ string, ref string) (string, e
 	return m.remote[ref], nil
 }
 
+func (m *fakeMirror) CommitIdentities(_ context.Context, _, commit string) (string, string, error) {
+	identity, ok := m.identities[commit]
+	if !ok {
+		identity = m.identities["default"]
+	}
+	return identity[0], identity[1], nil
+}
+
 func newStackServiceForTest(t *testing.T) (*forgeService, *fakeForgeStore, *stackProvider, *fakeMirror) {
 	t.Helper()
 	events := &[]string{}
@@ -211,7 +222,16 @@ func newStackServiceForTest(t *testing.T) (*forgeService, *fakeForgeStore, *stac
 		t.Fatalf("register: %v", err)
 	}
 	svc.providers = reg
-	m := &fakeMirror{events: events, remote: map[string]string{}}
+	m := &fakeMirror{
+		events: events,
+		remote: map[string]string{},
+		identities: map[string][2]string{
+			"default": {
+				agentidentity.AgentCommitEmail(string(testAgentID)),
+				agentidentity.AgentCommitEmail(string(testAgentID)),
+			},
+		},
+	}
 	svc.mirror = m
 	return svc, st, p, m
 }
@@ -246,6 +266,69 @@ func statuses(entries []*compassv1internal.StackEntryResult) []compassv1internal
 		out[i] = e.GetStatus()
 	}
 	return out
+}
+
+func TestSubmitStackRequiresBundledCommitByAgent(t *testing.T) {
+	agentEmail := agentidentity.AgentCommitEmail(string(testAgentID))
+	tests := []struct {
+		name       string
+		identities map[string][2]string
+		failed     bool
+		matching   string
+	}{
+		{
+			name: "another author and committer are refused",
+			identities: map[string][2]string{
+				"refs/heads/b": {"other@example.test", "other@example.test"},
+			},
+			failed: true,
+		},
+		{
+			name:     "matching committer is accepted",
+			matching: "committer",
+			identities: map[string][2]string{
+				"refs/heads/a": {"other@example.test", "ACCT-AGENT@AGENTS.COMPASS.INVALID"},
+			},
+		},
+		{
+			name:     "matching author is accepted",
+			matching: "author",
+			identities: map[string][2]string{
+				"refs/heads/a": {agentEmail, "other@example.test"},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _, m := newStackServiceForTest(t)
+			maps.Copy(m.identities, tc.identities)
+			got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, stackCall(
+				"identity", "", []byte("bundle"),
+				stackEntry("a", "owner/repo#7"),
+				stackEntry("b", "owner/repo#7"),
+				stackEntry("c", "owner/repo#7"),
+			)))
+			if tc.failed {
+				if statuses(got)[0] != skippedStatus || statuses(got)[1] != failedStatus || statuses(got)[2] != skippedStatus {
+					t.Fatalf("statuses = %v, want skipped, failed, skipped", statuses(got))
+				}
+				message := got[1].GetError().GetMessage()
+				if got[1].GetError().GetCode() != "permission_denied" || !strings.Contains(message, `head "b"`) || !strings.Contains(message, "author and committer are not this agent") || !strings.Contains(message, "must be made by the agent itself via vcs_commit") {
+					t.Fatalf("entry b error = %v, want permission_denied explaining agent-authored vcs_commit", got[1].GetError())
+				}
+			} else {
+				if statuses(got)[0] != doneStatus || statuses(got)[1] != doneStatus || statuses(got)[2] != doneStatus {
+					t.Fatalf("statuses = %v, want all done", statuses(got))
+				}
+				identity := m.identities["refs/heads/a"]
+				matchesAuthor := strings.EqualFold(identity[0], agentEmail)
+				matchesCommitter := strings.EqualFold(identity[1], agentEmail)
+				if tc.matching == "author" && (!matchesAuthor || matchesCommitter) || tc.matching == "committer" && (!matchesCommitter || matchesAuthor) {
+					t.Fatalf("identity = %v, want only matching %s", identity, tc.matching)
+				}
+			}
+		})
+	}
 }
 
 // seedPR puts PR #5 on head "a", with an ownership row for agent unless agent is empty.
