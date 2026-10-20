@@ -383,6 +383,8 @@ describe("subagent board synchronization", () => {
 
 	test("a row the store trims from a full task is logged", async () => {
 		const h = attached("parent-task");
+		// The startup sweep runs first; rows stored after it are another live writer's.
+		await h.window();
 		h.transport.addOpenRows(
 			"parent-task",
 			Array.from({ length: 20 }, (_, i) => `o${i}`),
@@ -546,6 +548,7 @@ describe("subagent board synchronization", () => {
 
 	test("open rows another writer stored count toward the cap", async () => {
 		const h = attached("parent-task");
+		await h.window();
 		h.transport.addOpenRows(
 			"parent-task",
 			Array.from({ length: 20 }, (_, i) => `o${i}`),
@@ -595,6 +598,55 @@ describe("subagent board synchronization", () => {
 		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
 		expect(task?.subagents.map((s) => s.id)).toEqual(["b"]);
 		void h.detach();
+	});
+
+	test("thrown transport failures share the bounded retries", async () => {
+		const h = attached("parent-task");
+		let thrown = 0;
+		const comms = h.transport.comms.bind(h.transport);
+		h.transport.comms = async (req) => {
+			if (
+				req.call.case === "updateBoard" &&
+				req.call.value.upsertTasks.length > 0
+			) {
+				thrown += 1;
+				throw new Error("transport down");
+			}
+			return comms(req);
+		};
+		h.emit("a", "completed");
+		for (let i = 0; i < 12; i++) await h.window();
+		const attempts = thrown;
+		for (let i = 0; i < 12; i++) await h.window();
+		expect(thrown).toBe(attempts);
+		void h.detach();
+	});
+
+	test("an open row left by an earlier process is closed as aborted", async () => {
+		const h = attached("parent-task", { seeded: false });
+		h.transport.addOpenRows("parent-task", ["old"]);
+		h.freshness.seed(1n, 1_000, h.transport.board);
+		h.emit("live", "started");
+		await h.window();
+		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
+		expect(task?.subagents.map((s) => [s.id, s.status])).toEqual([
+			["old", "aborted"],
+			["live", "started"],
+		]);
+		void h.detach();
+	});
+
+	test("detaching closes this session's open rows as aborted", async () => {
+		const h = attached("parent-task");
+		h.emit("a", "started");
+		await h.window();
+		h.emit("b", "started");
+		await h.detach();
+		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
+		expect(task?.subagents.map((s) => [s.id, s.status])).toEqual([
+			["a", "aborted"],
+			["b", "aborted"],
+		]);
 	});
 
 	test("a canceled call is transient: the rows retry without a re-read", async () => {
@@ -660,12 +712,14 @@ describe("subagent board synchronization", () => {
 
 	test("a seed landing after a sync read keeps the newer board", () => {
 		const freshness = new BoardFreshness();
-		freshness.noteBoard(board({ focusTaskKey: "new" }));
+		freshness.noteBoard(
+			board({ focusTaskKey: "new", writtenAtUnixMs: 4_000n }),
+		);
 		freshness.forgetBoard();
 		freshness.seed(1n, 5_000, board({ focusTaskKey: "old" }));
 		expect(freshness.focusTaskKey()).toBe("new");
 		expect(freshness.boardKnown()).toBe(false);
-		expect(freshness.ageMs(6_000)).toBe(1_000);
+		expect(freshness.ageMs(6_000)).toBe(2_000);
 	});
 
 	test("detaching sends a pending write before it resolves", async () => {

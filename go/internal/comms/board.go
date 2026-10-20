@@ -56,14 +56,16 @@ func (c *Comms) UpdateBoardAsAccount(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	if c.driver != nil {
+	// An empty automatic patch is the runtime's board read, and a read calls no forge.
+	read := patch.Automatic && emptyBoardPatch(patch)
+	if c.driver != nil && !read {
 		go c.driver.DriveAgent(context.WithoutCancel(ctx), caller)
 	}
 	authored := boardAuthoredToWire(account, row, nil)
 	if authored.decodeErr != nil {
 		slog.ErrorContext(ctx, "comms: board decode failed after committed update", "agent_account_id", string(caller), "error", authored.decodeErr)
 	}
-	if (!patch.Automatic || !emptyBoardPatch(patch)) && c.bus != nil {
+	if !read && c.bus != nil {
 		eventBoard, ok := proto.Clone(authored.wire).(*compassv1.AgentBoard)
 		if !ok {
 			slog.ErrorContext(ctx, "comms: board event clone has unexpected type", "agent_account_id", string(caller))

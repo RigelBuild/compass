@@ -19,19 +19,24 @@ export class BoardFreshness {
 	#writtenAtMs: number | undefined;
 	#writes = 0;
 	#focusTaskKey = "";
-	// Task key → ids of its unsettled subagent rows; undefined until a board returned.
-	#tasks: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+	// Task key → its unsettled subagent rows by id; undefined until a board returned.
+	#tasks: ReadonlyMap<string, ReadonlyMap<string, BoardSubagent>> | undefined;
 	// Any later read or write is newer than the startup seed, even after a forget.
 	#boardNoted = false;
 	#settled = false;
 
-	// Keeps the stored time and tasks; a seed landing after any later read or write is
-	// stale, and only this session's writes set the time.
+	// A seed landing after any later read or write is stale, so it changes nothing.
 	seed(_writtenTurn: bigint, writtenAtMs: number, board?: AgentBoard): void {
 		this.#settled = true;
+		if (this.#boardNoted || this.#writes > 0) return;
+		this.#noteWrittenAt(writtenAtMs);
+		if (board !== undefined) this.noteBoard(board);
+	}
+
+	// Only this session's writes set the time once it has written.
+	#noteWrittenAt(writtenAtMs: number): void {
 		if (this.#writes === 0)
 			this.#writtenAtMs = writtenAtMs > 0 ? writtenAtMs : undefined;
-		if (board !== undefined && !this.#boardNoted) this.noteBoard(board);
 	}
 
 	/** A failed seed still settles: the board then counts as never written. */
@@ -54,12 +59,13 @@ export class BoardFreshness {
 	/** Records the focus, tasks and open subagent rows of a board the server returned. */
 	noteBoard(board: AgentBoard): void {
 		this.#boardNoted = true;
+		this.#noteWrittenAt(Number(board.writtenAtUnixMs));
 		this.#focusTaskKey = board.focusTaskKey;
 		this.#tasks = new Map(
 			board.tasks.map((t) => [
 				t.key,
-				new Set(
-					t.subagents.filter((s) => !subagentSettled(s)).map((s) => s.id),
+				new Map(
+					t.subagents.filter((s) => !subagentSettled(s)).map((s) => [s.id, s]),
 				),
 			]),
 		);
@@ -78,9 +84,16 @@ export class BoardFreshness {
 		return this.#tasks?.has(key) === true;
 	}
 
-	/** Ids of the task's stored unsettled subagent rows. */
-	openRows(key: string): ReadonlySet<string> {
+	/** The task's stored unsettled subagent rows, by id. */
+	openRows(key: string): ReadonlyMap<string, BoardSubagent> {
 		return this.#tasks?.get(key) ?? NO_ROWS;
+	}
+
+	/** Every stored unsettled subagent row, with its task key. */
+	allOpenRows(): { key: string; row: BoardSubagent }[] {
+		return [...(this.#tasks ?? [])].flatMap(([key, rows]) =>
+			[...rows.values()].map((row) => ({ key, row })),
+		);
 	}
 
 	wroteThisTurn(turn: bigint): boolean {
@@ -131,7 +144,7 @@ export function boardOf(result: CommsCallResult, toolName: string): AgentBoard {
 	return board;
 }
 
-const NO_ROWS: ReadonlySet<string> = new Set();
+const NO_ROWS: ReadonlyMap<string, BoardSubagent> = new Map();
 const SETTLED_STATUSES = new Set(["completed", "failed", "aborted"]);
 
 // Mirrors the store's subagentSettled, which decides what the 20-row cap counts.

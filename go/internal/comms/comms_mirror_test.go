@@ -63,6 +63,31 @@ func TestBoardWriteDrivesAgentMirrors(t *testing.T) {
 	}
 }
 
+func TestBoardReadDrivesNoMirrors(t *testing.T) {
+	svc, st := newHandler(t)
+	owner := mustUser(t, st, "board-read-driver-owner")
+	agent := mustAgent(t, st, owner.ID, "board-read-driver-agent")
+	driver := agentMirrorDriverRecorder{calls: make(chan store.AccountID, 2)}
+	svc.SetMirrorer(nil, driver)
+	if _, err := svc.UpdateBoardAsAccount(t.Context(), agent.ID, &compassv1.UpdateAgentBoardRequest{Automatic: true}); err != nil {
+		t.Fatalf("UpdateBoardAsAccount: %v", err)
+	}
+	// The write is driven; a driven read would add a second call.
+	if _, err := svc.UpdateBoardAsAccount(t.Context(), agent.ID, &compassv1.UpdateAgentBoardRequest{}); err != nil {
+		t.Fatalf("UpdateBoardAsAccount write: %v", err)
+	}
+	select {
+	case <-driver.calls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DriveAgent did not receive the board write")
+	}
+	select {
+	case <-driver.calls:
+		t.Fatal("the empty automatic read drove the agent's mirrors")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func TestCommittedAskMessagesDriveMirrors(t *testing.T) {
 	svc, st := newHandler(t)
 	owner := mustUser(t, st, "mirror-driver-owner")

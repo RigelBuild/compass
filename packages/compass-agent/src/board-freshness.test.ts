@@ -44,6 +44,17 @@ describe("seedBoardFreshness", () => {
 		expect(freshness.wroteThisTurn(2n)).toBe(false);
 	});
 
+	test("a seed that lands after a newer board read keeps that read's write time", () => {
+		const freshness = new BoardFreshness();
+		freshness.noteBoard(
+			board({ focusTaskKey: "new", writtenAtUnixMs: 50_000n }),
+		);
+		freshness.seed(2n, 10_000, board({ focusTaskKey: "old" }));
+		expect(freshness.ageMs(51_000)).toBe(1_000);
+		expect(freshness.focusTaskKey()).toBe("new");
+		expect(freshness.seeded()).toBe(true);
+	});
+
 	test("a seed with no reply fails at the deadline and settles freshness", async () => {
 		const timer = new FakeTimer();
 		const transport = new FakeTransport(board());

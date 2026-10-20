@@ -154,10 +154,12 @@ export function attachSubagentBoardSync(
 	let inFlight: Promise<void> | undefined;
 	let detached = false;
 	let closed = false;
+	// Open rows stored before this session belong to a process that is gone.
+	let sweepPending = true;
 
 	const arm = (): void => {
-		if (detached || inFlight || cancel !== undefined || changed.size === 0)
-			return;
+		if (detached || inFlight || cancel !== undefined) return;
+		if (changed.size === 0 && !sweepPending) return;
 		cancel = timer.set(SUBAGENT_SYNC_MS, () => {
 			cancel = undefined;
 			// Wait for the startup read so the patch lands on the stored focus task.
@@ -277,7 +279,7 @@ export function attachSubagentBoardSync(
 		for (const s of sent) if (byId.get(s.id) === s) changed.add(s.id);
 	};
 
-	const onRefused = (sent: BoardSubagent[], result: CommsCallResult): void => {
+	const onRefused = (sent: BoardSubagent[], error: Error): void => {
 		// The known tasks may be stale (a task was removed), so re-read before retrying.
 		freshness.forgetBoard();
 		for (const s of sent) {
@@ -287,13 +289,12 @@ export function attachSubagentBoardSync(
 				changed.add(s.id);
 			}
 		}
-		logSync(
-			"sync refused",
-			boardError(result, "subagent board sync", "update_board"),
-		);
+		logSync("sync refused", error);
 	};
 
-	const onFault = (sent: BoardSubagent[], result: CommsCallResult): void => {
+	// Thrown and in-band transient faults share one bound, so an outage cannot grow
+	// the pending rows without limit.
+	const onFault = (sent: BoardSubagent[], error: Error): void => {
 		let exhausted = false;
 		for (const s of sent) {
 			// A newer row under the id has its own retry allowance.
@@ -303,34 +304,18 @@ export function attachSubagentBoardSync(
 			if (n > TRANSIENT_RETRIES) exhausted = true;
 		}
 		if (exhausted) {
-			onRefused(sent, result);
+			onRefused(sent, error);
 			return;
 		}
 		requeue(sent);
-		logSync(
-			"sync failed",
-			boardError(result, "subagent board sync", "update_board"),
-		);
+		logSync("sync failed", error);
 	};
 
-	const write = async (
+	const onWritten = (
+		board: AgentBoard,
 		sent: BoardSubagent[],
 		keys: Map<string, string>,
-	): Promise<void> => {
-		let result: CommsCallResult;
-		try {
-			result = await broker.call(request(sent, keys));
-		} catch (error) {
-			requeue(sent);
-			logSync("sync failed", error);
-			return;
-		}
-		const board = boardIn(result);
-		if (board === undefined) {
-			if (transient(result)) onFault(sent, result);
-			else onRefused(sent, result);
-			return;
-		}
+	): void => {
 		freshness.noteBoard(board);
 		const trimmed: string[] = [];
 		for (const s of sent) {
@@ -346,6 +331,27 @@ export function attachSubagentBoardSync(
 				"rows trimmed",
 				new Error(`full task dropped ${trimmed.join(", ")}`),
 			);
+	};
+
+	const write = async (
+		sent: BoardSubagent[],
+		keys: Map<string, string>,
+	): Promise<void> => {
+		let result: CommsCallResult;
+		try {
+			result = await broker.call(request(sent, keys));
+		} catch (error) {
+			onFault(sent, error instanceof Error ? error : new Error(String(error)));
+			return;
+		}
+		const board = boardIn(result);
+		if (board !== undefined) {
+			onWritten(board, sent, keys);
+			return;
+		}
+		const error = boardError(result, "subagent board sync", "update_board");
+		if (transient(result)) onFault(sent, error);
+		else onRefused(sent, error);
 	};
 
 	// The server refuses a task with more than 20 open rows, so a start that would add
@@ -405,10 +411,30 @@ export function attachSubagentBoardSync(
 		};
 	};
 
+	const aborted = (row: BoardSubagent): BoardSubagent =>
+		create(BoardSubagentSchema, {
+			...row,
+			status: "aborted",
+			endedAtUnixMs: BigInt(Math.trunc(timer.now())),
+		});
+
+	// A stored open row this session never started cannot settle, and it holds a slot
+	// in the task's open-row cap, so it is closed once as aborted.
+	const sweep = (): void => {
+		sweepPending = false;
+		for (const { key, row } of freshness.allOpenRows()) {
+			if (byId.has(row.id) || next.has(row.id)) continue;
+			byId.set(row.id, aborted(row));
+			taskById.set(row.id, key);
+			changed.add(row.id);
+		}
+	};
+
 	// Resolves true when a call answered, so the drain stops when nothing can move.
 	const send = async (): Promise<boolean> => {
 		if (!freshness.boardKnown() && !(await readBoard())) return false;
 		if (closed) return false;
+		if (sweepPending) sweep();
 		const { sent, keys } = nextBatch();
 		if (sent.length === 0) return false;
 		await write(sent, keys);
@@ -521,11 +547,28 @@ export function attachSubagentBoardSync(
 		}
 	};
 
+	// Subagents die with this process, so rows still open at shutdown close as aborted.
+	const abortOpen = (): void => {
+		for (const [id, row] of byId) {
+			if (row.endedAtUnixMs !== 0n) continue;
+			byId.set(id, aborted(row));
+			refused.delete(id);
+			faults.delete(id);
+			changed.add(id);
+		}
+		for (const queue of next.values())
+			for (const run of queue)
+				if (run.row.endedAtUnixMs === 0n) run.row = aborted(run.row);
+	};
+
+	arm();
+
 	return async () => {
 		unsubscribe();
 		cancel?.();
 		cancel = undefined;
 		detached = true;
+		abortOpen();
 		let stop = (): void => {};
 		const deadline = new Promise<void>((resolve) => {
 			stop = timer.set(SHUTDOWN_FLUSH_MS, resolve);
