@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -69,13 +70,61 @@ func TestRecordWriteIntentFailedAttemptAndLostReplay(t *testing.T) {
 		t.Fatalf("EndWriteIntent(lost): %v", err)
 	}
 
-	lost, err := s.RecordWriteIntent(t.Context(), in)
+	changed := in
+	changed.Repo = "Owner/Changed"
+	changed.HeadRef = "feature/changed"
+	lost, err := s.RecordWriteIntent(t.Context(), changed)
 	if err != nil {
 		t.Fatalf("RecordWriteIntent after loss: %v", err)
 	}
-	if lost.ID != retry.ID || lost.State != WriteStateLost {
-		t.Fatalf("lost replay = %+v, want lost attempt %+v", lost, retry)
+	if lost.ID != retry.ID || lost.State != WriteStateLost || lost.Repo != retry.Repo || lost.HeadRef != retry.HeadRef {
+		t.Fatalf("lost replay = %+v, want lost attempt %+v with its original target", lost, retry)
 	}
+}
+
+func TestWriteIntentTenantIsolation(t *testing.T) {
+	s := newTestStore(t)
+	tenantA, tenantB := seedTenant(t, s, "intent-tenant-a"), seedTenant(t, s, "intent-tenant-b")
+	ctxA, ctxB := WithTenant(t.Context(), tenantA), WithTenant(t.Context(), tenantB)
+	in := WriteIntent{
+		Provider: ForgeProviderGitHub, Host: "github.com", Repo: "Owner/Repo",
+		Kind: forge.WriteKindPullRequest, HeadRef: "feature/tenant",
+		SessionID: "session-tenant", RequestKey: "key-tenant",
+	}
+	inA, inB := in, in
+	inA.AgentAccountID, inA.OwnerUserID = seedWriteIntentAgent(t, ctxA, s, "intent-tenant-a")
+	inB.AgentAccountID, inB.OwnerUserID = seedWriteIntentAgent(t, ctxB, s, "intent-tenant-b")
+
+	rowA, err := s.RecordWriteIntent(ctxA, inA)
+	if err != nil || rowA.TenantID != tenantA {
+		t.Fatalf("RecordWriteIntent(A) = %+v, %v; want tenant %q", rowA, err, tenantA)
+	}
+	if got, err := s.PRIntentForHead(ctxB, in.Provider, in.Host, in.Repo, in.HeadRef); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("PRIntentForHead(B) = %+v, %v; want ErrNotFound", got, err)
+	}
+	if err := s.EndWriteIntent(ctxB, rowA.ID, WriteStateFailed); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("EndWriteIntent(B on A's row) = %v; want ErrNotFound", err)
+	}
+	rowB, err := s.RecordWriteIntent(ctxB, inB)
+	if err != nil || rowB.ID == rowA.ID || rowB.TenantID != tenantB || rowB.State != WriteStatePending {
+		t.Fatalf("RecordWriteIntent(B, same key) = %+v, %v; want a new pending row in tenant %q", rowB, err, tenantB)
+	}
+	if got, err := s.PRIntentForHead(ctxA, in.Provider, in.Host, in.Repo, in.HeadRef); err != nil || got.ID != rowA.ID || got.State != WriteStatePending {
+		t.Fatalf("PRIntentForHead(A) = %+v, %v; want A's untouched pending row", got, err)
+	}
+}
+
+func seedWriteIntentAgent(t *testing.T, ctx context.Context, s *Store, handle string) (agent, owner AccountID) {
+	t.Helper()
+	u, err := s.CreateUser(ctx, NewUser{Handle: handle + "-owner", DisplayName: handle})
+	if err != nil {
+		t.Fatalf("CreateUser(%s): %v", handle, err)
+	}
+	a, err := s.CreateAgent(ctx, u.ID, NewAgent{Handle: handle, DisplayName: handle})
+	if err != nil {
+		t.Fatalf("CreateAgent(%s): %v", handle, err)
+	}
+	return a.ID, u.ID
 }
 
 // A held key is reserved for its target and replayed to a racing claim, but it
