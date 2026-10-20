@@ -1905,13 +1905,16 @@ jobs:
               go/events/ \
               go/gen/ \
               go/go.mod \
-              go/go.sum)
+              go/go.sum \
+              apps/ui/index.html \
+              apps/ui/vite.config.ts \
+              apps/ui/package.json)
             if [ -z "$changed" ]; then
               run_it=0
             fi
           fi
           if [ "$run_it" = 0 ]; then
-            echo "darwin: PR does not touch the shell, sidecar, closure, or macos-bundle surface — skipping (affected gate)"
+            echo "darwin: PR does not touch the shell, sidecar, closure, macos-bundle, or UI entry surface — skipping (affected gate)"
             exit 0
           fi
 

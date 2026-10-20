@@ -404,12 +404,17 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		).toBe(true);
 	});
 
-	test("darwinAffected on apps/ui/index.html (it loads the shell globals script)", () => {
-		expect(
-			generate(
-				prInput({ affectedIds: [], changedPaths: ["apps/ui/index.html"] }),
-			).darwinAffected,
-		).toBe(true);
+	test("darwinAffected on UI build inputs that shape dist/index.html", () => {
+		for (const path of [
+			"apps/ui/index.html",
+			"apps/ui/vite.config.ts",
+			"apps/ui/package.json",
+		]) {
+			expect(
+				generate(prInput({ affectedIds: [], changedPaths: [path] }))
+					.darwinAffected,
+			).toBe(true);
+		}
 		expect(
 			generate(
 				prInput({ affectedIds: [], changedPaths: ["apps/ui/src/index.tsx"] }),
