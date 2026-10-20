@@ -35,6 +35,7 @@ func TestMain(m *testing.M) {
 	registerAskFixtureOptions()
 	registerDuoFixtureOptions()
 	registerFanoutFixtureOptions()
+	registerMultiPeerFixtureOptions()
 	registerListMessagesFixtureOptions()
 	registerPeeringFixtureOptions()
 	registerRedeliverFixtureOptions()
