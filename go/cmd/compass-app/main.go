@@ -111,15 +111,13 @@ func run(ctx context.Context) error {
 	if setup != nil {
 		services = append(services, application.NewService(setup), application.NewService(dialog))
 	}
-	app := application.New(application.Options{
-		Name:        "compass-app",
-		Description: "Compass native desktop shell",
-		Services:    services,
-		Assets: application.AssetOptions{
-			Handler:    application.BundledAssetFileServer(os.DirFS(assetsDir)),
-			Middleware: shellGlobalsMiddleware(svc),
-		},
-	})
+	opts := appOptions()
+	opts.Services = services
+	opts.Assets = application.AssetOptions{
+		Handler:    application.BundledAssetFileServer(os.DirFS(assetsDir)),
+		Middleware: shellGlobalsMiddleware(svc),
+	}
+	app := application.New(opts)
 	if dialog != nil {
 		dialog.app = app
 	}

@@ -84,7 +84,7 @@ nix build -f "$REPO_ROOT/tools/toolchain/secretspec-env.nix" secretspecRelease \
   -o "$SCRIPT_DIR/result-secretspec"
 install -m 755 "$SCRIPT_DIR/result-secretspec/bin/secretspec" "$STAGE/bin/secretspec"
 
-# --- 5. Stage the rest of the layout — dist + desktop + LICENSE (§156-168).
+# --- 5. Stage the rest of the layout — dist + desktop + icon + LICENSE (§156-168).
 
 # dist: the compass-ui:build output (apps/ui/dist), staged beside the shell.
 UI_DIST="$REPO_ROOT/apps/ui/dist"
@@ -96,6 +96,9 @@ cp -R "$UI_DIST" "$STAGE/bin/dist"
 
 # desktop template (inert as shipped, §466-469) + LICENSE (AGPL-3.0-only).
 cp "$SCRIPT_DIR/compass.desktop" "$STAGE/share/applications/compass.desktop"
+# Icon=compass in the desktop entry resolves through the hicolor theme.
+install -D -m 644 "$REPO_ROOT/apps/ui/src/assets/compass-needle.svg" \
+  "$STAGE/share/icons/hicolor/scalable/apps/compass.svg"
 cp "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
 
 # --- 6. Sanity assertions (§256-261). A green build means a COMPLETE bundle.
