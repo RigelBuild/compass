@@ -288,6 +288,40 @@ describe("compass_update_board parameters", () => {
 		expect(ok({ tasks: [{ key: "k".repeat(65) }] })).toBe(false);
 		expect(ok({ focus: "f".repeat(65) })).toBe(false);
 		expect(ok({ remove: Array.from({ length: 31 }, String) })).toBe(false);
+		expect(ok({ remove: ["r".repeat(65)] })).toBe(false);
+		// Exactly at each cap is accepted.
+		expect(ok({ tasks: [{ key: "k".repeat(64) }] })).toBe(true);
+		expect(ok({ focus: "f".repeat(64) })).toBe(true);
+		expect(
+			ok({ remove: Array.from({ length: 30 }, () => "r".repeat(64)) }),
+		).toBe(true);
+		expect(
+			ok(
+				task({
+					waiting: [
+						{
+							on: "agent",
+							what: "w".repeat(200),
+							agent: "a".repeat(64),
+							blocks: Array(10).fill("r"),
+						},
+					],
+				}),
+			),
+		).toBe(true);
+		expect(ok(task({ refs: Array(10).fill("r"), note: "n".repeat(500) }))).toBe(
+			true,
+		);
+		expect(
+			ok({ tasks: Array.from({ length: 30 }, (_, i) => ({ key: `k${i}` })) }),
+		).toBe(true);
+		expect(ok({ halt: { kind: "blocked", reason: "r".repeat(200) } })).toBe(
+			true,
+		);
+		expect(
+			listAgentBoardsParameters({ agents: Array(100).fill("a") }) instanceof
+				type.errors,
+		).toBe(false);
 		expect(
 			ok(
 				task({ waiting: [{ on: "agent", what: "w", agent: "a".repeat(65) }] }),

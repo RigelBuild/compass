@@ -145,7 +145,7 @@ export const updateAgentBoardParameters = type({
 		.array()
 		.atMostLength(30)
 		.describe("Tasks to create or patch; a board holds at most 30"),
-	"remove?": type("string")
+	"remove?": capped(KEY_CHARS, "Task key")
 		.array()
 		.atMostLength(30)
 		.describe("Task keys to remove, at most 30"),
@@ -176,7 +176,7 @@ export const listAgentBoardsParameters = type({
 			(value, ctx) =>
 				(value >= 1 && value <= 100) || ctx.mustBe("between 1 and 100"),
 		)
-		.describe("Maximum boards to return; at most 100"),
+		.describe("Maximum boards to return; default 20, at most 100"),
 });
 
 const GATE_TOKEN_BY_VALUE: Record<BoardPrGate, string> = {

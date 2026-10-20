@@ -226,6 +226,65 @@ describe("subagent board synchronization", () => {
 		void h.detach();
 	});
 
+	test("a reused id's pending settle still lands before the new run", async () => {
+		const h = attached("first");
+		h.transport.addTask("second");
+		h.freshness.noteBoard(h.transport.board);
+		h.emit("a", "started");
+		await h.window();
+		h.emit("a", "completed");
+		h.transport.focus = "second";
+		h.freshness.noteBoard(h.transport.board);
+		h.emit("a", "started");
+		await h.window();
+		await h.window();
+		const rows = (key: string) =>
+			h.transport.board.tasks
+				.find((t) => t.key === key)
+				?.subagents.map((s) => `${s.id}:${s.status}`);
+		expect(rows("first")).toEqual(["a:completed"]);
+		expect(rows("second")).toEqual(["a:started"]);
+		void h.detach();
+	});
+
+	test("a settle during its start's write follows the start's task", async () => {
+		const h = attached("first", { seeded: false });
+		h.transport.addTask("second");
+		h.emit("a", "started");
+		h.freshness.seed(1n, 1_000, h.transport.board);
+		const release = h.transport.hold();
+		h.timer.advance(5_000);
+		await settle();
+		h.emit("a", "completed");
+		h.transport.focus = "second";
+		release();
+		await settle();
+		h.freshness.noteBoard(h.transport.board);
+		await h.window();
+		const first = h.transport.board.tasks.find((t) => t.key === "first");
+		expect(first?.subagents.map((s) => s.status)).toEqual(["completed"]);
+		void h.detach();
+	});
+
+	test("a fault on an older row does not spend the newer row's retries", async () => {
+		const h = attached("parent-task");
+		h.emit("a", "started");
+		const release = h.transport.hold();
+		h.transport.faultWrites = 4;
+		h.timer.advance(5_000);
+		await settle();
+		h.emit("a", "completed");
+		release();
+		await settle();
+		for (let i = 0; i < 5; i++) await h.window();
+		expect(h.patches().filter((p) => p.upsertTasks.length === 0)).toHaveLength(
+			0,
+		);
+		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
+		expect(task?.subagents.map((s) => s.status)).toEqual(["completed"]);
+		void h.detach();
+	});
+
 	test("a row the store trims from a full task is logged", async () => {
 		const h = attached("parent-task");
 		h.transport.addOpenRows(

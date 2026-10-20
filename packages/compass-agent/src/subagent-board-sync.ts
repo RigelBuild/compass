@@ -138,6 +138,9 @@ export function attachSubagentBoardSync(
 	const refused = new Set<string>();
 	// Transient faults per id; past the limit the rows take the refusal path.
 	const faults = new Map<string, number>();
+	// A follow-up run's events under an id whose settle is not yet written; the run
+	// takes the id once that settle lands, so the earlier task's row does not stay open.
+	const next = new Map<string, { row: BoardSubagent; key?: string }>();
 	const changed = new Set<string>();
 	let cancel: (() => void) | undefined;
 	let inFlight: Promise<void> | undefined;
@@ -155,14 +158,23 @@ export function attachSubagentBoardSync(
 		});
 	};
 
-	const keyFor = (id: string): string => {
-		const pinned = taskById.get(id);
-		if (pinned !== undefined && freshness.hasTask(pinned)) return pinned;
+	const focusKey = (): string => {
 		const focus = freshness.focusTaskKey();
 		return focus.length > 0 && freshness.hasTask(focus)
 			? focus
 			: SUBAGENTS_TASK_KEY;
 	};
+
+	const keyFor = (id: string): string => {
+		const pinned = taskById.get(id);
+		return pinned !== undefined && freshness.hasTask(pinned)
+			? pinned
+			: focusKey();
+	};
+
+	// The start-time task, when the board is known; otherwise the send picks it.
+	const startKey = (): string | undefined =>
+		freshness.boardKnown() ? focusKey() : undefined;
 
 	const request = (sent: BoardSubagent[], keys: Map<string, string>) => {
 		const byTask = new Map<string, BoardSubagent[]>();
@@ -213,7 +225,10 @@ export function attachSubagentBoardSync(
 			logSync("read failed", error);
 			return false;
 		}
-		for (const id of changed) drop(id);
+		for (const id of changed) {
+			drop(id);
+			next.delete(id);
+		}
 		changed.clear();
 		logSync("read refused", error);
 		return false;
@@ -234,6 +249,18 @@ export function attachSubagentBoardSync(
 		settled.add(s.id);
 		if (settled.size > SETTLED_ID_LIMIT)
 			settled.delete(settled.values().next().value ?? "");
+		promote(s.id);
+	};
+
+	const promote = (id: string): void => {
+		const waiting = next.get(id);
+		if (waiting === undefined) return;
+		next.delete(id);
+		settled.delete(id);
+		byId.set(id, waiting.row);
+		if (waiting.key !== undefined) taskById.set(id, waiting.key);
+		changed.add(id);
+		arm();
 	};
 
 	const requeue = (sent: BoardSubagent[]): void => {
@@ -259,6 +286,8 @@ export function attachSubagentBoardSync(
 	const onFault = (sent: BoardSubagent[], result: CommsCallResult): void => {
 		let exhausted = false;
 		for (const s of sent) {
+			// A newer row under the id has its own retry allowance.
+			if (byId.get(s.id) !== s) continue;
 			const n = (faults.get(s.id) ?? 0) + 1;
 			faults.set(s.id, n);
 			if (n > TRANSIENT_RETRIES) exhausted = true;
@@ -296,8 +325,8 @@ export function attachSubagentBoardSync(
 		const trimmed: string[] = [];
 		for (const s of sent) {
 			const key = keys.get(s.id) ?? SUBAGENTS_TASK_KEY;
-			// A newer run under the same id keeps the pin its start set.
-			if (byId.get(s.id) === s) taskById.set(s.id, key);
+			// byId holds one run per id, so a newer row of this run keeps this task.
+			if (byId.has(s.id)) taskById.set(s.id, key);
 			if (!onBoard(board, key, s.id)) trimmed.push(s.id);
 			forget(s);
 		}
@@ -390,9 +419,12 @@ export function attachSubagentBoardSync(
 		return done;
 	}
 
-	const rowFor = (event: LifecycleEvent, starting: boolean): BoardSubagent => {
+	const rowFor = (
+		event: LifecycleEvent,
+		starting: boolean,
+		previous: BoardSubagent | undefined,
+	): BoardSubagent => {
 		const now = BigInt(Math.trunc(timer.now()));
-		const previous = byId.get(event.id);
 		return create(BoardSubagentSchema, {
 			id: event.id,
 			agent: clip(event.agent, AGENT_CHARS),
@@ -406,6 +438,32 @@ export function attachSubagentBoardSync(
 		});
 	};
 
+	// True when the event belongs to a follow-up run that must wait for the id's settle.
+	const queueBehindSettle = (
+		event: LifecycleEvent,
+		starting: boolean,
+	): boolean => {
+		const waiting = next.get(event.id);
+		const current = byId.get(event.id);
+		if (
+			waiting === undefined &&
+			!(starting && current !== undefined && current.endedAtUnixMs !== 0n)
+		)
+			return false;
+		next.set(event.id, {
+			row: rowFor(event, starting, starting ? undefined : waiting?.row),
+			key: starting ? startKey() : waiting?.key,
+		});
+		return true;
+	};
+
+	// Each run belongs to the task focused when it started, not when it is sent.
+	const pin = (id: string): void => {
+		const key = startKey();
+		if (key === undefined) taskById.delete(id);
+		else taskById.set(id, key);
+	};
+
 	const unsubscribe = subagentBus.on(
 		TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 		(data) => {
@@ -415,13 +473,9 @@ export function attachSubagentBoardSync(
 			// A follow-up run reuses its id and starts again; only late settles are stale.
 			if (starting) settled.delete(event.id);
 			else if (settled.has(event.id)) return;
-			// Each run belongs to the task focused when it started, not when it is sent;
-			// a follow-up run under a reused id gets a fresh pin.
-			if (starting) {
-				taskById.delete(event.id);
-				if (freshness.boardKnown()) taskById.set(event.id, keyFor(event.id));
-			}
-			byId.set(event.id, rowFor(event, starting));
+			if (queueBehindSettle(event, starting)) return;
+			if (starting && !byId.has(event.id)) pin(event.id);
+			byId.set(event.id, rowFor(event, starting, byId.get(event.id)));
 			// A new state is a new row; an earlier refusal was about the old one.
 			refused.delete(event.id);
 			faults.delete(event.id);
@@ -435,7 +489,7 @@ export function attachSubagentBoardSync(
 	// a pass that sends nothing ends the drain.
 	const drain = async (): Promise<void> => {
 		await inFlight;
-		let passes = 2 * changed.size + 2;
+		let passes = 2 * (changed.size + next.size) + 2;
 		while (changed.size > 0 && passes > 0 && !closed) {
 			passes -= 1;
 			if (!(await run())) return;
