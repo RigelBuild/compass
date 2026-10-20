@@ -159,7 +159,7 @@ describe("subagent board synchronization", () => {
 		await h.window();
 		await h.window();
 		const other = h.transport.board.tasks.find((t) => t.key === "other");
-		expect(other?.subagents.map((s) => [s.id, s.status])).toEqual([
+		expect(other?.subagents.map((s) => [s.id, s.status]).sort()).toEqual([
 			["a", "completed"],
 			["b", "completed"],
 		]);
@@ -304,14 +304,56 @@ describe("subagent board synchronization", () => {
 		void h.detach();
 	});
 
-	test("a burst past the server's 20-row cap splits into capped writes", async () => {
+	test("starts past the server's open-row cap wait until rows settle", async () => {
 		const h = attached("parent-task");
 		for (let i = 0; i < 25; i++) h.emit(`s${i}`, "started");
 		await h.window();
 		await h.window();
 		expect(
 			h.writes().map((w) => w.upsertTasks[0]?.upsertSubagents.length),
-		).toEqual([20, 5]);
+		).toEqual([20]);
+		for (let i = 0; i < 5; i++) h.emit(`s${i}`, "completed");
+		await h.window();
+		await h.window();
+		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
+		expect(task?.subagents.filter((s) => s.endedAtUnixMs === 0n)).toHaveLength(
+			20,
+		);
+		expect(task?.subagents.map((s) => s.id)).toContain("s24");
+		void h.detach();
+	});
+
+	test("an in-band server fault keeps rows pending; a read fault too", async () => {
+		const h = attached("parent-task");
+		h.transport.faultNext = true;
+		h.emit("a", "started");
+		await h.window();
+		h.freshness.forgetBoard();
+		h.transport.faultNext = true;
+		await h.window();
+		await h.window();
+		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
+		expect(task?.subagents.map((s) => s.id)).toEqual(["a"]);
+		void h.detach();
+	});
+
+	test("a new event after a refusal gets its own retry", async () => {
+		const h = attached("parent-task");
+		h.transport.refuseWrites = 1;
+		h.emit("a", "started");
+		await h.window();
+		// The re-read faults, so "a" stays pending with its refusal mark.
+		h.transport.faultNext = true;
+		await h.window();
+		h.emit("a", "completed");
+		h.transport.refuseWrites = 1;
+		await h.window();
+		await h.window();
+		await h.window();
+		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
+		expect(task?.subagents.map((s) => [s.id, s.status])).toEqual([
+			["a", "completed"],
+		]);
 		void h.detach();
 	});
 

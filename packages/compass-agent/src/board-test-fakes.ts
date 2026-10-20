@@ -4,6 +4,7 @@ import type { CommsTransport } from "./comms";
 import {
 	type AgentBoard,
 	AgentBoardSchema,
+	type BoardSubagent,
 	type BoardTaskPatch,
 	BoardTaskSchema,
 	CommsCallErrorSchema,
@@ -16,15 +17,16 @@ import {
 } from "./compassv1";
 import { TurnSequence } from "./turn-sequence";
 
-const refusal = (callId: string, message: string): CommsCallResult =>
+const refusal = (
+	callId: string,
+	message: string,
+	code = "invalid_argument",
+): CommsCallResult =>
 	create(CommsCallResultSchema, {
 		callId,
 		result: {
 			case: "error",
-			value: create(CommsCallErrorSchema, {
-				code: "invalid_argument",
-				message,
-			}),
+			value: create(CommsCallErrorSchema, { code, message }),
 		},
 	});
 
@@ -33,6 +35,8 @@ export class FakeTransport implements CommsTransport {
 	readonly requests: CommsCallRequest[] = [];
 	failNext = false;
 	refuseNext = false;
+	/** Answers the next call with an in-band internal error. */
+	faultNext = false;
 	/** Refuses this many patches that carry tasks; reads still answer. */
 	refuseWrites = 0;
 	#gate: Promise<void> | undefined;
@@ -68,6 +72,10 @@ export class FakeTransport implements CommsTransport {
 			this.refuseNext = false;
 			return refusal(req.callId, "task cap");
 		}
+		if (this.faultNext) {
+			this.faultNext = false;
+			return refusal(req.callId, "store fault", "internal");
+		}
 		if (req.call.case !== "updateBoard")
 			return create(CommsCallResultSchema, {
 				callId: req.callId,
@@ -92,7 +100,11 @@ export class FakeTransport implements CommsTransport {
 				req.callId,
 				`task ${untitled.key}: a new task needs a title`,
 			);
-		for (const patch of patches) this.#apply(patch);
+		// The store merges in one transaction: any task over the cap refuses the patch.
+		const merged = patches.map((p) => [p, this.#merge(p)] as const);
+		if (merged.some(([, rows]) => rows === undefined))
+			return refusal(req.callId, "task has more than 20 unsettled subagents");
+		for (const [patch, rows] of merged) this.#apply(patch, rows ?? []);
 		return create(CommsCallResultSchema, {
 			callId: req.callId,
 			result: {
@@ -101,20 +113,31 @@ export class FakeTransport implements CommsTransport {
 			},
 		});
 	}
-	// The server keeps 20 rows per task, dropping the oldest settled first.
-	#apply(patch: BoardTaskPatch): void {
+	// Like the store's mergeSubagents: upsert by id, then drop the oldest settled row
+	// until 20 remain, or refuse when only unsettled rows are left.
+	#merge(patch: BoardTaskPatch): BoardSubagent[] | undefined {
+		const task = this.board.tasks.find((t) => t.key === patch.key);
+		let rows = [...(task?.subagents ?? [])];
+		for (const s of patch.upsertSubagents) {
+			const at = rows.findIndex((o) => o.id === s.id);
+			if (at >= 0) rows[at] = s;
+			else rows = [...rows, s];
+		}
+		while (rows.length > 20) {
+			const settled = rows.findIndex((o) => o.endedAtUnixMs !== 0n);
+			if (settled < 0) return undefined;
+			rows.splice(settled, 1);
+		}
+		return rows;
+	}
+	#apply(patch: BoardTaskPatch, rows: BoardSubagent[]): void {
 		let task = this.board.tasks.find((t) => t.key === patch.key);
 		if (task === undefined) {
 			task = create(BoardTaskSchema, { key: patch.key });
 			this.board.tasks.push(task);
 		}
 		if (patch.title !== undefined) task.title = patch.title;
-		for (const s of patch.upsertSubagents) {
-			task.subagents = [...task.subagents.filter((o) => o.id !== s.id), s];
-			const settled = task.subagents.findIndex((o) => o.endedAtUnixMs !== 0n);
-			if (task.subagents.length > 20 && settled >= 0)
-				task.subagents.splice(settled, 1);
-		}
+		task.subagents = rows;
 	}
 }
 
