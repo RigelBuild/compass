@@ -404,6 +404,19 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		).toBe(true);
 	});
 
+	test("darwinAffected on apps/ui/index.html (it loads the shell globals script)", () => {
+		expect(
+			generate(
+				prInput({ affectedIds: [], changedPaths: ["apps/ui/index.html"] }),
+			).darwinAffected,
+		).toBe(true);
+		expect(
+			generate(
+				prInput({ affectedIds: [], changedPaths: ["apps/ui/src/index.tsx"] }),
+			).darwinAffected,
+		).toBe(false);
+	});
+
 	test("darwinAffected on the secretspec pin (the .app stages that CLI)", () => {
 		expect(
 			generate(

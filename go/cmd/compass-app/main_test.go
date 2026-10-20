@@ -5,9 +5,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -126,20 +124,5 @@ func TestShellGlobalsMiddlewareUsesLiveState(t *testing.T) {
 
 	if response := get("/other"); !nextCalled || response.Code != http.StatusNoContent {
 		t.Errorf("other path: next called = %v, status = %d; want true, %d", nextCalled, response.Code, http.StatusNoContent)
-	}
-}
-
-// TestIndexLoadsShellGlobalsBeforeBundle pins the UI side of the contract: a
-// renamed route or a reordered tag silently drops the app into browser boot.
-func TestIndexLoadsShellGlobalsBeforeBundle(t *testing.T) {
-	raw, err := os.ReadFile("../../../apps/ui/index.html")
-	if err != nil {
-		t.Fatalf("reading index.html: %v", err)
-	}
-	html := string(raw)
-	globals := strings.Index(html, `src="`+shellGlobalsPath+`"`)
-	module := strings.Index(html, `type="module"`)
-	if globals < 0 || module < 0 || globals > module {
-		t.Fatalf("index.html: globals script at %d, module at %d; want globals first", globals, module)
 	}
 }

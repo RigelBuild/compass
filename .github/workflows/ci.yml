@@ -1964,13 +1964,15 @@ jobs:
           #     preflight), so it is the last thing that should run nowhere.
           #   - BringUpTimeout*: that darwin keeps a window a cold
           #     `podman machine init` can fit inside.
+          #   - ShellGlobalsMiddleware*: the startup-globals script the UI reads
+          #     before its bundle picks a boot mode.
           # `-run` alone exits 0 when it matches nothing (a rename → false
           # green), so require each group's own PASS line — a rename or skip
           # reds. The filter is explicit rather than the whole compass-app
           # package because that package also holds GUI E2E tests that need a
           # display; the machine and preflight tests live in internal/embedded.
           CGO_ENABLED=1 go -C go test -trimpath \
-            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout' \
+            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout|TestShellGlobalsMiddleware' \
             -count=1 -v \
             ./cmd/compass-app/ ./internal/embedded/ | tee /tmp/darwin-unit.log
           for t in TestDistDirForExecutable \
@@ -1981,7 +1983,8 @@ jobs:
                    TestEnsureMachineReadyUnclassifiedDoesNotProvision \
                    TestRealPreflightDepsWiresDarwinMachineAdapter \
                    TestClassifyPreflightUnwiredDarwinMachineIsFatal \
-                   TestBringUpTimeoutBudgetsDarwinColdProvisioning; do
+                   TestBringUpTimeoutBudgetsDarwinColdProvisioning \
+                   TestShellGlobalsMiddlewareUsesLiveState; do
             grep -q "^--- PASS: $t" /tmp/darwin-unit.log || {
               echo "::error::darwin: $t did not run+pass (renamed or skipped?)"
               exit 1
@@ -1990,6 +1993,13 @@ jobs:
 
           # The UI dist the .app stages into Contents/Resources/dist.
           moon run compass-ui:build
+          # The shell serves startup globals only to a classic, synchronous script;
+          # async, defer, or type=module would run it after the bundle reads them.
+          tag="$(grep -o '<script[^>]*src="/compass-shell-globals.js"[^>]*>' apps/ui/dist/index.html || true)"
+          if [ -z "$tag" ] || printf '%s' "$tag" | grep -Eq 'async|defer|type='; then
+            echo "::error::darwin: dist/index.html lacks a classic sync /compass-shell-globals.js script (got: '$tag')"
+            exit 1
+          fi
 
           # Stage + ad-hoc sign the .app and wrap the .dmg.
           out=/tmp/compass-app-darwin-arm64.dmg

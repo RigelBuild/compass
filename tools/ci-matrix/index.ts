@@ -104,6 +104,8 @@ const GTK4_MODULE_PATHS = ["go/go.mod", "go/go.sum"];
  * Per compass-distribution DL-263: affected on PR, full-sweep on push/schedule (isFullSweep below).
  */
 const MACOS_BUNDLE_PATH_PREFIX = "tools/macos-bundle/";
+/** The UI entry HTML loads the shell's startup-globals script, which the darwin lane asserts in the staged dist. */
+const UI_ENTRY_HTML = "apps/ui/index.html";
 /**
  * darwin sidecar surface: the mac lane now cross-compiles the four pure-Go
  * sidecars (compass-stack/server/runner/clear-token) beside the shell, so a change to any
@@ -259,6 +261,7 @@ function affectedFlags(
 					path.startsWith(GTK4_PATH_PREFIX) ||
 					GTK4_CLOSURE_PATHS.includes(path) ||
 					path.startsWith(MACOS_BUNDLE_PATH_PREFIX) ||
+					path === UI_ENTRY_HTML ||
 					DARWIN_SIDECAR_PREFIXES.some((prefix) => path.startsWith(prefix)),
 			),
 		agentFodAffected:
