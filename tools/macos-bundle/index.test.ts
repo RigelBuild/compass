@@ -49,6 +49,13 @@ describe("checkShellGlobalsScript — the dist must load shell globals before th
 			"no <script",
 		);
 	});
+	test("a data-src lookalike fails: the browser never requests it", () => {
+		expect(
+			checkShellGlobalsScript(
+				`<script data-src="/compass-shell-globals.js"></script>${mod}`,
+			),
+		).toContain("no <script");
+	});
 	for (const attr of ["defer", "async", 'type="module"']) {
 		test(`${attr} fails: it would run after the bundle reads the globals`, () => {
 			expect(
@@ -57,6 +64,35 @@ describe("checkShellGlobalsScript — the dist must load shell globals before th
 				),
 			).toContain("not a classic sync script");
 		});
+	}
+});
+
+test("the CLI refuses a dist without the globals script before staging", async () => {
+	const dir = await mkdtemp("/tmp/macos-bundle-cli-");
+	try {
+		await Bun.write(`${dir}/compass-app`, "");
+		await Bun.write(
+			`${dir}/dist/index.html`,
+			'<script defer src="/compass-shell-globals.js"></script>',
+		);
+		const run = Bun.spawnSync([
+			process.execPath,
+			`${import.meta.dir}/index.ts`,
+			...["--binary", `${dir}/compass-app`, "--dist", `${dir}/dist`],
+			...["--version", "1.2.3", "--out", `${dir}/out/Compass.dmg`],
+		]);
+		expect(run.exitCode).not.toBe(0);
+		expect(run.stderr.toString()).toContain("not a classic sync script");
+		expect(await Bun.file(`${dir}/out`).exists()).toBe(false);
+		expect(
+			(
+				await Array.fromAsync(
+					new Bun.Glob("**/*").scan({ cwd: dir, onlyFiles: false }),
+				)
+			).sort(),
+		).toEqual(["compass-app", "dist", "dist/index.html"]);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
 	}
 });
 

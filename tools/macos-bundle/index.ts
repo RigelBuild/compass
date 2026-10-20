@@ -110,9 +110,9 @@ export const SHELL_GLOBALS_SRC = "/compass-shell-globals.js";
 export function checkShellGlobalsScript(html: string): string | null {
 	const tag = html
 		.match(/<script\b[^>]*>/gi)
-		?.find((t) => t.includes(`src="${SHELL_GLOBALS_SRC}"`));
+		?.find((t) => new RegExp(`\\ssrc="${SHELL_GLOBALS_SRC}"`).test(t));
 	if (!tag) return `no <script src="${SHELL_GLOBALS_SRC}">`;
-	if (/\b(async|defer|type)\b/i.test(tag))
+	if (/\s(async|defer|type)\b/i.test(tag))
 		return `${tag} is not a classic sync script`;
 	return null;
 }
