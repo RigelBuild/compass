@@ -4,12 +4,16 @@
 // replay barrier. Drives the inner `session.agent` to keep the control contract.
 
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
+import type {
+	AgentSession,
+	AgentSessionEvent,
+} from "@oh-my-pi/pi-coding-agent";
 import {
 	type BatchTimer,
 	type BatchWindow,
 	realBatchTimer,
 } from "./batch-window";
+import type { BoardFreshness } from "./board-freshness";
 import {
 	AgentSessionState,
 	type Ask,
@@ -26,7 +30,7 @@ import {
 	SessionInjectionKind,
 } from "./compassv1";
 import type { AgentControl, ControlSource } from "./control";
-import type { FrameSink } from "./frame";
+import type { FrameSink, OutboundFrame } from "./frame";
 import { EventMapper, type UnmappedEvent } from "./mapping";
 import { flat } from "./render-guard";
 import type { TurnTracer } from "./trace-bridge";
@@ -53,6 +57,8 @@ export interface CompassAgentOptions {
 	// The idle batching window. Absent means an idle deliver or forge item starts
 	// a turn at once.
 	readonly batchWindow?: BatchWindow;
+	readonly boardFreshness?: BoardFreshness;
+	readonly now?: () => number;
 }
 
 // An idle steer that drains the queued items into its own prompt, rendered last.
@@ -62,6 +68,10 @@ interface SteerTail {
 	readonly fromHandle: string;
 	readonly traceparent: string;
 }
+
+/** The turn-end board re-prompt; the e2e canned model routes on this exact text. */
+export const BOARD_REPROMPT =
+	"Update your status board with compass_update_board. Do nothing else.";
 
 export class CompassAgent {
 	readonly #session: AgentSession;
@@ -128,6 +138,18 @@ export class CompassAgent {
 	#batchFirstAt: number | undefined;
 	// The armed timer's cancel thunk. Set exactly while a window is open.
 	#batchCancel: (() => void) | undefined;
+	readonly #boardFreshness: BoardFreshness | undefined;
+	readonly #now: () => number;
+	#turnHadTool = false;
+	#turnNudgeSent = false;
+	#repromptTurn = false;
+	#boardReprompt = false;
+	// Agent-written board writes seen when the run started; a run wrote if it moved.
+	#runWrites = 0;
+	#runOpen = false;
+	// The READY of a turn whose re-prompt started; one settle covers both turns.
+	#holdReady = false;
+	#heldReady: OutboundFrame | undefined;
 
 	constructor(opts: CompassAgentOptions) {
 		this.#session = opts.session;
@@ -139,6 +161,8 @@ export class CompassAgent {
 		this.#tracer = opts.tracer;
 		this.#batchWindow = opts.batchWindow;
 		this.#batchTimer = opts.batchWindow?.timer ?? realBatchTimer;
+		this.#boardFreshness = opts.boardFreshness;
+		this.#now = opts.now ?? Date.now;
 		this.#mapper = new EventMapper(Date.now, opts.turnSequence);
 		this.#onUnmapped =
 			opts.onUnmapped ??
@@ -160,10 +184,13 @@ export class CompassAgent {
 			// Turn-tracking (RIG-1310 §8): an ADDITIONAL read of the same event,
 			// beside the mapper fan-out. A turn-start edge marks the session active;
 			// `agent_end` settles it and flushes coalesced delivers into one prompt.
+			this.#trackBoardEvent(event);
 			this.#trackTurn(event.type);
 			for (const out of this.#mapper.map(event)) {
 				if (out.kind === "unmapped") {
 					this.#onUnmapped(out);
+				} else if (this.#holdsFrame(event, out)) {
+					this.#heldReady = out;
 				} else {
 					this.#sink.emit(out);
 				}
@@ -200,6 +227,22 @@ export class CompassAgent {
 	#emitStatus(state: AgentSessionState): void {
 		const value: SessionFrame = create(SessionFrameSchema, { state });
 		this.#sink.emit({ kind: "session", value });
+	}
+
+	// A READY that a re-prompt follows, or one inside the re-prompt run, is held;
+	// the next READY replaces it, so watchers see the turn and re-prompt settle once.
+	#holdsFrame(event: AgentSessionEvent, out: OutboundFrame): boolean {
+		if (out.kind !== "session" || event.type !== "agent_end") return false;
+		if (out.value.state !== AgentSessionState.READY) return false;
+		if (this.#holdReady) return true;
+		this.#heldReady = undefined;
+		return false;
+	}
+
+	#releaseReady(): void {
+		const held = this.#heldReady;
+		this.#heldReady = undefined;
+		if (held !== undefined) this.#sink.emit(held);
 	}
 
 	// Emit the SessionInjection observation (T1): a trace frame recording a channel
@@ -480,6 +523,72 @@ export class CompassAgent {
 		}
 	}
 
+	#trackBoardEvent(event: AgentSessionEvent): void {
+		const freshness = this.#boardFreshness;
+		if (freshness === undefined) return;
+		if (event.type === "agent_start") {
+			// A start inside an open run (a continuation after a nonterminal settle, or an
+			// overlapping start) is the same run; only the terminal end closes it.
+			if (this.#runOpen) return;
+			this.#runOpen = true;
+			this.#turnHadTool = false;
+			this.#turnNudgeSent = false;
+			this.#runWrites = freshness.writeCount();
+			return;
+		}
+		if (event.type === "tool_execution_start") {
+			this.#turnHadTool = true;
+			return;
+		}
+		if (event.type === "tool_execution_end") {
+			this.#nudgeIfStale(freshness);
+			return;
+		}
+		if (event.type !== "agent_end" || event.isTerminal === false) return;
+		this.#runOpen = false;
+		if (
+			this.#turnHadTool &&
+			!this.#repromptTurn &&
+			freshness.writeCount() === this.#runWrites
+		) {
+			this.#boardReprompt = true;
+		}
+		this.#turnHadTool = false;
+		this.#turnNudgeSent = false;
+		this.#repromptTurn = false;
+	}
+
+	#nudgeIfStale(freshness: BoardFreshness): void {
+		if (this.#turnNudgeSent || !freshness.seeded()) return;
+		const age = freshness.ageMs(this.#now());
+		if (age !== undefined && age <= 20 * 60_000) return;
+		this.#turnNudgeSent = true;
+		this.#session.agent.steer({
+			role: "user",
+			content:
+				"Your status board is stale. Update it with compass_update_board before continuing.",
+			steering: true,
+			attribution: "user",
+			timestamp: 0,
+		});
+	}
+
+	// A pending re-prompt takes the turn alone and leaves the queues for its `agent_end`.
+	#takeTurnEndQueues(): {
+		boardReprompt: boolean;
+		delivers: Message[];
+		forges: { notification: ForgeNotification; ackRail: () => void }[];
+	} {
+		const boardReprompt = this.#boardReprompt;
+		this.#boardReprompt = false;
+		if (boardReprompt) return { boardReprompt, delivers: [], forges: [] };
+		const delivers = this.#deliverQueue;
+		const forges = this.#forgeQueue;
+		this.#deliverQueue = [];
+		this.#forgeQueue = [];
+		return { boardReprompt, delivers, forges };
+	}
+
 	// Track a session turn edge (RIG-1310 §8, RIG-2732 W3). A turn-start edge marks
 	// the session active; `agent_end` settles it and flushes the coalesced deliver AND
 	// forge-notification queues. See the `#turnActive` field comment for why the flush
@@ -506,14 +615,21 @@ export class CompassAgent {
 	// Ack means injected, not turn-finished; a mid-turn crash keeps the receipt.
 	// On settled rejection, deliveries remain eligible for redelivery; forge re-enqueue stays with Runner.
 	// An idle tail drains last and adds one message to the trace topology.
+
+	// A board re-prompt runs alone; the queues wait for its `agent_end`. It is set and
+	// consumed on one `agent_end` edge, so an idle steer tail never meets it.
 	#flushTurnEnd(tail?: SteerTail): void {
 		// A started turn's `agent_end` owns whatever queues next, so the window closes.
 		this.#cancelBatch();
-		const delivers = this.#deliverQueue;
-		const forges = this.#forgeQueue;
-		this.#deliverQueue = [];
-		this.#forgeQueue = [];
-		if (delivers.length === 0 && forges.length === 0 && tail === undefined)
+		const { boardReprompt, delivers, forges } = this.#takeTurnEndQueues();
+		// A nonterminal end inside the re-prompt run keeps holding until its terminal end.
+		this.#holdReady = boardReprompt || (this.#repromptTurn && this.#runOpen);
+		if (
+			delivers.length === 0 &&
+			forges.length === 0 &&
+			tail === undefined &&
+			!boardReprompt
+		)
 			return;
 		const sections: string[] = [];
 		if (delivers.length > 0)
@@ -525,6 +641,7 @@ export class CompassAgent {
 				formatForgeNotifications(forges.map((e) => e.notification)),
 			);
 		if (tail !== undefined) sections.push(tail.content);
+		if (boardReprompt) sections.push(BOARD_REPROMPT);
 		const input = sections.join("\n\n");
 		// Every channel message feeding this turn, in prompt order, with its traceparent.
 		const fed = delivers.map((msg) => ({
@@ -553,6 +670,8 @@ export class CompassAgent {
 		} else {
 			this.#tracer?.clearTurnTrigger();
 		}
+		// A nonterminal settle flushes inside an open run; keep that run's re-prompt mark.
+		if (!this.#runOpen) this.#repromptTurn = boardReprompt;
 		const startPrompt = (): Promise<void> => this.#session.agent.prompt(input);
 		const started =
 			this.#tracer !== undefined && parent !== undefined
@@ -565,6 +684,13 @@ export class CompassAgent {
 			if (acked) return;
 			rejected = true;
 			this.#turnActive = false;
+			if (boardReprompt) {
+				// A refused re-prompt must not strand the queued batch or the held READY.
+				this.#repromptTurn = false;
+				this.#releaseReady();
+				this.#flushTurnEnd();
+				return;
+			}
 			// Re-attach (RIG-2894): a refused prompt starts no turn, so clear any trigger
 			// the N=1 branch set above — else it leaks onto the next turn.
 			this.#tracer?.clearTurnTrigger();

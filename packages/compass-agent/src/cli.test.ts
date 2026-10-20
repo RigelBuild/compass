@@ -34,13 +34,16 @@ import type {
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
 import { context, propagation, type Span, trace } from "@opentelemetry/api";
 import {
 	InMemorySpanExporter,
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
+import { createAgentBoardTools } from "./agent-board";
 import { BoardBroker, createBoardTools } from "./board";
+import { BoardFreshness } from "./board-freshness";
 import {
 	AGENT_SOCKET_PATH,
 	authSeedPath,
@@ -58,14 +61,18 @@ import {
 } from "./cli";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
+	AgentBoardSchema,
 	AgentControlSchema,
 	AgentSessionState,
+	type CommsCallRequest,
+	CommsCallResultSchema,
 	create,
 	DeliverControlSchema,
 	MessageBlockSchema,
 	MessageSchema,
 	PromptControlSchema,
 	SteerControlSchema,
+	UpdateAgentBoardResponseSchema,
 	type AgentControl as WireAgentControl,
 } from "./compassv1";
 import { createForgeTools, ForgeBroker } from "./forge";
@@ -78,6 +85,7 @@ import { createLifecycleTools, LifecycleBroker } from "./lifecycle";
 import { createTeeSessionStorage } from "./session-tee";
 import type { RunnerTransport } from "./transport/index";
 import { createPublishSpine } from "./transport/publish-spine";
+import { TurnSequence } from "./turn-sequence";
 
 // These tests do real FS work and gate on events, not sleeps; under the parallel
 // pre-push gate that I/O outruns bun's implicit 5s default and flakes (the same
@@ -504,6 +512,8 @@ interface CarrierHooks {
 	// the composition root — this lets a test hold `main` to releasing the
 	// carrier even when the drain ahead of it fails.
 	drainError?: Error;
+	// Records each comms call before the fake board answers it.
+	onComms?: (req: CommsCallRequest) => void;
 }
 
 // A RunnerTransport over in-process handlers. Built the same way
@@ -526,7 +536,22 @@ function fakeCarrier(
 			? real
 			: { ...real, drain: () => Promise.reject(hooks.drainError) };
 	return {
-		comms: () => Promise.reject(new Error("comms is not used by main")),
+		comms: async (req) => {
+			hooks.onComms?.(req);
+			return create(CommsCallResultSchema, {
+				callId: req.callId,
+				result: {
+					case: "updateBoard",
+					value: create(UpdateAgentBoardResponseSchema, {
+						board: create(AgentBoardSchema, {
+							handle: "test",
+							writtenTurn: 0n,
+							writtenAtUnixMs: BigInt(Date.now()),
+						}),
+					}),
+				},
+			});
+		},
 		lifecycle: () => Promise.reject(new Error("lifecycle is not used by main")),
 		forge: () => Promise.reject(new Error("forge is not used by main")),
 		board: () => Promise.reject(new Error("board is not used by main")),
@@ -1451,6 +1476,38 @@ describe("main", () => {
 				.getSessionFile()
 				?.startsWith(SessionManager.getDefaultSessionDir("/work/repo")),
 		).toBe(true);
+	});
+
+	// Lifecycle events the SDK emits on subagentEventBus must reach the board.
+	test("subagent lifecycle events on the session's bus reach the board", async () => {
+		const session = fakeSession();
+		const comms: CommsCallRequest[] = [];
+		await main(
+			{ HOME: scratch(), COMPASS_WORKDIR: "/work/repo" },
+			{
+				createSession: (options) => {
+					options.subagentEventBus?.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+						id: "sub-1",
+						agent: "reviewer",
+						status: "started",
+					});
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), {
+						control: emptyControlStream,
+						onComms: (req) => comms.push(req),
+					}),
+			},
+		);
+		const rows = comms.flatMap((r) =>
+			r.call.case === "updateBoard"
+				? r.call.value.upsertTasks.flatMap((t) => t.upsertSubagents)
+				: [],
+		);
+		expect(rows.map((s) => s.id)).toEqual(["sub-1"]);
 	});
 
 	// COMPASS_RESUME_SESSION_FILE (exported by T8) is loaded through the SDK-native
@@ -3088,6 +3145,11 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
 			...createForgeTools(new ForgeBroker(fakeTransport)),
 			...createBoardTools(new BoardBroker(fakeTransport)),
+			...createAgentBoardTools(
+				new CommsBroker(fakeTransport),
+				new TurnSequence(SessionManager.inMemory()),
+				new BoardFreshness(),
+			),
 		].map((t) => t.name);
 
 		const session = fakeSession();
@@ -3171,7 +3233,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// board natives are ALWAYS merged in (RIG-1741/RIG-2672/RIG-3191) — so
 		// customTools carries exactly those, and never a discovered MCP tool.
 		expect(toolNames(seen[0].customTools)).toContain("agents_spawn_peer");
-		expect(seen[0].customTools).toHaveLength(29);
+		expect(seen[0].customTools).toHaveLength(31);
 		expect(seen[0].enableMCP).toBe(false);
 	});
 
@@ -3204,7 +3266,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// (RIG-1741/RIG-2672/RIG-3191) — so customTools is exactly the comms/
 		// lifecycle/forge/board natives.
 		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
-		expect(seen[0].customTools).toHaveLength(29);
+		expect(seen[0].customTools).toHaveLength(31);
 	});
 
 	// ── RIG-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──

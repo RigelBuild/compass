@@ -173,12 +173,10 @@ func runS3Restart(t *testing.T, ctx context.Context, wholeStack bool) {
 	if resumed != sessionID {
 		t.Fatalf("resumed session = %q, want %q", resumed, sessionID)
 	}
-	if err := runS3Turn(ctx, f, st, resumed, channel, "durability-second", "durability second reply"); err != nil {
+	if err := runS3TurnSettled(ctx, f, resumed, channel, "durability-second"); err != nil {
 		t.Fatalf("second turn: %v", err)
 	}
-	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, "durability second reply"); err != nil {
-		t.Fatalf("await resumed transcript: %v", err)
-	}
+	waitHistoryContains(t, ctx, f, st, sessionID, "durability second reply")
 	// The valve moved the first reply out of PG, so history is PG tail plus archive.
 	if !historyContains(t, ctx, f, st, sessionID, "durability first reply") {
 		t.Fatal("first reply missing from PG tail and S3 archive after restart")
@@ -248,19 +246,7 @@ func waitHistoryContains(t *testing.T, ctx context.Context, f *Fixture, st *stor
 	defer cancel()
 	ticker := time.NewTicker(transcriptPollInterval)
 	defer ticker.Stop()
-	for {
-		tail, err := st.SessionTranscript(ctx, sessionID)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			t.Fatalf("SessionTranscript: %v", err)
-		}
-		for _, entry := range tail {
-			if strings.Contains(entry.EntryJSON, want) {
-				return
-			}
-		}
-		if archiveContains(t, ctx, f, sessionID, want) {
-			return
-		}
+	for !historyContains(t, ctx, f, st, sessionID, want) {
 		select {
 		case <-ctx.Done():
 			t.Fatalf("%q was not committed to the transcript within %s: %v", want, transcriptPollBudget, ctx.Err())
@@ -540,9 +526,10 @@ func resumeS3AndVerify(t *testing.T, ctx context.Context, f *Fixture, st *store.
 	if resumed != sessionID {
 		t.Fatalf("resumed session = %q, want %q", resumed, sessionID)
 	}
-	if err := runS3Turn(ctx, f, st, resumed, channel, "durability-second", "durability second reply"); err != nil {
+	if err := runS3TurnSettled(ctx, f, resumed, channel, "durability-second"); err != nil {
 		t.Fatalf("resumed turn: %v", err)
 	}
+	waitHistoryContains(t, ctx, f, st, sessionID, "durability second reply")
 	assertArchiveHasReply(t, ctx, f, sessionID, "durability first reply")
 }
 
@@ -565,7 +552,7 @@ func signalGarage(ctx context.Context, signal, name string) error {
 func historyContains(t *testing.T, ctx context.Context, f *Fixture, st *store.Store, sessionID, want string) bool {
 	t.Helper()
 	tail, err := st.SessionTranscript(ctx, sessionID)
-	if err != nil {
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("SessionTranscript: %v", err)
 	}
 	for _, entry := range tail {

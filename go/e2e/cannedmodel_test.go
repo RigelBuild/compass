@@ -859,3 +859,63 @@ func TestCannedMarkerScriptCallIDsStayDistinct(t *testing.T) {
 		t.Fatalf("both marker-served tool calls carry id %q; successive marker-served call ids must be DISTINCT (claimMarkerTurn's seq), or a transcript cannot tell two served calls apart", first.toolCalls[0].id)
 	}
 }
+
+// TestCannedBoardRepromptText pins boardRepromptText to the agent's source, so a
+// reworded re-prompt reddens here instead of shifting every marker-scripted leg.
+func TestCannedBoardRepromptText(t *testing.T) {
+	src, err := os.ReadFile("../../packages/compass-agent/src/agent.ts")
+	if err != nil {
+		t.Fatalf("read agent.ts: %v", err)
+	}
+	if !strings.Contains(string(src), `"`+boardRepromptText+`"`) {
+		t.Fatalf("boardRepromptText %q is not the BOARD_REPROMPT literal in packages/compass-agent/src/agent.ts", boardRepromptText)
+	}
+}
+
+// TestCannedBoardRepromptRoutesOffScript checks the re-prompt settles off the
+// marker script even though its history carries the marker, and that an earlier
+// re-prompt in history does not capture the leg's next trigger.
+func TestCannedBoardRepromptRoutesOffScript(t *testing.T) {
+	const (
+		marker = "duo-drive-test"
+		first  = "first scripted marker turn"
+		second = "second scripted marker turn"
+	)
+	host, err := hostRoutableAddr(t.Context())
+	if err != nil {
+		t.Fatalf("hostRoutableAddr: %v", err)
+	}
+	srv, err := startCannedModelServer(
+		t.Context(),
+		host+":0",
+		[]CannedTurn{CannedText("positional")},
+		newCannedMarkerScript(marker, CannedText(first), CannedText(second)),
+	)
+	if err != nil {
+		t.Fatalf("startCannedModelServer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("canned model server Close: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	url := srv.BaseURL(host) + "/chat/completions"
+
+	reprompt := `{"model":"x","messages":[{"role":"user","content":"` + marker + `: go"},` +
+		`{"role":"assistant","content":"done"},` +
+		`{"role":"user","content":[{"type":"text","text":"` + boardRepromptText + `"}]}]}`
+	if got := readCannedTurnBody(ctx, t, url, reprompt); got.content != boardRepromptReply {
+		t.Fatalf("re-prompt POST content = %q, want %q", got.content, boardRepromptReply)
+	}
+	embedded := `{"model":"x","messages":[{"role":"user","content":"` + marker + `: quote ` + boardRepromptText + `"}]}`
+	if got := readCannedTurnBody(ctx, t, url, embedded); got.content != first {
+		t.Fatalf("marker request quoting the re-prompt content = %q, want the first marker slot %q", got.content, first)
+	}
+	next := `{"model":"x","messages":[{"role":"user","content":"` + boardRepromptText + `"},` +
+		`{"role":"user","content":"` + marker + `: next"}]}`
+	if got := readCannedTurnBody(ctx, t, url, next); got.content != second {
+		t.Fatalf("trigger after re-prompt content = %q, want the second marker slot %q", got.content, second)
+	}
+}

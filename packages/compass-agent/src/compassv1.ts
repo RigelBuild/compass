@@ -154,6 +154,8 @@ export {
 	TranscriptReplaySchema,
 } from "./gen/compass/v1/agent_pb";
 export {
+	type AgentBoard,
+	AgentBoardSchema,
 	// The presence enum a RosterEntry carries (field 5) — session-derived
 	// server-side, rendered as a fixed label so it needs no render guard.
 	AgentPresence,
@@ -173,6 +175,28 @@ export {
 	AskQuestionAnswerSchema,
 	AskQuestionSchema,
 	AskSchema,
+	type BoardAsk,
+	BoardAskSchema,
+	type BoardHalt,
+	BoardHaltKind,
+	BoardHaltSchema,
+	BoardMirrorState,
+	BoardPrGate,
+	type BoardRef,
+	BoardRefKind,
+	BoardRefSchema,
+	BoardRefsOpSchema,
+	type BoardSubagent,
+	BoardSubagentSchema,
+	type BoardTask,
+	type BoardTaskPatch,
+	BoardTaskPatchSchema,
+	BoardTaskSchema,
+	BoardTaskState,
+	type BoardWaiting,
+	BoardWaitingOn,
+	BoardWaitingOpSchema,
+	BoardWaitingSchema,
 	// The full channel message an `OpenDMResponse` wraps — the DM tools render
 	// its `name` (dm--<lo>--<hi>) and tests build fixtures from it.
 	type Channel,
@@ -197,6 +221,9 @@ export {
 	GetRosterRequestSchema,
 	type GetRosterResponse,
 	GetRosterResponseSchema,
+	ListAgentBoardsRequestSchema,
+	type ListAgentBoardsResponse,
+	ListAgentBoardsResponseSchema,
 	// The comms call payloads the agent tools construct: the post/list request
 	// pair (each with a `container` oneof whose unset case means "the agent's
 	// home channel", resolved server-side) and their responses.
@@ -237,6 +264,8 @@ export {
 	RosterScope,
 	type Topic,
 	TopicSchema,
+	UpdateAgentBoardRequestSchema,
+	UpdateAgentBoardResponseSchema,
 	type UpdateChannelMembersRequest,
 	UpdateChannelMembersRequestSchema,
 	type UpdateChannelMembersResponse,
