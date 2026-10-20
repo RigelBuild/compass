@@ -60,10 +60,19 @@ async function main(): Promise<number> {
 	const decision = await decidePublish({
 		ancestors,
 		probe: (short) => run(["skopeo", ...inspectArgv(`${repo}:git-${short}`)]),
-		changedSince: async (commit) =>
+		touchedSince: async (commit) =>
 			splitNulPaths(
-				await git(["diff", "-z", "--no-renames", "--name-only", commit, sha]),
-			),
+				await git([
+					"log",
+					"--first-parent",
+					"--diff-merges=first-parent",
+					"--no-renames",
+					"--format=",
+					"--name-only",
+					"-z",
+					`${commit}..${sha}`,
+				]),
+			).filter((path) => path.length > 0),
 		closurePaths: process.env[config.closureEnv] ?? "",
 		lane: config.lane,
 	});
