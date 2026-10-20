@@ -74,17 +74,32 @@ const HALT_TOKEN_BY_VALUE: Partial<Record<BoardHaltKind, HaltToken>> = {
 	[BoardHaltKind.AWAITING_USER]: "awaiting-user",
 };
 
+// Stops one past `max`, so an oversized input costs no more than the cap.
+function withinChars(value: string, max: number): boolean {
+	let count = 0;
+	for (const _ of value) if (++count > max) return false;
+	return true;
+}
+
+const KEY_CHARS = 64;
+
 const nonBlank = (description: string) =>
 	type("string")
-		.narrow((value, ctx) => value.trim().length > 0 || ctx.mustBe("non-blank"))
-		.describe(`${description}; must not be blank`);
+		.narrow(
+			(value, ctx) =>
+				(value.trim().length > 0 && withinChars(value, KEY_CHARS)) ||
+				ctx.mustBe(`non-blank, at most ${KEY_CHARS} characters`),
+		)
+		.describe(
+			`${description}; must not be blank; at most ${KEY_CHARS} characters`,
+		);
 
 // The server counts characters as code points, so the cap does too.
 const capped = (max: number, description: string) =>
 	type("string")
 		.narrow(
 			(value, ctx) =>
-				[...value].length <= max || ctx.mustBe(`at most ${max} characters`),
+				withinChars(value, max) || ctx.mustBe(`at most ${max} characters`),
 		)
 		.describe(`${description}; at most ${max} characters`);
 
@@ -106,12 +121,13 @@ const boardTaskParameters = type({
 		on: type("'operator'|'agent'|'external'").describe(
 			"Who or what blocks progress",
 		),
-		"agent?": type("string").describe("Agent handle when waiting on an agent"),
+		"agent?": capped(KEY_CHARS, "Agent handle when waiting on an agent"),
 		what: capped(200, "What the task is waiting for"),
 		"ref?": type("string").describe("Related issue or pull-request reference"),
 		"blocks?": type("string")
 			.array()
-			.describe("References blocked by this wait"),
+			.atMostLength(10)
+			.describe("References blocked by this wait, at most 10"),
 	})
 		.array()
 		.atMostLength(5)
@@ -129,15 +145,21 @@ export const updateAgentBoardParameters = type({
 		.array()
 		.atMostLength(30)
 		.describe("Tasks to create or patch; a board holds at most 30"),
-	"remove?": type("string").array().describe("Task keys to remove"),
-	"focus?": type("string").describe("Focused task key; empty clears focus"),
+	"remove?": type("string")
+		.array()
+		.atMostLength(30)
+		.describe("Task keys to remove, at most 30"),
+	"focus?": capped(KEY_CHARS, "Focused task key; empty clears focus"),
 	"halt?": haltParameters
 		.or("null")
 		.describe("Set a halt reason or null to clear it"),
 });
 
 export const listAgentBoardsParameters = type({
-	"agents?": type("string").array().describe("Agent handles to include"),
+	"agents?": type("string")
+		.array()
+		.atMostLength(100)
+		.describe("Agent handles to include, at most 100"),
 	"query?": type("string").describe("Search task titles and notes"),
 	"ref?": type("string").describe("Filter by issue or pull-request reference"),
 	"waiting_on?": type("'operator'|'agent'|'external'").describe(

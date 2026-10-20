@@ -3,6 +3,7 @@ import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import {
 	createAgentBoardTools,
+	listAgentBoardsParameters,
 	updateAgentBoardParameters,
 } from "./agent-board";
 import { BoardFreshness } from "./board-freshness";
@@ -283,5 +284,25 @@ describe("compass_update_board parameters", () => {
 		expect(ok({ halt: { kind: "blocked", reason: "r".repeat(201) } })).toBe(
 			false,
 		);
+		expect(ok(task({}))).toBe(true);
+		expect(ok({ tasks: [{ key: "k".repeat(65) }] })).toBe(false);
+		expect(ok({ focus: "f".repeat(65) })).toBe(false);
+		expect(ok({ remove: Array.from({ length: 31 }, String) })).toBe(false);
+		expect(
+			ok(
+				task({ waiting: [{ on: "agent", what: "w", agent: "a".repeat(65) }] }),
+			),
+		).toBe(false);
+		expect(
+			ok(
+				task({
+					waiting: [{ on: "external", what: "w", blocks: Array(11).fill("r") }],
+				}),
+			),
+		).toBe(false);
+		expect(
+			listAgentBoardsParameters({ agents: Array(101).fill("a") }) instanceof
+				type.errors,
+		).toBe(true);
 	});
 });

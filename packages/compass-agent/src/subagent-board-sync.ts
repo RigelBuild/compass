@@ -296,7 +296,8 @@ export function attachSubagentBoardSync(
 		const trimmed: string[] = [];
 		for (const s of sent) {
 			const key = keys.get(s.id) ?? SUBAGENTS_TASK_KEY;
-			taskById.set(s.id, key);
+			// A newer run under the same id keeps the pin its start set.
+			if (byId.get(s.id) === s) taskById.set(s.id, key);
 			if (!onBoard(board, key, s.id)) trimmed.push(s.id);
 			forget(s);
 		}
@@ -414,9 +415,12 @@ export function attachSubagentBoardSync(
 			// A follow-up run reuses its id and starts again; only late settles are stale.
 			if (starting) settled.delete(event.id);
 			else if (settled.has(event.id)) return;
-			// The row belongs to the task focused when it started, not when it is sent.
-			if (starting && !taskById.has(event.id) && freshness.boardKnown())
-				taskById.set(event.id, keyFor(event.id));
+			// Each run belongs to the task focused when it started, not when it is sent;
+			// a follow-up run under a reused id gets a fresh pin.
+			if (starting) {
+				taskById.delete(event.id);
+				if (freshness.boardKnown()) taskById.set(event.id, keyFor(event.id));
+			}
 			byId.set(event.id, rowFor(event, starting));
 			// A new state is a new row; an earlier refusal was about the old one.
 			refused.delete(event.id);

@@ -202,6 +202,30 @@ describe("subagent board synchronization", () => {
 		void h.detach();
 	});
 
+	test("a reused id restarted mid-write takes the focus of its new start", async () => {
+		const h = attached("first");
+		h.transport.addTask("second");
+		h.freshness.noteBoard(h.transport.board);
+		h.emit("a", "started");
+		await h.window();
+		h.emit("a", "completed");
+		const release = h.transport.hold();
+		h.timer.advance(5_000);
+		await settle();
+		// The old run's completion is in flight when the follow-up run starts.
+		h.transport.focus = "second";
+		h.freshness.noteBoard(h.transport.board);
+		h.emit("a", "started");
+		release();
+		await settle();
+		await h.window();
+		const last = h.writes().at(-1)?.upsertTasks ?? [];
+		expect(
+			last.map((t) => [t.key, t.upsertSubagents.map((s) => s.status)]),
+		).toEqual([["second", ["started"]]]);
+		void h.detach();
+	});
+
 	test("a row the store trims from a full task is logged", async () => {
 		const h = attached("parent-task");
 		h.transport.addOpenRows(
