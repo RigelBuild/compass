@@ -276,9 +276,10 @@ func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 		t.Fatalf("Close listener file: %v", err)
 	}
 	tests := []struct {
-		name           string
-		secretProvider string
-		want           []string
+		name              string
+		secretProvider    string
+		corsAllowedOrigin string
+		want              []string
 	}{
 		{
 			name: "empty provider passes inherited listener",
@@ -294,11 +295,20 @@ func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 				"--tls-cert", cert.CertPath, "--tls-key", cert.KeyPath,
 				"--secret-provider", "dotenv:///state/secrets.env"},
 		},
+		{
+			name:              "cors origin set appends flag and value",
+			corsAllowedOrigin: "http://127.0.0.1:5173",
+			want: []string{"--socket", base.SocketPath, "--database", base.DatabaseDSN,
+				"--nats-url", "nats://127.0.0.1:4222", "--listen-fd", "3",
+				"--tls-cert", cert.CertPath, "--tls-key", cert.KeyPath,
+				"--cors-allowed-origin", "http://127.0.0.1:5173"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := base
 			cfg.SecretProvider = tt.secretProvider
+			cfg.CORSAllowedOrigin = tt.corsAllowedOrigin
 			spec := serverSpec(cfg, cert, listenerFile, "")
 			if !slices.Equal(spec.Args, tt.want) {
 				t.Fatalf("serverSpec Args = %q, want %q", spec.Args, tt.want)

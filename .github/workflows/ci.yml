@@ -2453,6 +2453,14 @@ jobs:
             -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
           echo "$out/bin" >>"$GITHUB_PATH"
 
+      - name: Prepare pinned browser and fontconfig for UI-tier e2e
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        run: |
+          chromium=$(nix build --no-link --print-out-paths -f tools/toolchain/chromium-e2e-env.nix chromium)
+          fonts=$(nix build --no-link --print-out-paths -f tools/toolchain/chromium-e2e-env.nix fontconfig)
+          [ -n "$chromium" ] && [ -n "$fonts" ]
+          echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
+          echo "E2E_FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
       - name: Put the secretspec CLI on PATH
         # The stack's compass-server resolves its server secrets by spawning the
         # secretspec CLI by name, so the e2e step below needs it on PATH.
@@ -2704,6 +2712,24 @@ jobs:
             fi
           done <<< "$test_names"
           echo "e2e: every source-derived TestComms* leg reported PASS"
+
+      - name: Install workspace JavaScript dependencies for live UI e2e
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        working-directory: apps/ui
+        run: (cd ../.. && bun install --frozen-lockfile)
+
+      - name: Run live UI e2e on main and nightly
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        working-directory: go
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          rc=0
+          go test -tags 'podman uitier' -count=1 -p 1 -v -timeout 20m -run '^TestUITierPostAndReply$' ./e2e/ >/tmp/ui-tier.log 2>&1 || rc=$?
+          cat /tmp/ui-tier.log
+          [ "$rc" -eq 0 ] || exit "$rc"
+          # A podman skip also exits 0, so require the PASS line.
+          grep -qE '^--- PASS: TestUITierPostAndReply ' /tmp/ui-tier.log || { echo "::error::UI-tier e2e did not report PASS"; exit 1; }
 
       - name: Save the Go build + module caches
         # Never on workflow_dispatch: a `pr` dispatch runs PR code under main's

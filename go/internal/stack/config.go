@@ -28,6 +28,8 @@ type Config struct {
 	// 127.0.0.1:50052). Port 0 asks the stack to resolve an ephemeral port
 	// while it holds the listener.
 	ListenAddr string
+	// CORSAllowedOrigin is the browser origin exposed by the network door; empty disables CORS.
+	CORSAllowedOrigin string
 	// DatabaseDSN is the postgres DSN compass-server opens the store of record
 	// on.
 	DatabaseDSN string

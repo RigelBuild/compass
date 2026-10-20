@@ -179,9 +179,10 @@ type fixtureConfig struct {
 	// onUp, when non-nil, receives the live stack immediately after a successful
 	// Up (WithStackObserver), so a caller with a detached t can still reap the
 	// children if a later construction gate aborts. nil is the default.
-	onUp        func(*stack.Stack)
-	forge       bool
-	objectStore *garageFixture
+	onUp              func(*stack.Stack)
+	corsAllowedOrigin string
+	forge             bool
+	objectStore       *garageFixture
 	// safetyValveCap, when positive, lowers the server's transcript hot-tail cap.
 	safetyValveCap int
 	// externalDSN, when set, points the stack at an already-running postgres
@@ -297,6 +298,11 @@ func WithSafetyValveCap(n int) fixtureOption {
 	return func(fc *fixtureConfig) { fc.safetyValveCap = n }
 }
 
+// WithCORSOrigin configures the fixture's network door for one browser origin.
+func WithCORSOrigin(origin string) fixtureOption {
+	return func(fc *fixtureConfig) { fc.corsAllowedOrigin = origin }
+}
+
 // withExternalDatabase points the stack at the running postgres at dsn
 // (ExternalDatabase: true), so Up spawns no postgres of its own.
 func withExternalDatabase(dsn string) fixtureOption {
@@ -358,13 +364,14 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	// Port 0: the stack binds the door and hands it to the server, so no
 	// released port can be taken in between; clients read st.ListenAddr().
 	cfg := stack.Config{
-		StateDir:       stateDir, // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
-		SocketPath:     serverSock,
-		ListenAddr:     "127.0.0.1:0",
-		DatabaseDSN:    dsn,
-		SecretProvider: "dotenv://" + secretsPath,
-		AgentImage:     agentImage,
-		RuntimeDir:     runtimeDir,
+		StateDir:          stateDir, // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
+		SocketPath:        serverSock,
+		ListenAddr:        "127.0.0.1:0",
+		CORSAllowedOrigin: fc.corsAllowedOrigin,
+		DatabaseDSN:       dsn,
+		SecretProvider:    "dotenv://" + secretsPath,
+		AgentImage:        agentImage,
+		RuntimeDir:        runtimeDir,
 		// The A4 plumbing under test: non-zero values so the green case proves
 		// they reach the runner's flags (asserted deterministically in the
 		// runnerSpec unit test; here they exercise the real forward path).
@@ -534,7 +541,7 @@ func acquireFixtureRoot(tb testing.TB, ctx context.Context, fc fixtureConfig) (r
 		// newPersistentSite owns the site's single end-of-test RemoveAll instead.
 		root = shortRoot(tb, "h1")
 		stateDir = tb.TempDir() // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
-		pgPort = freePorts(tb, ctx, 1)[0]
+		pgPort = freePort(tb, ctx)
 	}
 	return root, stateDir, pgPort
 }
@@ -861,32 +868,22 @@ func configureCannedModel(ctx context.Context, tb testing.TB, cfg *stack.Config,
 	return stub
 }
 
-// freePorts returns n distinct free TCP ports on loopback by binding :0 on each,
-// reading the kernel-assigned port, then closing — for children that take a
-// fixed port number. All listeners are held open until every port is read so
-// the kernel cannot hand the same port twice.
-func freePorts(tb testing.TB, ctx context.Context, n int) []int {
+// freePort returns a free TCP port on loopback by binding :0, reading the
+// kernel-assigned port, then closing — for children that take a fixed port.
+func freePort(tb testing.TB, ctx context.Context) int {
 	tb.Helper()
-	lns := make([]net.Listener, 0, n)
-	ports := make([]int, 0, n)
-	for range n {
-		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
-		if err != nil {
-			tb.Fatalf("reserve port: %v", err)
-		}
-		lns = append(lns, ln)
-		addr, ok := ln.Addr().(*net.TCPAddr)
-		if !ok {
-			tb.Fatalf("reserved listener address %T, want *net.TCPAddr", ln.Addr())
-		}
-		ports = append(ports, addr.Port)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		tb.Fatalf("reserve port: %v", err)
 	}
-	for _, ln := range lns {
-		if err := ln.Close(); err != nil {
-			tb.Fatalf("release reserved port: %v", err)
-		}
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		tb.Fatalf("reserved listener address %T, want *net.TCPAddr", ln.Addr())
 	}
-	return ports
+	if err := ln.Close(); err != nil {
+		tb.Fatalf("release reserved port: %v", err)
+	}
+	return addr.Port
 }
 
 // shortRoot creates a short, unique, 0700 root under /tmp for one test and
@@ -931,7 +928,7 @@ func newPersistentSite(ctx context.Context, t *testing.T) fixtureSite {
 	return fixtureSite{
 		root:     root,
 		stateDir: t.TempDir(),
-		pgPort:   freePorts(t, ctx, 1)[0],
+		pgPort:   freePort(t, ctx),
 	}
 }
 
