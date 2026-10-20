@@ -30,7 +30,7 @@ import {
 	SessionInjectionKind,
 } from "./compassv1";
 import type { AgentControl, ControlSource } from "./control";
-import type { FrameSink } from "./frame";
+import type { FrameSink, OutboundFrame } from "./frame";
 import { EventMapper, type UnmappedEvent } from "./mapping";
 import { flat } from "./render-guard";
 import type { TurnTracer } from "./trace-bridge";
@@ -68,6 +68,10 @@ interface SteerTail {
 	readonly fromHandle: string;
 	readonly traceparent: string;
 }
+
+/** The turn-end board re-prompt; the e2e canned model routes on this exact text. */
+export const BOARD_REPROMPT =
+	"Update your status board with compass_update_board. Do nothing else.";
 
 export class CompassAgent {
 	readonly #session: AgentSession;
@@ -143,6 +147,9 @@ export class CompassAgent {
 	// Agent-written board writes seen when the run started; a run wrote if it moved.
 	#runWrites = 0;
 	#runOpen = false;
+	// The READY of a turn whose re-prompt started; one settle covers both turns.
+	#holdReady = false;
+	#heldReady: OutboundFrame | undefined;
 
 	constructor(opts: CompassAgentOptions) {
 		this.#session = opts.session;
@@ -182,6 +189,8 @@ export class CompassAgent {
 			for (const out of this.#mapper.map(event)) {
 				if (out.kind === "unmapped") {
 					this.#onUnmapped(out);
+				} else if (this.#holdsFrame(event, out)) {
+					this.#heldReady = out;
 				} else {
 					this.#sink.emit(out);
 				}
@@ -218,6 +227,23 @@ export class CompassAgent {
 	#emitStatus(state: AgentSessionState): void {
 		const value: SessionFrame = create(SessionFrameSchema, { state });
 		this.#sink.emit({ kind: "session", value });
+	}
+
+	// A terminal READY whose flush started a re-prompt is held; the re-prompt's own
+	// READY replaces it, so watchers see the two turns settle once.
+	#holdsFrame(event: AgentSessionEvent, out: OutboundFrame): boolean {
+		if (out.kind !== "session" || event.type !== "agent_end") return false;
+		if (out.value.state !== AgentSessionState.READY) return false;
+		if (event.isTerminal === false) return false;
+		if (this.#holdReady) return true;
+		this.#heldReady = undefined;
+		return false;
+	}
+
+	#releaseReady(): void {
+		const held = this.#heldReady;
+		this.#heldReady = undefined;
+		if (held !== undefined) this.#sink.emit(held);
 	}
 
 	// Emit the SessionInjection observation (T1): a trace frame recording a channel
@@ -597,6 +623,7 @@ export class CompassAgent {
 		// A started turn's `agent_end` owns whatever queues next, so the window closes.
 		this.#cancelBatch();
 		const { boardReprompt, delivers, forges } = this.#takeTurnEndQueues();
+		this.#holdReady = boardReprompt;
 		if (
 			delivers.length === 0 &&
 			forges.length === 0 &&
@@ -614,10 +641,7 @@ export class CompassAgent {
 				formatForgeNotifications(forges.map((e) => e.notification)),
 			);
 		if (tail !== undefined) sections.push(tail.content);
-		if (boardReprompt)
-			sections.push(
-				"Update your status board with compass_update_board. Do nothing else.",
-			);
+		if (boardReprompt) sections.push(BOARD_REPROMPT);
 		const input = sections.join("\n\n");
 		// Every channel message feeding this turn, in prompt order, with its traceparent.
 		const fed = delivers.map((msg) => ({
@@ -661,8 +685,9 @@ export class CompassAgent {
 			rejected = true;
 			this.#turnActive = false;
 			if (boardReprompt) {
-				// A refused re-prompt must not strand the queued batch behind it.
+				// A refused re-prompt must not strand the queued batch or the held READY.
 				this.#repromptTurn = false;
+				this.#releaseReady();
 				this.#flushTurnEnd();
 				return;
 			}

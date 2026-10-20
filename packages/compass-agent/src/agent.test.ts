@@ -554,6 +554,39 @@ describe("CompassAgent board freshness", () => {
 		await h.close();
 	});
 
+	test("a turn and its re-prompt settle READY once, after the re-prompt", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(0n, 0);
+		const h = boardAgent(freshness);
+		const readies = () =>
+			h.frames.filter(
+				(f) =>
+					f.kind === "session" && f.value.state === AgentSessionState.READY,
+			).length;
+		h.turn({ tool: true });
+		expect(readies()).toBe(0);
+		h.turn({ tool: true });
+		expect(readies()).toBe(1);
+		await h.close();
+	});
+
+	test("a refused re-prompt releases the held READY", async () => {
+		const freshness = new BoardFreshness();
+		freshness.seed(0n, 0);
+		const h = boardAgent(freshness);
+		h.session.agent.promptRejectsNoModel = true;
+		h.turn({ tool: true });
+		h.session.agent.promptRejectsNoModel = false;
+		await tick();
+		expect(
+			h.frames.filter(
+				(f) =>
+					f.kind === "session" && f.value.state === AgentSessionState.READY,
+			),
+		).toHaveLength(1);
+		await h.close();
+	});
+
 	test("a turn that wrote, or ran no tool, starts no re-prompt", async () => {
 		const freshness = new BoardFreshness();
 		freshness.seed(0n, 0);

@@ -172,6 +172,53 @@ const setupTurnMarker = "you are the root Manager for this Compass workspace"
 // the TEST agent's transcript), so it only needs to settle the turn cleanly.
 const setupReply = "canned setup turn settled OK"
 
+// boardRepromptText is the agent's turn-end board re-prompt (compass-agent
+// agent.ts #flushTurnEnd); a test pins it to that source.
+const boardRepromptText = "Update your status board with compass_update_board. Do nothing else."
+
+const boardRepromptReply = "canned board re-prompt settled OK"
+
+// lastUserText returns the text of the request's final user message, or "".
+func lastUserText(body []byte) string {
+	var req struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		return ""
+	}
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			return messageText(req.Messages[i].Content)
+		}
+	}
+	return ""
+}
+
+// messageText reads an OpenAI content field: a string or an array of text parts.
+func messageText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Type == "text" {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
 // startCannedModelServer serves the ordered script and optional marker routes.
 // Marker requests leave positional turns untouched; empty scripts and routes are
 // rejected at construction. bindAddr must be reachable by the model client.
@@ -344,6 +391,13 @@ func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http
 	// its fixed reply without advancing the positional script counter.
 	if strings.Contains(string(body), setupTurnMarker) {
 		c.writeTextTurn(w, flusher, setupReply)
+		return
+	}
+
+	// An agent's turn-end board re-prompt also carries its leg's marker in history;
+	// settling it off-script keeps every leg's slots aligned to its triggers.
+	if strings.Contains(lastUserText(body), boardRepromptText) {
+		c.writeTextTurn(w, flusher, boardRepromptReply)
 		return
 	}
 

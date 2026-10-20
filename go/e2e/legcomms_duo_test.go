@@ -50,10 +50,10 @@ const (
 )
 
 func registerDuoFixtureOptions() {
-	// A's ordered script: post to the room (tool-call + settle), then DM the peer
-	// (open_dm, dm, settle). The marker counter advances one slot per round-trip;
-	// a tool turn needs a settle turn, and the board re-prompt that follows a tool
-	// turn with no board write needs its own text slot.
+	// A's ordered script across BOTH its actions: post to the room (tool-call +
+	// settle), then DM the peer (open_dm, dm, settle). A tool-call turn needs a
+	// SECOND round-trip to terminate, so every tool-call turn is paired with a
+	// following turn; the per-marker counter advances one slot per round-trip.
 	postArgs := fmt.Sprintf(
 		`{"text":%q,"topic":%q,"channel":%q,"create_topic":true}`,
 		duoRoomPost, duoRoomTopic, duoRoomChannel,
@@ -75,7 +75,6 @@ func registerDuoFixtureOptions() {
 	registerSharedFixtureOption(
 		WithCannedMarkerScript(duoMarkerA,
 			CannedToolCall("comms_post_message", postArgs),
-			CannedText(duoSettleARoom),
 			CannedText(duoSettleARoom),
 			CannedToolCall("comms_open_dm", openDMArgs),
 			CannedToolCall("comms_dm", dmArgs),
