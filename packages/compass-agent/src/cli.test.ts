@@ -1436,8 +1436,7 @@ describe("main", () => {
 		).toBe(true);
 	});
 
-	// The bus main hands the SDK as subagentEventBus is the one the board sync reads;
-	// a lifecycle event on it reaches the server by the shutdown drain.
+	// Lifecycle events the SDK emits on subagentEventBus must reach the board.
 	test("subagent lifecycle events on the session's bus reach the board", async () => {
 		const session = fakeSession();
 		const comms: CommsCallRequest[] = [];

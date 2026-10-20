@@ -461,13 +461,16 @@ export function attachSubagentBoardSync(
 			!(starting && current !== undefined && current.endedAtUnixMs !== 0n)
 		)
 			return false;
-		if (!starting && last !== undefined) {
-			last.row = rowFor(event, false, last.row);
+		// A start before the last queued run settled restarts that run on its own task,
+		// as a live row does; only a settled run makes way for a new one.
+		if (last !== undefined && (!starting || last.row.endedAtUnixMs === 0n)) {
+			last.row = rowFor(event, starting, last.row);
 			return true;
 		}
 		const key = startKey();
-		// The server keys rows by id, so a later run on the same task replaces it there too.
-		if (last !== undefined && last.key === key) queue.pop();
+		// The server keys rows by id, so a later run on the same known task replaces it.
+		if (last !== undefined && key !== undefined && last.key === key)
+			queue.pop();
 		queue.push({ row: rowFor(event, true, undefined), key });
 		if (queue.length > MAX_QUEUED_RUNS) {
 			queue.shift();

@@ -275,6 +275,74 @@ describe("subagent board synchronization", () => {
 		void h.detach();
 	});
 
+	test("a restart before a queued run settles stays on that run's task", async () => {
+		const h = attached("first");
+		h.transport.addTask("second");
+		h.transport.addTask("third");
+		h.freshness.noteBoard(h.transport.board);
+		const focus = (key: string) => {
+			h.transport.focus = key;
+			h.freshness.noteBoard(h.transport.board);
+		};
+		h.emit("a", "started");
+		await h.window();
+		h.emit("a", "completed");
+		focus("second");
+		h.emit("a", "started");
+		focus("third");
+		h.emit("a", "started");
+		h.emit("a", "completed");
+		for (let i = 0; i < 4; i++) await h.window();
+		const open = h.transport.board.tasks.flatMap((t) =>
+			t.subagents.filter((s) => s.endedAtUnixMs === 0n).map(() => t.key),
+		);
+		expect(open).toEqual([]);
+		const second = h.transport.board.tasks.find((t) => t.key === "second");
+		expect(second?.subagents.map((s) => s.status)).toEqual(["completed"]);
+		void h.detach();
+	});
+
+	test("an id restarting past the queue cap drops its oldest queued run", async () => {
+		const h = attached("t0");
+		for (let i = 1; i <= 10; i++) h.transport.addTask(`t${i}`);
+		h.freshness.noteBoard(h.transport.board);
+		h.emit("a", "started");
+		await h.window();
+		h.emit("a", "completed");
+		const logged: unknown[][] = [];
+		const original = console.error;
+		console.error = (...args: unknown[]) => logged.push(args);
+		try {
+			for (let i = 1; i <= 9; i++) {
+				h.transport.focus = `t${i}`;
+				h.freshness.noteBoard(h.transport.board);
+				h.emit("a", "started");
+				h.emit("a", "completed");
+			}
+		} finally {
+			console.error = original;
+		}
+		expect(logged.map((a) => String(a[0]))).toContain(
+			"[compass-agent] subagent board run dropped:",
+		);
+		for (let i = 0; i < 12; i++) await h.window();
+		const landed = h.transport.board.tasks
+			.filter((t) => t.subagents.length > 0)
+			.map((t) => t.key);
+		expect(landed).toEqual([
+			"t0",
+			"t2",
+			"t3",
+			"t4",
+			"t5",
+			"t6",
+			"t7",
+			"t8",
+			"t9",
+		]);
+		void h.detach();
+	});
+
 	test("a settle during its start's write follows the start's task", async () => {
 		const h = attached("first", { seeded: false });
 		h.transport.addTask("second");

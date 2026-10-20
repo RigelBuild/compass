@@ -352,7 +352,7 @@ export function createAgentBoardTools(
 		label: "Update agent board",
 		approval: "write",
 		description:
-			"Update your status board with tasks, focus, waits, references, or a halt reason. Omitted fields stay unchanged; inside a task, an empty refs or waiting list clears it.",
+			'Update your status board with tasks, focus, waits, references, or a halt reason. Omitted fields stay unchanged. Within a task, set note or primary_ref to "" or refs or waiting to [] to clear that field.',
 		parameters: updateAgentBoardParameters,
 		execute: async (toolCallId, params) => {
 			const result = await broker.call(
