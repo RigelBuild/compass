@@ -1960,8 +1960,8 @@ jobs:
           # the ONLY lane that executes it. The moon `compass-go:test` lane runs
           # untagged (`go test ./...`), which compiles the non-gtk4 stub and
           # excludes main_test.go, machine_test.go and embedded_test.go; the
-          # gtk4-e2e lane compiles the gtk4 build but `-run E2E`-filters, so it
-          # never reaches any of them. These tests defend contracts that ARE the
+          # gtk4-e2e lane compiles the gtk4 build but filters to
+          # `-run 'E2E|TestBuildAppMenu'`, so it never reaches any of them. These tests defend contracts that ARE the
           # darwin behaviour this lane ships, so their regression guards live
           # here or nowhere:
           #   - DistDirForExecutable: the .app dist-resolution contract

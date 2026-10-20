@@ -308,9 +308,10 @@ order. Select the field (Ctrl+A), cut it (Ctrl+X), and paste it back (Ctrl+V);
 confirm the text returns once. Then select only `example` with the mouse, copy
 it (Ctrl+C), click at the end, and paste (Ctrl+V); confirm the field ends in
 `example`, not a second full URL. The Linux menu bar has no Edit menu, so these keys
-go straight to WebKitGTK. On macOS, repeat the whole check, rapid Backspace
-included, with Cmd+A, Cmd+X, Cmd+C, and Cmd+V; those reach the webview only through
-the **Edit** menu, which also binds Backspace to Delete.
+go straight to WebKitGTK. On a Mac, build a `.dmg` as in
+`tools/macos-bundle/README.md`, open `Compass.app` from it, and repeat the whole
+check, rapid Backspace included, with Cmd+A, Cmd+X, Cmd+C, and Cmd+V; those reach
+the webview only through the **Edit** menu, which also binds Backspace to Delete.
 
 Test each rejected URL in the first window's form. Enter `http://x` and a
 temporary non-secret value in the token field, then click **Connect**. Confirm
