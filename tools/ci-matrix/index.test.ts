@@ -409,6 +409,7 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 			"apps/ui/index.html",
 			"apps/ui/vite.config.ts",
 			"apps/ui/package.json",
+			"bun.lock",
 		]) {
 			expect(
 				generate(prInput({ affectedIds: [], changedPaths: [path] }))

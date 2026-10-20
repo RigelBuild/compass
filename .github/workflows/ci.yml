@@ -1864,8 +1864,9 @@ jobs:
         #
         # AFFECTED-GUARDED to match the one-job affected posture (DL-263): on a PR
         # it runs only when the shell surface (go/cmd/compass-app/ or a shared GTK
-        # closure input), the macos-bundle tool, or the sidecar surface (the four
-        # sidecar cmd dirs plus every first-party package they compile in) actually
+        # closure input), the macos-bundle tool, the sidecar surface (the four
+        # sidecar cmd dirs plus every first-party package they compile in), or a
+        # UI build input that shapes the staged dist/index.html actually
         # changed. push-to-main and the nightly schedule always run it (the
         # full-sweep backstop); a base-re-point re-trigger (workflow_dispatch) also
         # runs it full. The in-step guard mirrors the darwinAffected trigger in
@@ -1888,8 +1889,9 @@ jobs:
             # closure-only PR must trigger it too; plus a macos-bundle tool change
             # (the bundler this lane exercises) and the four pure-Go sidecars plus
             # every first-party package they compile in — `go list -deps` resolves
-            # those non-cmd roots to {events, gen, internal, server}. Mirrors the
-            # darwinAffected trigger in tools/ci-matrix/index.ts.
+            # those non-cmd roots to {events, gen, internal, server}; plus the UI
+            # build inputs that shape dist/index.html, which this step asserts.
+            # Mirrors the darwinAffected trigger in tools/ci-matrix/index.ts.
             changed=$(git diff --name-only HEAD^1 HEAD -- \
               go/cmd/compass-app/ \
               tools/toolchain/gtk-closure.nix \
@@ -1908,13 +1910,14 @@ jobs:
               go/go.sum \
               apps/ui/index.html \
               apps/ui/vite.config.ts \
-              apps/ui/package.json)
+              apps/ui/package.json \
+              bun.lock)
             if [ -z "$changed" ]; then
               run_it=0
             fi
           fi
           if [ "$run_it" = 0 ]; then
-            echo "darwin: PR does not touch the shell, sidecar, closure, macos-bundle, or UI entry surface — skipping (affected gate)"
+            echo "darwin: PR does not touch the shell, sidecar, closure, macos-bundle, or UI build surface — skipping (affected gate)"
             exit 0
           fi
 

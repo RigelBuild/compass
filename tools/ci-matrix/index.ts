@@ -109,6 +109,8 @@ const DARWIN_UI_BUILD_PATHS = [
 	"apps/ui/index.html",
 	"apps/ui/vite.config.ts",
 	"apps/ui/package.json",
+	// Pins the vite version that emits the tag.
+	"bun.lock",
 ];
 /**
  * darwin sidecar surface: the mac lane now cross-compiles the four pure-Go
