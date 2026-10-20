@@ -112,6 +112,25 @@ describe("joinAgents", () => {
 		expect(agent?.board).toEqual(board);
 	});
 
+	test("joins running subagents from presence", () => {
+		const subagents = [
+			{
+				id: "sub-build",
+				agent: "builder",
+				description: "Implementing",
+				status: "started",
+				startedAtUnixMs: 10,
+			},
+		];
+		const [agent] = joinAgents(
+			[agentAccount("acc-cook")],
+			new Map([["acc-cook", { subagents }]]),
+			new Map(),
+			emptySessions,
+			emptyLastOpened,
+		);
+		expect(agent?.subagents).toBe(subagents);
+	});
 	test("a presence-map MISS projects lifecycle 'stopped' (R2/DL-194)", () => {
 		// An account present in `accounts` but absent from the presence seed — a
 		// snapshot-boundary race or an un-re-seeded accountChanged arrival — is an

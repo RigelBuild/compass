@@ -115,6 +115,8 @@ export interface FakeCommsSnapshot {
 	 *  (reduceSnapshot adapts them). Empty by default: a fake with no roster
 	 *  seeds an empty presence map, which is the pre-live-roster behavior. */
 	readonly roster?: readonly unknown[];
+	/** Whole boards returned by ListAgentBoards for snapshot seeding. */
+	readonly boards?: readonly unknown[];
 	/** Per channel id — what ListTopics serves for that channel. */
 	readonly topicsByChannel?: Readonly<Record<string, readonly unknown[]>>;
 	/** Per channel id, newest-first — what ListMessages pages over. */
@@ -198,6 +200,7 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 		listChannelGroups: async () => ({ groups: snapshot.channelGroups ?? [] }),
 		listChannels: async () => ({ channels: snapshot.channels ?? [] }),
 		getRoster: async () => ({ entries: roster }),
+		listAgentBoards: async () => ({ boards: snapshot.boards ?? [] }),
 		listTopics: async (req: {
 			channelId: string;
 			includeArchived: boolean;

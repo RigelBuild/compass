@@ -68,12 +68,17 @@ export async function fetchSnapshot(
 	// No vantage_handle: the server defaults vantage to the caller (R6). Unversioned (no
 	// snapshotSeq), converging via the seq'd tail replay. A rejection propagates like the
 	// siblings, is caught in runCommsStream, and retries the whole snapshot with backoff.
-	const [accountsResp, groupsResp, channelsResp, rosterResp] =
+	const [accountsResp, groupsResp, channelsResp, rosterResp, boardsResp] =
 		await Promise.all([
 			client.listAccounts({ snapshotSeq }, opts),
 			client.listChannelGroups({ snapshotSeq }, opts),
 			client.listChannels({ snapshotSeq }, opts),
 			client.getRoster({ scope: RosterScope.OWNER }, opts),
+			// Board data only seeds the tree; keep snapshot startup working if unavailable.
+			client.listAgentBoards({ limit: 100 }, opts).catch((error: unknown) => {
+				if (signal?.aborted) throw error;
+				return { boards: [] };
+			}),
 		]);
 
 	// Topics + messages page per channel. ListTopics is channel-scoped and includes
@@ -102,6 +107,7 @@ export async function fetchSnapshot(
 		channels: channelsResp.channels,
 		topics,
 		messages,
+		boards: boardsResp.boards,
 		roster: rosterResp.entries,
 	};
 }

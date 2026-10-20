@@ -5,6 +5,7 @@
 
 import type {
 	Account as WireAccount,
+	AgentBoard as WireAgentBoard,
 	Channel as WireChannel,
 	ChannelGroup as WireChannelGroup,
 	RosterEntry as WireRosterEntry,
@@ -21,12 +22,14 @@ import type { AgentBoard, AgentBoardSummary } from "../stub-data";
 import {
 	type AgentPresenceInfo,
 	adaptAccount,
+	adaptAgentBoard,
 	adaptChannel,
 	adaptChannelGroup,
 	adaptRosterEntry,
 	adaptTopic,
 	agentHomeChannelIds,
 	applyBoardEvent,
+	runningSubagents,
 } from "./adapt";
 
 /** Maps a wire Message to the domain Message. Injected so this engine stays
@@ -80,6 +83,7 @@ export interface CommsSnapshot {
 	readonly topics: readonly WireTopic[];
 	readonly messages: readonly Message[];
 	readonly roster: readonly WireRosterEntry[];
+	readonly boards: readonly WireAgentBoard[];
 }
 
 /** Reduce a raw snapshot into a fresh CommsState. Accounts map first because
@@ -99,6 +103,13 @@ export function reduceSnapshot(
 	const topics = snap.topics.map(adaptTopic);
 	const messages = [...snap.messages].sort(byPostOrder);
 	const presence = new Map(snap.roster.map(adaptRosterEntry));
+	for (const wireBoard of snap.boards) {
+		const subagents = runningSubagents(adaptAgentBoard(wireBoard));
+		// An entry without lifecycle would turn a roster-less agent from "stopped" to undefined.
+		if (subagents.length === 0) continue;
+		const prev = presence.get(wireBoard.agentAccountId);
+		presence.set(wireBoard.agentAccountId, { ...prev, subagents });
+	}
 	return { accounts, channelGroups, channels, topics, messages, presence };
 }
 
@@ -268,6 +279,7 @@ export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 			const prev = presence.get(event.accountId);
 			presence.set(event.accountId, {
 				...prev,
+				subagents: runningSubagents(event.board),
 				board: applyBoardEvent(prev?.board, event.board),
 				boardEvents: (prev?.boardEvents ?? 0) + 1,
 			});
