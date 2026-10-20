@@ -1001,6 +1001,20 @@ test("fetchSnapshot keeps roster presence when listAgentBoards rejects", async (
 	expect(calls.listAgentBoardsCalls).toEqual([{ limit: 100 }]);
 });
 
+test("fetchSnapshot rejects when listAgentBoards fails after an abort", async () => {
+	const controller = new AbortController();
+	const aborted = new Error("aborted board read");
+	const { client } = createFakeClient(controller, {
+		listAgentBoardsError: aborted,
+	});
+	controller.abort();
+
+	// A cancelled read must not look like an empty board list.
+	await expect(
+		fetchSnapshot(client, mapMessage, 42n, controller.signal),
+	).rejects.toBe(aborted);
+});
+
 describe("runCommsStream — presence seed + tail", () => {
 	test("the snapshot seeds presence from GetRoster(OWNER), and a tail agentPresenceChanged upserts one key", async () => {
 		const controller = new AbortController();
