@@ -70,8 +70,8 @@ function escapeXml(value: string): string {
  * Render the CFBundle Info.plist XML for the Compass .app. Pure — the same
  * inputs always produce the same bytes. Carries the minimum CFBundle keys a
  * launchable arm64 .app needs (GC6/§163-183): name, executable, identifier,
- * package type, the two version keys (both the clean semver, GC4), the minimum
- * system version, and the info-dictionary format version.
+ * icon file, package type, the two version keys (both the clean semver, GC4),
+ * the minimum system version, and the info-dictionary format version.
  */
 export function renderInfoPlist(opts: InfoPlistOptions): string {
 	const name = escapeXml(opts.name);

@@ -2077,6 +2077,7 @@ jobs:
           FILES=(
             "$mnt/Compass.app/Contents/Info.plist"
             "$mnt/Compass.app/Contents/Resources/dist/index.html"
+            "$mnt/Compass.app/Contents/Resources/AppIcon.icns"
           )
           for want in "${FILES[@]}"; do
             if [ ! -f "$want" ]; then
@@ -2084,6 +2085,17 @@ jobs:
               rc=1
             fi
           done
+          icon_key="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$mnt/Compass.app/Contents/Info.plist" 2>/dev/null || true)"
+          if [ "$icon_key" != AppIcon ]; then
+            echo "::error::darwin: Info.plist CFBundleIconFile = '$icon_key', want AppIcon"
+            rc=1
+          fi
+          extra="$(find "$mnt" -mindepth 1 -maxdepth 1 ! -name Compass.app ! -name .fseventsd \
+            ! -name .metadata_never_index ! -name .Trashes)"
+          if [ -n "$extra" ]; then
+            echo "::error::darwin: dmg root holds more than Compass.app: $extra"
+            rc=1
+          fi
           # Detach runs via the EXIT trap installed above, unconditionally.
           if [ "$rc" != 0 ]; then
             exit 1
