@@ -1961,9 +1961,9 @@ jobs:
           # untagged (`go test ./...`), which compiles the non-gtk4 stub and
           # excludes main_test.go, machine_test.go and embedded_test.go; the
           # gtk4-e2e lane compiles the gtk4 build but filters to
-          # `-run 'E2E|TestBuildAppMenu'`, so it never reaches any of them. These tests defend contracts that ARE the
-          # darwin behaviour this lane ships, so their regression guards live
-          # here or nowhere:
+          # `-run 'E2E|TestBuildAppMenu'`, so it never reaches any of them.
+          # These tests defend contracts that ARE the darwin behaviour this lane
+          # ships, so their regression guards live here or nowhere:
           #   - DistDirForExecutable: the .app dist-resolution contract
           #     (Contents/Resources/dist under a Contents/MacOS executable,
           #     else dist beside it).
@@ -1978,8 +1978,6 @@ jobs:
           #     `podman machine init` can fit inside.
           #   - ShellGlobalsMiddleware*: the startup-globals script the UI reads
           #     before its bundle picks a boot mode.
-          #   - BuildAppMenu: the editing keys macOS needs for Cmd+C/V/X/A.
-          #   - SerialOpener*: New Window never gives two windows one name.
           # `-run` alone exits 0 when it matches nothing (a rename → false
           # green), so require each group's own PASS line — a rename or skip
           # reds. The filter is explicit rather than the whole compass-app
