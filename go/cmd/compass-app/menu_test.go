@@ -90,9 +90,11 @@ func TestBuildAppMenu(t *testing.T) {
 			if got := menu.FindByRole(application.BringAllToFront) != nil; got != darwin {
 				t.Errorf("BringAllToFront present = %v, want %v", got, darwin)
 			}
-			newWindow := application.NewMenuItem("").SetAccelerator("CmdOrCtrl+n").GetAccelerator()
-			if got := menu.FindByLabel("New Window").GetAccelerator(); got != newWindow {
-				t.Errorf("New Window accelerator = %q, want %q", got, newWindow)
+			want := application.NewMenuItem("").SetAccelerator("CmdOrCtrl+n").GetAccelerator()
+			if item := menu.FindByLabel("New Window"); item == nil {
+				t.Errorf("no New Window item")
+			} else if got := item.GetAccelerator(); got != want {
+				t.Errorf("New Window accelerator = %q, want %q", got, want)
 			}
 		})
 	}
