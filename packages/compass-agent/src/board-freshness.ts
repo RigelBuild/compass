@@ -2,6 +2,7 @@ import { type BatchTimer, realBatchTimer } from "./batch-window";
 import type { CommsBroker } from "./comms";
 import {
 	type AgentBoard,
+	type BoardSubagent,
 	type CommsCallRequest,
 	CommsCallRequestSchema,
 	type CommsCallResult,
@@ -18,25 +19,19 @@ export class BoardFreshness {
 	#writtenAtMs: number | undefined;
 	#writes = 0;
 	#focusTaskKey = "";
-	// Undefined until a read or write returned the board.
-	#taskKeys: ReadonlySet<string> | undefined;
+	// Task key → ids of its unsettled subagent rows; undefined until a board returned.
+	#tasks: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 	// Any later read or write is newer than the startup seed, even after a forget.
 	#boardNoted = false;
 	#settled = false;
 
 	// Keeps the stored time and tasks; a seed landing after any later read or write is
 	// stale, and only this session's writes set the time.
-	seed(
-		_writtenTurn: bigint,
-		writtenAtMs: number,
-		focusTaskKey = "",
-		taskKeys: readonly string[] = [],
-	): void {
+	seed(_writtenTurn: bigint, writtenAtMs: number, board?: AgentBoard): void {
 		this.#settled = true;
 		if (this.#writes === 0)
 			this.#writtenAtMs = writtenAtMs > 0 ? writtenAtMs : undefined;
-		if (this.#boardNoted) return;
-		this.noteBoard(focusTaskKey, taskKeys);
+		if (board !== undefined && !this.#boardNoted) this.noteBoard(board);
 	}
 
 	/** A failed seed still settles: the board then counts as never written. */
@@ -49,37 +44,43 @@ export class BoardFreshness {
 		return this.#settled || this.#writes > 0;
 	}
 
-	noteWrite(
-		turn: bigint,
-		atMs: number,
-		focusTaskKey?: string,
-		taskKeys?: readonly string[],
-	): void {
+	noteWrite(turn: bigint, atMs: number, board?: AgentBoard): void {
 		this.#writtenTurn = turn;
 		this.#writtenAtMs = atMs;
 		this.#writes += 1;
-		if (focusTaskKey !== undefined)
-			this.noteBoard(focusTaskKey, taskKeys ?? []);
+		if (board !== undefined) this.noteBoard(board);
 	}
 
-	/** Records the focus and task keys of a board the server returned. */
-	noteBoard(focusTaskKey: string, taskKeys: readonly string[]): void {
+	/** Records the focus, tasks and open subagent rows of a board the server returned. */
+	noteBoard(board: AgentBoard): void {
 		this.#boardNoted = true;
-		this.#focusTaskKey = focusTaskKey;
-		this.#taskKeys = new Set(taskKeys);
+		this.#focusTaskKey = board.focusTaskKey;
+		this.#tasks = new Map(
+			board.tasks.map((t) => [
+				t.key,
+				new Set(
+					t.subagents.filter((s) => !subagentSettled(s)).map((s) => s.id),
+				),
+			]),
+		);
 	}
 
 	/** Drops the known tasks so the next sync reads the board first. */
 	forgetBoard(): void {
-		this.#taskKeys = undefined;
+		this.#tasks = undefined;
 	}
 
 	boardKnown(): boolean {
-		return this.#taskKeys !== undefined;
+		return this.#tasks !== undefined;
 	}
 
 	hasTask(key: string): boolean {
-		return this.#taskKeys?.has(key) === true;
+		return this.#tasks?.has(key) === true;
+	}
+
+	/** Ids of the task's stored unsettled subagent rows. */
+	openRows(key: string): ReadonlySet<string> {
+		return this.#tasks?.get(key) ?? NO_ROWS;
 	}
 
 	wroteThisTurn(turn: bigint): boolean {
@@ -130,8 +131,12 @@ export function boardOf(result: CommsCallResult, toolName: string): AgentBoard {
 	return board;
 }
 
-export const taskKeysOf = (board: AgentBoard): string[] =>
-	board.tasks.map((t) => t.key);
+const NO_ROWS: ReadonlySet<string> = new Set();
+const SETTLED_STATUSES = new Set(["completed", "failed", "aborted"]);
+
+// Mirrors the store's subagentSettled, which decides what the 20-row cap counts.
+export const subagentSettled = (s: BoardSubagent): boolean =>
+	SETTLED_STATUSES.has(s.status) || s.endedAtUnixMs !== 0n;
 
 // An automatic patch with no fields reads the board without changing it.
 export function readBoardRequest(
@@ -164,12 +169,7 @@ export async function seedBoardFreshness(
 		.call(readBoardRequest("board-freshness-seed", turnSequence))
 		.then((result) => {
 			const board = boardOf(result, "board freshness seed");
-			freshness.seed(
-				board.writtenTurn,
-				Number(board.writtenAtUnixMs),
-				board.focusTaskKey,
-				taskKeysOf(board),
-			);
+			freshness.seed(board.writtenTurn, Number(board.writtenAtUnixMs), board);
 		});
 	call.catch(() => {});
 	// The unary has no deadline of its own; a hung read must not hold nudges and sync.

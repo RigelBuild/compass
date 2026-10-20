@@ -5,6 +5,7 @@ import {
 	type AgentBoard,
 	AgentBoardSchema,
 	type BoardSubagent,
+	BoardSubagentSchema,
 	type BoardTaskPatch,
 	BoardTaskSchema,
 	CommsCallErrorSchema,
@@ -35,8 +36,11 @@ export class FakeTransport implements CommsTransport {
 	readonly requests: CommsCallRequest[] = [];
 	failNext = false;
 	refuseNext = false;
-	/** Answers the next call with an in-band internal error. */
+	/** Answers the next call with an in-band `faultCode` error. */
 	faultNext = false;
+	faultCode = "internal";
+	/** Faults this many patches that carry tasks; reads still answer. */
+	faultWrites = 0;
 	/** Refuses this many patches that carry tasks; reads still answer. */
 	refuseWrites = 0;
 	#gate: Promise<void> | undefined;
@@ -50,6 +54,15 @@ export class FakeTransport implements CommsTransport {
 	removeTask(key: string): void {
 		this.board.tasks = this.board.tasks.filter((t) => t.key !== key);
 		if (this.board.focusTaskKey === key) this.board.focusTaskKey = "";
+	}
+	/** Stores unsettled rows another writer left on a task. */
+	addOpenRows(key: string, ids: readonly string[]): void {
+		const task = this.board.tasks.find((t) => t.key === key);
+		task?.subagents.push(
+			...ids.map((id) =>
+				create(BoardSubagentSchema, { id, status: "started" }),
+			),
+		);
 	}
 	/** Holds every reply until the returned release runs. */
 	hold(): () => void {
@@ -74,7 +87,7 @@ export class FakeTransport implements CommsTransport {
 		}
 		if (this.faultNext) {
 			this.faultNext = false;
-			return refusal(req.callId, "store fault", "internal");
+			return refusal(req.callId, "store fault", this.faultCode);
 		}
 		if (req.call.case !== "updateBoard")
 			return create(CommsCallResultSchema, {
@@ -89,6 +102,10 @@ export class FakeTransport implements CommsTransport {
 		if (req.call.value.upsertTasks.length > 0 && this.refuseWrites > 0) {
 			this.refuseWrites -= 1;
 			return refusal(req.callId, "task cap");
+		}
+		if (req.call.value.upsertTasks.length > 0 && this.faultWrites > 0) {
+			this.faultWrites -= 1;
+			return refusal(req.callId, "store fault", this.faultCode);
 		}
 		const patches = req.call.value.upsertTasks;
 		const untitled = patches.find(

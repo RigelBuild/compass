@@ -35,8 +35,8 @@ describe("seedBoardFreshness", () => {
 
 	test("a seed that lands after this session wrote changes nothing", () => {
 		const freshness = new BoardFreshness();
-		freshness.noteWrite(3n, 50_000, "mine", ["mine"]);
-		freshness.seed(2n, 10_000, "old", ["old"]);
+		freshness.noteWrite(3n, 50_000, board({ focusTaskKey: "mine" }));
+		freshness.seed(2n, 10_000, board({ focusTaskKey: "old" }));
 		expect(freshness.ageMs(51_000)).toBe(1_000);
 		expect(freshness.focusTaskKey()).toBe("mine");
 		expect(freshness.hasTask("old")).toBe(false);

@@ -1,11 +1,6 @@
 import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import {
-	type BoardFreshness,
-	boardError,
-	boardOf,
-	taskKeysOf,
-} from "./board-freshness";
+import { type BoardFreshness, boardError, boardOf } from "./board-freshness";
 import type { CommsBroker } from "./comms";
 import {
 	type AgentBoard,
@@ -345,8 +340,7 @@ export function createAgentBoardTools(
 			freshness.noteWrite(
 				board.writtenTurn,
 				Number(board.writtenAtUnixMs),
-				board.focusTaskKey,
-				taskKeysOf(board),
+				board,
 			);
 			return {
 				content: [

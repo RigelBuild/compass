@@ -34,6 +34,7 @@ import type {
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
 import { context, propagation, type Span, trace } from "@opentelemetry/api";
 import {
 	InMemorySpanExporter,
@@ -63,6 +64,7 @@ import {
 	AgentBoardSchema,
 	AgentControlSchema,
 	AgentSessionState,
+	type CommsCallRequest,
 	CommsCallResultSchema,
 	create,
 	DeliverControlSchema,
@@ -510,6 +512,8 @@ interface CarrierHooks {
 	// the composition root — this lets a test hold `main` to releasing the
 	// carrier even when the drain ahead of it fails.
 	drainError?: Error;
+	// Records each comms call before the fake board answers it.
+	onComms?: (req: CommsCallRequest) => void;
 }
 
 // A RunnerTransport over in-process handlers. Built the same way
@@ -532,8 +536,9 @@ function fakeCarrier(
 			? real
 			: { ...real, drain: () => Promise.reject(hooks.drainError) };
 	return {
-		comms: async (req) =>
-			create(CommsCallResultSchema, {
+		comms: async (req) => {
+			hooks.onComms?.(req);
+			return create(CommsCallResultSchema, {
 				callId: req.callId,
 				result: {
 					case: "updateBoard",
@@ -545,7 +550,8 @@ function fakeCarrier(
 						}),
 					}),
 				},
-			}),
+			});
+		},
 		lifecycle: () => Promise.reject(new Error("lifecycle is not used by main")),
 		forge: () => Promise.reject(new Error("forge is not used by main")),
 		board: () => Promise.reject(new Error("board is not used by main")),
@@ -1428,6 +1434,39 @@ describe("main", () => {
 				.getSessionFile()
 				?.startsWith(SessionManager.getDefaultSessionDir("/work/repo")),
 		).toBe(true);
+	});
+
+	// The bus main hands the SDK as subagentEventBus is the one the board sync reads;
+	// a lifecycle event on it reaches the server by the shutdown drain.
+	test("subagent lifecycle events on the session's bus reach the board", async () => {
+		const session = fakeSession();
+		const comms: CommsCallRequest[] = [];
+		await main(
+			{ HOME: scratch(), COMPASS_WORKDIR: "/work/repo" },
+			{
+				createSession: (options) => {
+					options.subagentEventBus?.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+						id: "sub-1",
+						agent: "reviewer",
+						status: "started",
+					});
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), {
+						control: emptyControlStream,
+						onComms: (req) => comms.push(req),
+					}),
+			},
+		);
+		const rows = comms.flatMap((r) =>
+			r.call.case === "updateBoard"
+				? r.call.value.upsertTasks.flatMap((t) => t.upsertSubagents)
+				: [],
+		);
+		expect(rows.map((s) => s.id)).toEqual(["sub-1"]);
 	});
 
 	// COMPASS_RESUME_SESSION_FILE (exported by T8) is loaded through the SDK-native

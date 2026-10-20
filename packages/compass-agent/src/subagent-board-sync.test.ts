@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { BoardFreshness, taskKeysOf } from "./board-freshness";
+import { BoardFreshness } from "./board-freshness";
 import {
 	board,
 	FakeTimer,
@@ -17,8 +17,7 @@ function attached(focus: string, opts: { seeded?: boolean } = {}) {
 	const transport = new FakeTransport(board({ focusTaskKey: focus }));
 	const bus = new EventBus();
 	const freshness = new BoardFreshness();
-	if (opts.seeded !== false)
-		freshness.seed(1n, 1_000, focus, taskKeysOf(transport.board));
+	if (opts.seeded !== false) freshness.seed(1n, 1_000, transport.board);
 	const detach = attachSubagentBoardSync(
 		bus,
 		new CommsBroker(transport),
@@ -145,11 +144,11 @@ describe("subagent board synchronization", () => {
 	test("a removed task: the retry lands on the focus and keeps settled rows", async () => {
 		const h = attached("parent-task");
 		h.transport.addTask("other");
-		h.freshness.noteBoard("parent-task", taskKeysOf(h.transport.board));
+		h.freshness.noteBoard(h.transport.board);
 		h.emit("a", "started");
 		await h.window();
 		h.transport.focus = "other";
-		h.freshness.noteWrite(2n, 2_000, "other", taskKeysOf(h.transport.board));
+		h.freshness.noteWrite(2n, 2_000, h.transport.board);
 		h.emit("b", "started");
 		await h.window();
 		h.transport.removeTask("parent-task");
@@ -187,10 +186,11 @@ describe("subagent board synchronization", () => {
 	test("a subagent keeps the task it started on when the focus moves", async () => {
 		const h = attached("first");
 		h.transport.addTask("second");
-		h.freshness.noteBoard("first", taskKeysOf(h.transport.board));
+		h.freshness.noteBoard(h.transport.board);
 		h.emit("a", "started");
 		await h.window();
-		h.freshness.noteWrite(2n, 2_000, "second", taskKeysOf(h.transport.board));
+		h.transport.focus = "second";
+		h.freshness.noteWrite(2n, 2_000, h.transport.board);
 		h.emit("a", "completed");
 		h.emit("b", "started");
 		await h.window();
@@ -215,7 +215,7 @@ describe("subagent board synchronization", () => {
 	test("with no focus, an unfocused subagents task keeps its title", async () => {
 		const h = attached("");
 		h.transport.addTask("subagents", "Mine");
-		h.freshness.noteBoard("", taskKeysOf(h.transport.board));
+		h.freshness.noteBoard(h.transport.board);
 		h.emit("a", "started");
 		await h.window();
 		expect(h.patches()[0]?.upsertTasks[0]).toMatchObject({ key: "subagents" });
@@ -241,7 +241,7 @@ describe("subagent board synchronization", () => {
 		await settle();
 		expect(h.patches()).toHaveLength(0);
 		h.transport.addTask("stored-focus");
-		h.freshness.seed(1n, 1_000, "stored-focus", ["stored-focus"]);
+		h.freshness.seed(1n, 1_000, board({ focusTaskKey: "stored-focus" }));
 		await h.window();
 		expect(h.patches()[0]?.upsertTasks[0]?.key).toBe("stored-focus");
 		void h.detach();
@@ -323,6 +323,74 @@ describe("subagent board synchronization", () => {
 		void h.detach();
 	});
 
+	test("open rows another writer stored count toward the cap", async () => {
+		const h = attached("parent-task");
+		h.transport.addOpenRows(
+			"parent-task",
+			Array.from({ length: 20 }, (_, i) => `o${i}`),
+		);
+		h.freshness.noteBoard(h.transport.board);
+		h.emit("s", "started");
+		await h.window();
+		expect(h.writes()).toHaveLength(0);
+		void h.detach();
+	});
+
+	test("a refused start with no room does not hold back other rows", async () => {
+		const h = attached("parent-task");
+		h.transport.refuseWrites = 1;
+		h.emit("x", "started");
+		await h.window();
+		// Another writer filled the task; "c" is one of its open rows.
+		h.transport.addOpenRows("parent-task", [
+			"c",
+			...Array.from({ length: 19 }, (_, i) => `o${i}`),
+		]);
+		h.emit("c", "completed");
+		await h.window();
+		await h.window();
+		// "x" waits for room; "c" goes out and frees it.
+		expect(
+			h
+				.writes()
+				.map((w) =>
+					w.upsertTasks[0]?.upsertSubagents.map((s) => `${s.id}:${s.status}`),
+				),
+		).toEqual([["x:started"], ["c:completed"], ["x:started"]]);
+		void h.detach();
+	});
+
+	test("a row that keeps faulting is dropped after bounded retries", async () => {
+		const h = attached("parent-task");
+		h.transport.faultWrites = 1_000;
+		h.emit("a", "completed");
+		for (let i = 0; i < 12; i++) await h.window();
+		const attempts = h.writes().length;
+		for (let i = 0; i < 12; i++) await h.window();
+		expect(h.writes()).toHaveLength(attempts);
+		h.transport.faultWrites = 0;
+		h.emit("b", "completed");
+		await h.window();
+		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
+		expect(task?.subagents.map((s) => s.id)).toEqual(["b"]);
+		void h.detach();
+	});
+
+	test("a canceled call is transient: the rows retry without a re-read", async () => {
+		const h = attached("parent-task");
+		h.transport.faultCode = "canceled";
+		h.transport.faultWrites = 1;
+		h.emit("a", "started");
+		await h.window();
+		await h.window();
+		expect(h.patches().filter((p) => p.upsertTasks.length === 0)).toHaveLength(
+			0,
+		);
+		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
+		expect(task?.subagents.map((s) => s.id)).toEqual(["a"]);
+		void h.detach();
+	});
+
 	test("an in-band server fault keeps rows pending; a read fault too", async () => {
 		const h = attached("parent-task");
 		h.transport.faultNext = true;
@@ -371,9 +439,9 @@ describe("subagent board synchronization", () => {
 
 	test("a seed landing after a sync read keeps the newer board", () => {
 		const freshness = new BoardFreshness();
-		freshness.noteBoard("new", ["new"]);
+		freshness.noteBoard(board({ focusTaskKey: "new" }));
 		freshness.forgetBoard();
-		freshness.seed(1n, 5_000, "old", ["old"]);
+		freshness.seed(1n, 5_000, board({ focusTaskKey: "old" }));
 		expect(freshness.focusTaskKey()).toBe("new");
 		expect(freshness.boardKnown()).toBe(false);
 		expect(freshness.ageMs(6_000)).toBe(1_000);

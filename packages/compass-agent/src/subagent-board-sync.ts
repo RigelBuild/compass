@@ -5,7 +5,6 @@ import {
 	type BoardFreshness,
 	boardError,
 	readBoardRequest,
-	taskKeysOf,
 } from "./board-freshness";
 import type { CommsBroker } from "./comms";
 import {
@@ -66,15 +65,20 @@ const ID_CHARS = 64;
 const AGENT_CHARS = 64;
 const DESCRIPTION_CHARS = 200;
 
-// Server faults clear on their own; any other code is a refusal a retry would repeat.
+// Connect code tokens (`connect.CodeOf(err).String()`) for faults that clear on
+// their own; any other code is a refusal a retry would repeat.
 const TRANSIENT_CODES = new Set([
-	"internal",
-	"unavailable",
+	"canceled",
+	"unknown",
 	"deadline_exceeded",
 	"aborted",
 	"resource_exhausted",
-	"unknown",
+	"internal",
+	"unavailable",
 ]);
+// The server also reports some lasting faults as internal, so a batch gets this many
+// transient retries before its rows retry alone, then drop.
+const TRANSIENT_RETRIES = 3;
 
 const transient = (result: CommsCallResult): boolean =>
 	result.result.case === "error" &&
@@ -83,8 +87,18 @@ const transient = (result: CommsCallResult): boolean =>
 const boardIn = (result: CommsCallResult) =>
 	result.result.case === "updateBoard" ? result.result.value.board : undefined;
 
-const clip = (text: string, max: number): string =>
-	[...text.replaceAll("\0", "")].slice(0, max).join("");
+// Reads at most `max` code points, so a huge input costs only what is kept.
+function clip(text: string, max: number): string {
+	let out = "";
+	let kept = 0;
+	for (const ch of text) {
+		if (kept === max) break;
+		if (ch === "\0") continue;
+		out += ch;
+		kept += 1;
+	}
+	return out;
+}
 
 function logSync(what: string, error: unknown): void {
 	// biome-ignore lint/suspicious/noConsole: automatic board sync failures are visible in the container log only
@@ -108,8 +122,8 @@ export function attachSubagentBoardSync(
 	const settled = new Set<string>();
 	// Ids in a refused batch; a second refusal drops them.
 	const refused = new Set<string>();
-	// Ids last written as started, by task; the server refuses past 20 per task.
-	const open = new Map<string, string>();
+	// Transient faults per id; past the limit the rows take the refusal path.
+	const faults = new Map<string, number>();
 	const changed = new Set<string>();
 	let cancel: (() => void) | undefined;
 	let inFlight: Promise<void> | undefined;
@@ -177,7 +191,7 @@ export function attachSubagentBoardSync(
 		}
 		const board = boardIn(result);
 		if (board !== undefined) {
-			freshness.noteBoard(board.focusTaskKey, taskKeysOf(board));
+			freshness.noteBoard(board);
 			return true;
 		}
 		const error = boardError(result, "subagent board read", "update_board");
@@ -195,11 +209,12 @@ export function attachSubagentBoardSync(
 		byId.delete(id);
 		taskById.delete(id);
 		refused.delete(id);
-		open.delete(id);
+		faults.delete(id);
 	};
 
 	const forget = (s: BoardSubagent): void => {
 		refused.delete(s.id);
+		faults.delete(s.id);
 		if (byId.get(s.id) !== s || s.endedAtUnixMs === 0n) return;
 		drop(s.id);
 		settled.add(s.id);
@@ -215,16 +230,32 @@ export function attachSubagentBoardSync(
 		// The known tasks may be stale (a task was removed), so re-read before retrying.
 		freshness.forgetBoard();
 		for (const s of sent) {
-			if (refused.has(s.id)) {
-				forget(s);
-				open.delete(s.id);
-			} else if (byId.get(s.id) === s) {
+			if (refused.has(s.id)) forget(s);
+			else if (byId.get(s.id) === s) {
 				refused.add(s.id);
 				changed.add(s.id);
 			}
 		}
 		logSync(
 			"sync refused",
+			boardError(result, "subagent board sync", "update_board"),
+		);
+	};
+
+	const onFault = (sent: BoardSubagent[], result: CommsCallResult): void => {
+		let exhausted = false;
+		for (const s of sent) {
+			const n = (faults.get(s.id) ?? 0) + 1;
+			faults.set(s.id, n);
+			if (n > TRANSIENT_RETRIES) exhausted = true;
+		}
+		if (exhausted) {
+			onRefused(sent, result);
+			return;
+		}
+		requeue(sent);
+		logSync(
+			"sync failed",
 			boardError(result, "subagent board sync", "update_board"),
 		);
 	};
@@ -243,53 +274,67 @@ export function attachSubagentBoardSync(
 		}
 		const board = boardIn(result);
 		if (board === undefined) {
-			if (!transient(result)) return onRefused(sent, result);
-			requeue(sent);
-			logSync(
-				"sync failed",
-				boardError(result, "subagent board sync", "update_board"),
-			);
+			if (transient(result)) onFault(sent, result);
+			else onRefused(sent, result);
 			return;
 		}
-		freshness.noteBoard(board.focusTaskKey, taskKeysOf(board));
+		freshness.noteBoard(board);
 		for (const s of sent) {
-			const key = keys.get(s.id) ?? SUBAGENTS_TASK_KEY;
-			taskById.set(s.id, key);
-			if (s.endedAtUnixMs === 0n) open.set(s.id, key);
-			else open.delete(s.id);
+			taskById.set(s.id, keys.get(s.id) ?? SUBAGENTS_TASK_KEY);
 			forget(s);
 		}
 	};
 
-	// A start that would push its task past the server's open-row cap waits for room.
+	// The server refuses a task with more than 20 open rows, so a start that would add
+	// one waits until the board shows room. Counts come from the last board returned.
 	const hasRoom = (
 		row: BoardSubagent,
 		key: string,
 		opening: Map<string, number>,
 	): boolean => {
-		if (row.endedAtUnixMs !== 0n || open.get(row.id) === key) return true;
-		let count = opening.get(key) ?? 0;
-		for (const task of open.values()) if (task === key) count += 1;
+		const stored = freshness.openRows(key);
+		if (row.endedAtUnixMs !== 0n || stored.has(row.id)) return true;
+		const count = stored.size + (opening.get(key) ?? 0);
 		if (count >= MAX_OPEN_PER_TASK) return false;
 		opening.set(key, (opening.get(key) ?? 0) + 1);
 		return true;
 	};
 
-	// Rows refused once retry alone, so a second refusal drops only the bad row.
-	const nextBatch = (): {
-		sent: BoardSubagent[];
-		keys: Map<string, string>;
-	} => {
-		const ids = [...changed];
-		const retry = ids.find((id) => refused.has(id));
-		const keys = new Map<string, string>();
-		const opening = new Map<string, number>();
-		for (const id of retry === undefined ? ids : [retry]) {
-			if (keys.size === MAX_ROWS_PER_WRITE) break;
+	const pick = (
+		ids: Iterable<string>,
+		limit: number,
+		keys: Map<string, string>,
+		opening: Map<string, number>,
+	): void => {
+		for (const id of ids) {
+			if (keys.size >= limit) return;
 			const row = byId.get(id);
 			const key = keyFor(id);
 			if (row !== undefined && hasRoom(row, key, opening)) keys.set(id, key);
 		}
+	};
+
+	// A refused row retries alone, so a second refusal drops only that row. One with no
+	// room waits, and the other rows go out without it.
+	const nextBatch = (): {
+		sent: BoardSubagent[];
+		keys: Map<string, string>;
+	} => {
+		const keys = new Map<string, string>();
+		const opening = new Map<string, number>();
+		pick(
+			[...refused].filter((id) => changed.has(id)),
+			1,
+			keys,
+			opening,
+		);
+		if (keys.size === 0)
+			pick(
+				[...changed].filter((id) => !refused.has(id)),
+				MAX_ROWS_PER_WRITE,
+				keys,
+				opening,
+			);
 		for (const id of keys.keys()) changed.delete(id);
 		return {
 			sent: [...keys.keys()].flatMap((id) => byId.get(id) ?? []),
@@ -297,21 +342,27 @@ export function attachSubagentBoardSync(
 		};
 	};
 
-	const send = async (): Promise<void> => {
-		if (!freshness.boardKnown() && !(await readBoard())) return;
-		if (closed) return;
+	// Resolves true when a call answered, so the drain stops when nothing can move.
+	const send = async (): Promise<boolean> => {
+		if (!freshness.boardKnown() && !(await readBoard())) return false;
+		if (closed) return false;
 		const { sent, keys } = nextBatch();
-		if (sent.length > 0) await write(sent, keys);
+		if (sent.length === 0) return false;
+		await write(sent, keys);
+		return true;
 	};
 
-	function run(): Promise<void> {
+	function run(): Promise<boolean> {
 		const done = send()
-			.catch((error: unknown) => logSync("sync failed", error))
+			.catch((error: unknown) => {
+				logSync("sync failed", error);
+				return true;
+			})
 			.finally(() => {
 				inFlight = undefined;
 				arm();
 			});
-		inFlight = done;
+		inFlight = done.then(() => {});
 		return done;
 	}
 
@@ -323,7 +374,7 @@ export function attachSubagentBoardSync(
 			if (
 				event === undefined ||
 				event.id.includes("\0") ||
-				[...event.id].length > ID_CHARS
+				clip(event.id, ID_CHARS + 1).length > clip(event.id, ID_CHARS).length
 			)
 				return;
 			const starting = event.status === "started";
@@ -348,20 +399,21 @@ export function attachSubagentBoardSync(
 			);
 			// A new state is a new row; an earlier refusal was about the old one.
 			refused.delete(event.id);
+			faults.delete(event.id);
 			changed.add(event.id);
 			arm();
 		},
 	);
 
 	// Skips the seed gate: at shutdown the read happens here if the seed has not landed.
-	// Each pass sends one batch, or one row retrying alone after a refusal; the budget
-	// covers both, so a failing transport cannot spin until the deadline.
+	// Each pass sends one batch, or one refused row alone; the budget covers both, and
+	// a pass that sends nothing ends the drain.
 	const drain = async (): Promise<void> => {
 		await inFlight;
 		let passes = 2 * changed.size + 2;
 		while (changed.size > 0 && passes > 0 && !closed) {
 			passes -= 1;
-			await run();
+			if (!(await run())) return;
 		}
 	};
 
