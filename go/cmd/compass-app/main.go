@@ -27,7 +27,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -114,7 +116,8 @@ func run(ctx context.Context) error {
 		Description: "Compass native desktop shell",
 		Services:    services,
 		Assets: application.AssetOptions{
-			Handler: application.BundledAssetFileServer(os.DirFS(assetsDir)),
+			Handler:    application.BundledAssetFileServer(os.DirFS(assetsDir)),
+			Middleware: shellGlobalsMiddleware(svc),
 		},
 	})
 	if dialog != nil {
@@ -152,16 +155,14 @@ func run(ctx context.Context) error {
 	windowMenu := menu.AddSubmenu("Window")
 	windowMenu.Add("New Window").OnClick(func(_ *application.Context) {
 		name := nextWindowName(app)
-		newAppWindow(ctx, app, svc, name, "Compass")
+		newAppWindow(app, svc, name, "Compass")
 	})
 	app.Menu.Set(menu)
 
-	// Restore the persisted window set (Compass multi-window M1). An absent,
-	// empty, or corrupt set opens one default Bridge window. Each window factory
-	// reads the current shell mode when creating its startup script.
+	// Restore saved windows; each page reads shell state when its script loads.
 	names := windowNamesOrDefault(loadWindowSet(stateDir))
 	for _, name := range names {
-		newAppWindow(ctx, app, svc, name, "Compass")
+		newAppWindow(app, svc, name, "Compass")
 	}
 
 	mode, _ := svc.shellState()
@@ -169,35 +170,49 @@ func run(ctx context.Context) error {
 	return app.Run()
 }
 
-// windowOptions builds the Wails options for a Compass window. Every window is a
-// Bridge window (URL "/") at the fixed 1280x800 size. Name keys the persisted set
-// and later per-frame routing, so it is always set. The startup globals come from
-// live shell state, so a window opened after setup boots in the decided mode.
-func windowOptions(svc *bridgeService, name, title string) (application.WebviewWindowOptions, error) {
-	mode, serverURL := svc.shellState()
-	startupJS, err := shellStartupJS(mode, serverURL)
-	if err != nil {
-		return application.WebviewWindowOptions{}, err
-	}
+// windowOptions keeps every persisted window on the shared asset route.
+func windowOptions(name, title string) application.WebviewWindowOptions {
 	return application.WebviewWindowOptions{
 		Name:   name,
 		Title:  title,
 		Width:  1280,
 		Height: 800,
 		URL:    "/",
-		// Startup globals run before the app bundle reads its boot mode.
-		JS: startupJS,
-	}, nil
+	}
+}
+
+// shellGlobalsPath is loaded by apps/ui/index.html ahead of the module bundle.
+const shellGlobalsPath = "/compass-shell-globals.js"
+
+// shellGlobalsMiddleware serves startup globals from the service's current state.
+func shellGlobalsMiddleware(svc *bridgeService) application.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != shellGlobalsPath || r.Method != http.MethodGet {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			mode, serverURL := svc.shellState()
+			script, err := shellStartupJS(mode, serverURL)
+			if err != nil {
+				http.Error(w, "unable to encode shell globals", http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			if _, err := io.WriteString(w, script); err != nil {
+				slog.ErrorContext(r.Context(), "compass-app writing shell globals", "error", err)
+			}
+		})
+	}
 }
 
 // newAppWindow creates a Bridge window and attaches its close-time cancellation
 // handler so every window tears down its own in-flight bridge calls.
-func newAppWindow(ctx context.Context, app *application.App, svc *bridgeService, name, title string) {
-	opts, err := windowOptions(svc, name, title)
-	if err != nil {
-		slog.ErrorContext(ctx, "compass-app building window startup script", "error", err)
-		return
-	}
+func newAppWindow(app *application.App, svc *bridgeService, name, title string) {
+	opts := windowOptions(name, title)
 	win := app.Window.NewWithOptions(opts)
 	win.OnWindowEvent(events.Common.WindowClosing, func(_ *application.WindowEvent) {
 		svc.cancelWindow(wailsWindowDispatcher{win: win})

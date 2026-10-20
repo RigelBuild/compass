@@ -404,6 +404,25 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		).toBe(true);
 	});
 
+	test("darwinAffected on UI build inputs that shape dist/index.html", () => {
+		for (const path of [
+			"apps/ui/index.html",
+			"apps/ui/vite.config.ts",
+			"apps/ui/package.json",
+			"bun.lock",
+		]) {
+			expect(
+				generate(prInput({ affectedIds: [], changedPaths: [path] }))
+					.darwinAffected,
+			).toBe(true);
+		}
+		expect(
+			generate(
+				prInput({ affectedIds: [], changedPaths: ["apps/ui/src/index.tsx"] }),
+			).darwinAffected,
+		).toBe(false);
+	});
+
 	test("darwinAffected on the secretspec pin (the .app stages that CLI)", () => {
 		expect(
 			generate(

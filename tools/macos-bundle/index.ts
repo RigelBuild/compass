@@ -100,6 +100,24 @@ export function renderInfoPlist(opts: InfoPlistOptions): string {
 `;
 }
 
+/** The startup-globals script the desktop shell serves; see go/cmd/compass-app. */
+export const SHELL_GLOBALS_SRC = "/compass-shell-globals.js";
+const SHELL_GLOBALS_SRC_ATTR = /\ssrc="\/compass-shell-globals\.js"/;
+
+/**
+ * Returns why index.html would boot without shell globals, or null. The script
+ * must be classic and synchronous so it runs during parsing, before the module.
+ */
+export function checkShellGlobalsScript(html: string): string | null {
+	const tag = html
+		.match(/<script\b[^>]*>/gi)
+		?.find((t) => SHELL_GLOBALS_SRC_ATTR.test(t));
+	if (!tag) return `no <script src="${SHELL_GLOBALS_SRC}">`;
+	if (/\s(async|defer|type)\b/i.test(tag))
+		return `${tag} is not a classic sync script`;
+	return null;
+}
+
 /**
  * Parse `--binary <path> --dist <dir> --version <semver> --out <dmg>` plus zero
  * or more repeated `--sidecar <path>` into a typed BundleArgs. Pure; throws an
@@ -511,7 +529,13 @@ async function main(): Promise<void> {
 	// Fail loud on missing inputs BEFORE staging (build.sh §256-261 posture): a
 	// green bundle means a COMPLETE bundle.
 	await assertExists(args.binary, "compass-app binary");
-	await assertExists(join(args.dist, "index.html"), "UI dist (index.html)");
+	const indexHtml = join(args.dist, "index.html");
+	await assertExists(indexHtml, "UI dist (index.html)");
+	const globalsError = checkShellGlobalsScript(
+		await Bun.file(indexHtml).text(),
+	);
+	if (globalsError)
+		throw new Error(`macos-bundle: ${indexHtml}: ${globalsError}`);
 	for (const sidecar of args.sidecars) {
 		await assertExists(sidecar, `sidecar binary (${basename(sidecar)})`);
 	}

@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import {
+	checkShellGlobalsScript,
 	createOrThrow,
 	detachStaleAttachments,
 	formatBusyDiagnosis,
@@ -32,6 +33,76 @@ function plistValue(xml: string, key: string): string | undefined {
 	const re = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`);
 	return re.exec(xml)?.[1];
 }
+
+describe("checkShellGlobalsScript — the dist must load shell globals before the bundle", () => {
+	const mod =
+		'<script type="module" crossorigin src="/assets/index.js"></script>';
+	test("a classic sync script passes, whitespace and order aside", () => {
+		expect(
+			checkShellGlobalsScript(
+				`<head><script  src="/compass-shell-globals.js"></script>${mod}</head>`,
+			),
+		).toBeNull();
+	});
+	test("a missing script fails", () => {
+		expect(checkShellGlobalsScript(`<head>${mod}</head>`)).toContain(
+			"no <script",
+		);
+	});
+	for (const tag of [
+		'<script data-src="/compass-shell-globals.js">',
+		'<script src="/compass-shell-globalsXjs">',
+	]) {
+		test(`${tag} fails: the shell serves no such script`, () => {
+			expect(checkShellGlobalsScript(`${tag}</script>${mod}`)).toContain(
+				"no <script",
+			);
+		});
+	}
+	for (const attr of ["defer", "async", 'type="module"']) {
+		test(`${attr} fails: it would run after the bundle reads the globals`, () => {
+			expect(
+				checkShellGlobalsScript(
+					`<script ${attr} src="/compass-shell-globals.js"></script>${mod}`,
+				),
+			).toContain("not a classic sync script");
+		});
+	}
+});
+
+test("the CLI refuses a deferred globals script before staging", async () => {
+	const dir = await mkdtemp("/tmp/macos-bundle-cli-");
+	try {
+		await Bun.write(`${dir}/compass-app`, "");
+		await Bun.write(
+			`${dir}/dist/index.html`,
+			'<script defer src="/compass-shell-globals.js"></script>',
+		);
+		const run = Bun.spawnSync([
+			process.execPath,
+			`${import.meta.dir}/index.ts`,
+			"--binary",
+			`${dir}/compass-app`,
+			"--dist",
+			`${dir}/dist`,
+			"--version",
+			"1.2.3",
+			"--out",
+			`${dir}/out/Compass.dmg`,
+		]);
+		expect(run.exitCode).not.toBe(0);
+		expect(run.stderr.toString()).toContain("not a classic sync script");
+		expect(
+			(
+				await Array.fromAsync(
+					new Bun.Glob("**/*").scan({ cwd: dir, onlyFiles: false }),
+				)
+			).sort(),
+		).toEqual(["compass-app", "dist", "dist/index.html"]);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
 
 describe("renderInfoPlist — required CFBundle keys carry the passed values", () => {
 	test("CFBundleName is the display name", () => {

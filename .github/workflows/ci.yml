@@ -1770,8 +1770,9 @@ jobs:
     # bundle is complete + mountable. The job-level `if:` ANDs the dispatch-aware
     # gate guard with the darwin affected gate: on a PR it runs only when setup
     # found the shell surface (go/cmd/compass-app/ or a GTK closure input), the
-    # macos-bundle tool, or the sidecar surface (the four sidecar cmd dirs plus
-    # every first-party package they compile in) changed (darwin_affected), and
+    # macos-bundle tool, the sidecar surface (the four sidecar cmd dirs plus
+    # every first-party package they compile in), or a UI build input that shapes
+    # the staged dist/index.html changed (darwin_affected), and
     # always on push/schedule
     # and on a base-re-point re-trigger (DL-263 cadence — full sweep on main +
     # nightly ALWAYS, plus affected-on-PR). The in-step affected guard stays as
@@ -1864,8 +1865,9 @@ jobs:
         #
         # AFFECTED-GUARDED to match the one-job affected posture (DL-263): on a PR
         # it runs only when the shell surface (go/cmd/compass-app/ or a shared GTK
-        # closure input), the macos-bundle tool, or the sidecar surface (the four
-        # sidecar cmd dirs plus every first-party package they compile in) actually
+        # closure input), the macos-bundle tool, the sidecar surface (the four
+        # sidecar cmd dirs plus every first-party package they compile in), or a
+        # UI build input that shapes the staged dist/index.html actually
         # changed. push-to-main and the nightly schedule always run it (the
         # full-sweep backstop); a base-re-point re-trigger (workflow_dispatch) also
         # runs it full. The in-step guard mirrors the darwinAffected trigger in
@@ -1888,8 +1890,9 @@ jobs:
             # closure-only PR must trigger it too; plus a macos-bundle tool change
             # (the bundler this lane exercises) and the four pure-Go sidecars plus
             # every first-party package they compile in — `go list -deps` resolves
-            # those non-cmd roots to {events, gen, internal, server}. Mirrors the
-            # darwinAffected trigger in tools/ci-matrix/index.ts.
+            # those non-cmd roots to {events, gen, internal, server}; plus the UI
+            # build inputs that shape dist/index.html, which this step asserts.
+            # Mirrors the darwinAffected trigger in tools/ci-matrix/index.ts.
             changed=$(git diff --name-only HEAD^1 HEAD -- \
               go/cmd/compass-app/ \
               tools/toolchain/gtk-closure.nix \
@@ -1905,13 +1908,17 @@ jobs:
               go/events/ \
               go/gen/ \
               go/go.mod \
-              go/go.sum)
+              go/go.sum \
+              apps/ui/index.html \
+              apps/ui/vite.config.ts \
+              apps/ui/package.json \
+              bun.lock)
             if [ -z "$changed" ]; then
               run_it=0
             fi
           fi
           if [ "$run_it" = 0 ]; then
-            echo "darwin: PR does not touch the shell, sidecar, closure, or macos-bundle surface — skipping (affected gate)"
+            echo "darwin: PR does not touch the shell, sidecar, closure, macos-bundle, or UI build surface — skipping (affected gate)"
             exit 0
           fi
 
@@ -1964,13 +1971,15 @@ jobs:
           #     preflight), so it is the last thing that should run nowhere.
           #   - BringUpTimeout*: that darwin keeps a window a cold
           #     `podman machine init` can fit inside.
+          #   - ShellGlobalsMiddleware*: the startup-globals script the UI reads
+          #     before its bundle picks a boot mode.
           # `-run` alone exits 0 when it matches nothing (a rename → false
           # green), so require each group's own PASS line — a rename or skip
           # reds. The filter is explicit rather than the whole compass-app
           # package because that package also holds GUI E2E tests that need a
           # display; the machine and preflight tests live in internal/embedded.
           CGO_ENABLED=1 go -C go test -trimpath \
-            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout' \
+            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout|TestShellGlobalsMiddleware' \
             -count=1 -v \
             ./cmd/compass-app/ ./internal/embedded/ | tee /tmp/darwin-unit.log
           for t in TestDistDirForExecutable \
@@ -1981,7 +1990,8 @@ jobs:
                    TestEnsureMachineReadyUnclassifiedDoesNotProvision \
                    TestRealPreflightDepsWiresDarwinMachineAdapter \
                    TestClassifyPreflightUnwiredDarwinMachineIsFatal \
-                   TestBringUpTimeoutBudgetsDarwinColdProvisioning; do
+                   TestBringUpTimeoutBudgetsDarwinColdProvisioning \
+                   TestShellGlobalsMiddlewareUsesLiveState; do
             grep -q "^--- PASS: $t" /tmp/darwin-unit.log || {
               echo "::error::darwin: $t did not run+pass (renamed or skipped?)"
               exit 1
@@ -1991,7 +2001,8 @@ jobs:
           # The UI dist the .app stages into Contents/Resources/dist.
           moon run compass-ui:build
 
-          # Stage + ad-hoc sign the .app and wrap the .dmg.
+          # Stage + ad-hoc sign the .app and wrap the .dmg. The bundler refuses a
+          # dist whose index.html lacks the classic shell-globals script.
           out=/tmp/compass-app-darwin-arm64.dmg
           bun run tools/macos-bundle/index.ts \
             --binary /tmp/compass-app \

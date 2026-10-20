@@ -14,8 +14,13 @@ test("dev boot — app mounts with no page errors", async ({ page }) => {
 	page.on("pageerror", (error: Error) => {
 		pageErrors.push(error);
 	});
+	// Only the desktop shell serves this script; the browser build must 404 it and still mount.
+	const shellGlobals = page.waitForResponse((r) =>
+		r.url().endsWith("/compass-shell-globals.js"),
+	);
 
 	await page.goto("/#/");
+	expect((await shellGlobals).status()).toBe(404);
 
 	// Wait for mount, failing fast (and by name) the instant a pageerror is
 	// captured — see the failure-path note above. The poll ceiling matches a
