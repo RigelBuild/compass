@@ -97,7 +97,7 @@ func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, fab fabric.E
 	// The wake seam (RIG-1641 T3): a FRESH lifecycleService, not the instance
 	// wireHubServiceCycles wired. lifecycleService is stateless besides its own
 	// singleflight group, and only the waker path drives WakeAgent, so this
-	// instance's group IS the wake's coalescer. nil dmOpener: the waker never spawns.
+	// instance's group IS the wake's coalescer. nil comms: the waker never spawns.
 	c.SetAgentWaker(newLifecycleService(st, hub, nil))
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)

@@ -515,14 +515,17 @@ func (c *Comms) publishChannelChanged(ctx context.Context, ch store.Channel, rem
 	})
 }
 
-// publishHomeChannelChanged announces the home channel the store created with
-// the agent; an open client otherwise holds its id with no channel to render.
-// The read follows a committed create, so a caller that hung up must not drop it.
-func (c *Comms) publishHomeChannelChanged(ctx context.Context, channelID store.ChannelID) {
+// publishAgentCreated emits a committed new agent and the home channel the store
+// minted with it; an open client otherwise holds the channel id with nothing to render.
+func (c *Comms) publishAgentCreated(ctx context.Context, account store.Account) {
 	ctx = context.WithoutCancel(ctx)
-	channel, err := c.store.GetChannel(ctx, channelID)
+	c.publishAccountChanged(ctx, account)
+	if account.Agent == nil {
+		return
+	}
+	channel, err := c.store.GetChannel(ctx, account.Agent.HomeChannelID)
 	if err != nil {
-		slog.ErrorContext(ctx, "comms: reading new home channel for event", "channel_id", channelID, "err", err)
+		slog.ErrorContext(ctx, "comms: reading new home channel for event", "channel_id", account.Agent.HomeChannelID, "err", err)
 		return
 	}
 	c.publishChannelChanged(ctx, channel, nil)
