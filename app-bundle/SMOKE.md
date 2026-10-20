@@ -302,6 +302,12 @@ Before connecting, open a second window via **File → New Window** while the
 first window still shows the chooser. Confirm the second window also shows the
 chooser. In the first window, choose **Connect to a server**.
 
+Check native text editing in the server-URL field. Type `https://example.test`,
+press Backspace rapidly several times, and confirm the characters delete in
+order. Select the field (Ctrl+A), cut it (Ctrl+X), and paste it back (Ctrl+V);
+confirm the text returns once. The Linux menu bar has no Edit menu, so these keys
+go straight to WebKitGTK.
+
 Test each rejected URL in the first window's form. Enter `http://x` and a
 temporary non-secret value in the token field, then click **Connect**. Confirm
 the form shows a validation message, then check that no config was written:
@@ -477,6 +483,8 @@ rm -rf "$CCONFIG" "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
 - [ ] open **File → New Window** while both windows show the chooser; complete
       the invalid-URL checks and connect in the first window, then confirm the
       second window leaves the chooser and reaches the board (§Part (b), 3)
+- [ ] in the server-URL field, rapid Backspace deletes in order and Ctrl+A,
+      Ctrl+X, Ctrl+V round-trips the text once (§Part (b), 3)
 - [ ] before the successful connection, `http://x` and `https://h/p` each show a
       validation message and leave `app.toml` absent (§Part (b), 3)
 - [ ] a valid connection writes client `app.toml` with the normalized origin and
