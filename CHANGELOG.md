@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.3.2](https://github.com/RigelBuild/compass/compare/v0.3.1...v0.3.2) (2026-10-20)
+
+
+### Features
+
+* **agent:** add local VCS tools (RIG-5711) ([#2438](https://github.com/RigelBuild/compass/issues/2438)) ([a3ff6e9](https://github.com/RigelBuild/compass/commit/a3ff6e91286bc7105deb8c67909b218ed5528432))
+* **compass-agent:** status board tools, freshness, subagent sync (RIG-5175) ([#2498](https://github.com/RigelBuild/compass/issues/2498)) ([db0f29b](https://github.com/RigelBuild/compass/commit/db0f29b04df8f8e597de66241cc344b60bfd5363))
+* **forge:** add forge_edit_issue for issue title and body edits (RIG-5653) ([#2470](https://github.com/RigelBuild/compass/issues/2470)) ([d929345](https://github.com/RigelBuild/compass/commit/d92934582276a7b7e0f95be02651bb1803945b27))
+* **forge:** add provider update and lookup (RIG-5706) ([#2419](https://github.com/RigelBuild/compass/issues/2419)) ([4b14d23](https://github.com/RigelBuild/compass/commit/4b14d233a802af2d62ac5fe48c10ccf23c97e189))
+* **forge:** mint one agent credential per repository owner (RIG-5653) ([#2462](https://github.com/RigelBuild/compass/issues/2462)) ([1ac1fdb](https://github.com/RigelBuild/compass/commit/1ac1fdb015f7e7947c518e3f67e7cf5064779d22))
+* **forge:** read board and notify lanes through the owner installation (RIG-5653) ([#2468](https://github.com/RigelBuild/compass/issues/2468)) ([0d3f515](https://github.com/RigelBuild/compass/commit/0d3f51527546e355012531b079e6fbe21a2df3f6))
+* **forge:** render and replace stack blocks (RIG-5707) ([#2420](https://github.com/RigelBuild/compass/issues/2420)) ([4cc1e60](https://github.com/RigelBuild/compass/commit/4cc1e60bd464b99b7fe7e4103d41654ab44cd559))
+* **forge:** route agent git and jj-vine credentials by repository owner (RIG-5653) ([#2459](https://github.com/RigelBuild/compass/issues/2459)) ([3490246](https://github.com/RigelBuild/compass/commit/3490246c042388709c135883b66fe63c6e1c9a29))
+* **forge:** route author and reviewer forge calls by repository owner (RIG-5653) ([#2460](https://github.com/RigelBuild/compass/issues/2460)) ([e74e5af](https://github.com/RigelBuild/compass/commit/e74e5afd648fd322acf43c679617e4c6dc0d2d41))
+* **images:** publish amd64 and arm64 members with one OCI index per lane (RIG-5695) ([#2455](https://github.com/RigelBuild/compass/issues/2455)) ([24b1ace](https://github.com/RigelBuild/compass/commit/24b1ace205e947bb9eb881c7fcee539fe4c9668e))
+* **release:** read every registry image anonymously except the destination probe (RIG-5693) ([#2417](https://github.com/RigelBuild/compass/issues/2417)) ([254656a](https://github.com/RigelBuild/compass/commit/254656aee57f76f5c09fea6724b7f6a1a57543ef))
+* **runner:** --server-name sets the TLS name the Runner checks (RIG-5697) ([#2401](https://github.com/RigelBuild/compass/issues/2401)) ([3336bdb](https://github.com/RigelBuild/compass/commit/3336bdb789a826798ad89d20352a0f45e88ff70f))
+* **runner-image:** tag paired main images by first-parent count (RIG-5694) ([#2448](https://github.com/RigelBuild/compass/issues/2448)) ([01bae6c](https://github.com/RigelBuild/compass/commit/01bae6c6a7ca594e4cfa29b3f69de3096e7f6c44))
+* **runnerhub:** carry the command traceparent on each PublishEvents frame (RIG-5515) ([#2384](https://github.com/RigelBuild/compass/issues/2384)) ([ce19f95](https://github.com/RigelBuild/compass/commit/ce19f9520c79c18255b4b072520a630cf66e4b6d))
+* **runtime:** trace guest control client RPCs except Health (RIG-5508) ([#2382](https://github.com/RigelBuild/compass/issues/2382)) ([38e0493](https://github.com/RigelBuild/compass/commit/38e0493e4950e69df35ffac174a057fd0e2c4991))
+* **server-manifests:** drop Postgres and the init container; add forge and placement (RIG-5692) ([#2430](https://github.com/RigelBuild/compass/issues/2430)) ([b9a1663](https://github.com/RigelBuild/compass/commit/b9a166393c9843391a0f1513e31ffb4db7b8ebd1))
+* **server:** accept agent repository grants across App installations (RIG-5653) ([#2472](https://github.com/RigelBuild/compass/issues/2472)) ([9a88ce9](https://github.com/RigelBuild/compass/commit/9a88ce95dd6d02f68eb715d2b5bb3ccf31239ad3))
+* **server:** accept the admin token from a Kubernetes Secret volume (RIG-5691) ([#2400](https://github.com/RigelBuild/compass/issues/2400)) ([fc1ff32](https://github.com/RigelBuild/compass/commit/fc1ff32bfa7f84772b3391f553395901298c421f))
+* **server:** add stack, status, and retire forge arms (RIG-5710) ([#2465](https://github.com/RigelBuild/compass/issues/2465)) ([4a520ba](https://github.com/RigelBuild/compass/commit/4a520baf647722e8dfadb6902de888c1a68391e0))
+* **server:** rebase same-owner foreign PRs in a submitted line (RIG-5710) ([#2467](https://github.com/RigelBuild/compass/issues/2467)) ([88b6a2d](https://github.com/RigelBuild/compass/commit/88b6a2dd9ab13706c720b9eafaf41b4ceac20e49))
+* **server:** write forge creates under write intents (RIG-5710) ([#2463](https://github.com/RigelBuild/compass/issues/2463)) ([9b4b8bb](https://github.com/RigelBuild/compass/commit/9b4b8bbeae50406cdef98cfbcb3a0306a83d84bd))
+* **store:** record forge write intents (RIG-5709) ([#2442](https://github.com/RigelBuild/compass/issues/2442)) ([a0393ad](https://github.com/RigelBuild/compass/commit/a0393adc41b9b4919dd46be0f420cee1c3588dcf))
+* **ui:** add draft and in-queue lanes to the Bridge PRs board (RIG-5184) ([#2489](https://github.com/RigelBuild/compass/issues/2489)) ([088b6d5](https://github.com/RigelBuild/compass/commit/088b6d535ba082c89b06a4b3bc0c97f8188e37bc))
+* **ui:** show running subagents under their agent in the tree (RIG-5943) ([#2511](https://github.com/RigelBuild/compass/issues/2511)) ([58409ba](https://github.com/RigelBuild/compass/commit/58409ba94d32bc9f734b94164984e9becc760467))
+* **vcs:** add server Git mirror (RIG-5715) ([#2447](https://github.com/RigelBuild/compass/issues/2447)) ([c49238c](https://github.com/RigelBuild/compass/commit/c49238c9c21c0b11469e319176559b9122fbc842))
+
+
+### Bug Fixes
+
+* **agent:** harden local VCS tools (RIG-5822) ([#2450](https://github.com/RigelBuild/compass/issues/2450)) ([100dc8b](https://github.com/RigelBuild/compass/commit/100dc8be02edd3154e542ceab4dfcbc9edad76f7))
+* **comms:** publish TopicUpserted when PostMessage creates a topic (RIG-5958) ([#2499](https://github.com/RigelBuild/compass/issues/2499)) ([8f66898](https://github.com/RigelBuild/compass/commit/8f66898cc4ec90892182efacc456155b88129a1e))
+* **comms:** publish TopicUpserted when PostMessage creates a topic (RIG-5958) ([#2500](https://github.com/RigelBuild/compass/issues/2500)) ([3609332](https://github.com/RigelBuild/compass/commit/36093329c1810c40b425686002966463d7d9241a))
+* **compass-app:** add standard menus, with Edit on macOS (RIG-5993) ([#2506](https://github.com/RigelBuild/compass/issues/2506)) ([f73f5fb](https://github.com/RigelBuild/compass/commit/f73f5fb8032a8d597ee7f516fca491fe211a8f62))
+* **compass-app:** name the app Compass and give it the Compass icon (RIG-5996) ([#2507](https://github.com/RigelBuild/compass/issues/2507)) ([850b940](https://github.com/RigelBuild/compass/commit/850b9401594eab61e2c96fe24eae21ab0e501a9e))
+* **compass-app:** serve startup globals before the UI bundle runs (RIG-5994) ([#2505](https://github.com/RigelBuild/compass/issues/2505)) ([e233851](https://github.com/RigelBuild/compass/commit/e23385183316a9f50673224741ae613dd5b62fce))
+* **deps:** update go dependencies ([#2393](https://github.com/RigelBuild/compass/issues/2393)) ([4ea76c2](https://github.com/RigelBuild/compass/commit/4ea76c2ce6198d7dca3a65bc89a6eff0023d7a35))
+* **forge:** match stack markers as whole lines and escape titles (RIG-5797) ([#2473](https://github.com/RigelBuild/compass/issues/2473)) ([6958e64](https://github.com/RigelBuild/compass/commit/6958e64e6ff64d92f3bdd12d2a0d7172ac031951))
+* **renovate:** commit the protoc-gen-connect-go vendorHash mirror (RIG-5683) ([#2396](https://github.com/RigelBuild/compass/issues/2396)) ([ea08769](https://github.com/RigelBuild/compass/commit/ea0876929f2d5bdd8160e743fe5621266a536f28))
+* **renovate:** give the Renovate self-pin its own PR (RIG-5809) ([#2443](https://github.com/RigelBuild/compass/issues/2443)) ([b17a66c](https://github.com/RigelBuild/compass/commit/b17a66c64ccc46836a9214b2010b5b8251b3ee4b))
+* **runner-manifests:** put the microVM volume root below the session mount (RIG-5696) ([#2399](https://github.com/RigelBuild/compass/issues/2399)) ([e45338f](https://github.com/RigelBuild/compass/commit/e45338f0c60d8b32ee2658207c25f1e64d721cf3))
+* **runtime:** pin allowlisted hosts in /etc/hosts at egress arm (RIG-5705) ([#2412](https://github.com/RigelBuild/compass/issues/2412)) ([90bd222](https://github.com/RigelBuild/compass/commit/90bd22299746fdc876592ee26b81d667cafa6176))
+* **server-manifests:** validate key material and roll the Server on config change ([#2381](https://github.com/RigelBuild/compass/issues/2381)) ([7a786d0](https://github.com/RigelBuild/compass/commit/7a786d0dd3a0a0652324ed563a054c156f52d35b))
+* **server:** bound pre-auth Runner stream bodies on the network door (RIG-5656) ([#2388](https://github.com/RigelBuild/compass/issues/2388)) ([bfc2903](https://github.com/RigelBuild/compass/commit/bfc2903ed2197d26fb80eb636c285a872aa9aeb0))
+* **server:** end in-flight server streams when the doors drain (RIG-1263) ([#2387](https://github.com/RigelBuild/compass/issues/2387)) ([06e660a](https://github.com/RigelBuild/compass/commit/06e660a2c5499b44871c040ca7711453ead74600))
+* **server:** fresh-start a wake whose prior session has no transcript (RIG-6015) ([#2513](https://github.com/RigelBuild/compass/issues/2513)) ([bc38119](https://github.com/RigelBuild/compass/commit/bc381196890893334db352696de84e9cd34e9e8a))
+* **ui:** backfill a channel first seen on the live stream (RIG-5947) ([#2497](https://github.com/RigelBuild/compass/issues/2497)) ([042b304](https://github.com/RigelBuild/compass/commit/042b304bece47f40788b7a2527b1167a47f4d8ce))
+* **ui:** bump virtual-core to 3.19.6 for the scrollToEnd clamp fix (RIG-5782) ([#2444](https://github.com/RigelBuild/compass/issues/2444)) ([78bf2a9](https://github.com/RigelBuild/compass/commit/78bf2a962b0775d4462fe10611ed601df896ad18))
+* **ui:** create the topic when starting a new topic (RIG-5950) ([#2492](https://github.com/RigelBuild/compass/issues/2492)) ([ff3ba3b](https://github.com/RigelBuild/compass/commit/ff3ba3b1c58bf768975e15e914294cfb71b1c291))
+* **ui:** label a READY session idle in the Session Log header (RIG-5952) ([#2496](https://github.com/RigelBuild/compass/issues/2496)) ([023112e](https://github.com/RigelBuild/compass/commit/023112e8fb0b8dac10de3ae57ec849601028dbed))
+* **ui:** re-derive home-channel flags when an agent account arrives late (RIG-5948) ([#2494](https://github.com/RigelBuild/compass/issues/2494)) ([d03c56e](https://github.com/RigelBuild/compass/commit/d03c56e8ca0badc4e9a1963b74ad9ef7545bbda1))
+* **vcs:** scope mirror bundle refs and cap every write (RIG-5826) ([#2453](https://github.com/RigelBuild/compass/issues/2453)) ([76b620c](https://github.com/RigelBuild/compass/commit/76b620c4189de867722634f2e8634829a3adcfd3))
+
 ## [0.3.1](https://github.com/RigelBuild/compass/compare/v0.3.0...v0.3.1) (2026-10-18)
 
 
