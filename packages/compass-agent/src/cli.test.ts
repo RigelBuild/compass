@@ -1217,6 +1217,48 @@ describe("main", () => {
 		expect(disconnected).toBe(true);
 	});
 
+	// A resumed session's createAgentSession appends an interrupted-turn abort through the
+	// tee storage, so a durable frame can be in flight when the belt refuses. Effect 4's
+	// dispose interrupts the pump, so the refusal must drain before it closes the carrier.
+	test("commits a transcript frame in flight at refusal before closing the carrier", async () => {
+		const log = emptyLog();
+		const order: string[] = [];
+		const carrier = fakeCarrier(log, {
+			control: emptyControlStream,
+			onDurable: async () => {
+				await nextEventLoopTurn();
+				order.push("committed");
+			},
+			onClose: () => order.push("closed"),
+		});
+		const original = console.error;
+		console.error = () => {};
+		try {
+			await expect(
+				main(
+					{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+					{
+						...deps(fakeSession({ model: undefined }), carrier),
+						createSession: (options) => {
+							const manager =
+								options.sessionManager as unknown as SessionManager;
+							manager.appendMessage(assistantMsg("interrupted turn"));
+							return Promise.resolve({
+								session: fakeSession({
+									model: undefined,
+								}) as unknown as AgentSession,
+							});
+						},
+					},
+				),
+			).rejects.toThrow(/pinned model/);
+		} finally {
+			console.error = original;
+		}
+		expect(order).toEqual(["committed", "closed"]);
+		expect(log.durableFrames[0]?.frame?.frame.case).toBe("transcriptEntry");
+	});
+
 	test("still closes the socket and surfaces the diagnostic when the fail-closed disconnect rejects", async () => {
 		// The belt nests mcp.disconnect() in a try/catch/finally so a rejecting disconnect
 		// neither leaks the socket (finally still runs transport.close) nor masks the

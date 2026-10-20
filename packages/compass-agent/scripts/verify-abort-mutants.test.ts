@@ -134,7 +134,7 @@ describe("mutate", () => {
 		const caught = (s: string) =>
 			region(
 				s,
-				"const err = result.left;",
+				"const err = result.failure;",
 				"const applied = acks.appliedCount;",
 			);
 		const byName = (n: string) => {

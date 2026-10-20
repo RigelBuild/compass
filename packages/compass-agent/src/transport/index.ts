@@ -8,7 +8,7 @@ import {
 	createGrpcTransport,
 	Http2SessionManager,
 } from "@connectrpc/connect-node";
-import { Layer, Logger, ManagedRuntime } from "effect";
+import { Layer, ManagedRuntime } from "effect";
 
 import type {
 	BoardCallRequest,
@@ -28,7 +28,7 @@ import { AgentGateway } from "../gen/compass/v1/agent_gateway_pb";
 import type { AgentControl } from "../gen/compass/v1/agent_pb";
 import { makeOtelLayer } from "./otel-layer";
 import { createPublishSpine, type PublishSpine } from "./publish-spine";
-import { setTransportRuntime } from "./runtime-channel";
+import { setTransportRuntime, transportLoggerLayer } from "./runtime-channel";
 
 export const SESSION_BLOB_PUT_TIMEOUT_MS = 30_000;
 
@@ -108,11 +108,11 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 	});
 	const client = createClient(AgentGateway, transport);
 	// The single ManagedRuntime this transport owns and every Effect lane (sink, spine,
-	// source) shares, so production runs on ONE scheduler (design record §T5). The default
-	// logger is removed so a swallowed lane failure does not double-report; makeOtelLayer()
-	// is inert with no OTLP endpoint. close() disposes it; sibling factories BORROW it.
+	// source) shares, so production runs on ONE scheduler (design record §T5). The
+	// tracer logger replaces console logging; makeOtelLayer() is inert without an OTLP
+	// endpoint. close() disposes it; sibling factories BORROW it.
 	const runtime = ManagedRuntime.make(
-		Layer.merge(Logger.remove(Logger.defaultLogger), makeOtelLayer()),
+		Layer.merge(transportLoggerLayer, makeOtelLayer()),
 	);
 	// The Publish spine is created once on first use and shared by the sink + source;
 	// memoize it so both reach the same single stream. It runs on the transport's runtime

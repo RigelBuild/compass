@@ -11,7 +11,6 @@
 // Overload policy (OQ-2(c), P1 #2): trace/session frames are loss-tolerable on a BOUNDED
 // queue — overflow drops the OLDEST trace frame, counted. Acks and lifecycle/status frames
 // (notably terminal STOPPED) are NOT loss-tolerable: they ride a priority queue never the
-// drop target, always drained AHEAD of the trace backlog, so STOPPED makes the deadline.
 
 // The never-drop guarantee extends to a FAILED cycled batch: a send that throws drops its
 // trace frames (counted) but re-enqueues its priority frames at the front and retries on a
@@ -21,13 +20,12 @@
 import {
 	Duration,
 	Effect,
-	Either,
+	Exit,
 	Fiber,
-	Logger,
 	ManagedRuntime,
 	Metric,
-	Option,
 	Queue,
+	Result,
 } from "effect";
 import type { PublishFrameRequest } from "../gen/compass/v1/agent_gateway_pb";
 import {
@@ -40,7 +38,7 @@ import {
 	traceFramesLostOverflow,
 	traceQueueDepthGauge,
 } from "./otel-metrics";
-import type { TransportRuntime } from "./runtime-channel";
+import { type TransportRuntime, transportLoggerLayer } from "./runtime-channel";
 
 // The bounded trace/session send buffer. Chosen once here: large enough to
 // absorb a normal burst of trace frames against transient backpressure, small
@@ -103,26 +101,22 @@ export function createPublishSpine(
 	const batchesFlushed = batchesFlushedBy(metricNamespace);
 	const batchSize = batchSizeBy(metricNamespace);
 	// Effect is confined module-private behind the spine: it backs the sliding trace queue,
-	// the wake latch, and the forked pump fiber. The default logger is removed on the
-	// fallback runtime so a handled pump-send failure does not double-report (the loss
-	// disposition is already folded into the drop counters).
+	// the wake latch, and the forked pump fiber. The fallback logger layer keeps tracing logs
+	// while replacing the console loggers, so handled pump failures are not double-reported.
 	const ownsRuntime = borrowedRuntime === undefined;
-	const runtime =
-		borrowedRuntime ?? ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
-	// Trace/session lane: a bounded drop-OLDEST sliding queue. The sync emit() path reads
-	// unsafeSize() BEFORE offering (at cap ⇒ the imminent offer evicts the oldest) then runs
-	// the effectful offer synchronously — sliding offer never suspends, so the eviction stays
-	// synchronously countable. unsafeOffer is NOT used: it drops-newest, the opposite contract.
+	const runtime = borrowedRuntime ?? ManagedRuntime.make(transportLoggerLayer);
+	// Trace/session lane: a bounded drop-oldest sliding queue. The sync emit path
+	// checks size before offer, so eviction stays synchronously countable.
 	const traceQ = runtime.runSync(
 		Queue.sliding<PublishFrameRequest>(TRACE_QUEUE_CAP),
 	);
-	// Priority lane: a plain array (OQ-7; effect 3.22.1 ships no primitive that is FIFO,
-	// front-reinsertable on a failed batch, and synchronously drainable). Drained AHEAD of trace.
+	// Priority lane: a plain array (OQ-7; the queue API cannot provide FIFO,
+	// front-reinsert on failure, and synchronous draining together). Drained ahead
+	// of trace.
 	const priority: PublishFrameRequest[] = [];
-	// Wake latch: a capacity-1 sliding<void>. enqueueTrace/enqueuePriority offer a
-	// unit (unsafeOffer is correct HERE — a 1-slot signal, not the trace lane —
-	// and coalesces a synchronous burst into one wake); the pump blocks on take
-	// while both lanes are empty, so an agent that never emits opens no stream.
+	// Wake latch: a capacity-1 sliding<void>. Unsafe offers are correct here: the
+	// signal coalesces a synchronous burst into one wake; the pump blocks on take.
+	// An agent that never emits opens no stream.
 	const wake = runtime.runSync(Queue.sliding<void>(1));
 	let dropped = 0;
 	// Trace frames lost when a cycled batch's send failed (transient transport
@@ -143,11 +137,7 @@ export function createPublishSpine(
 	// drains both lanes batch by batch, blocking on the wake latch while idle;
 	// drain() joins it (never interrupts — interrupt could abandon queued
 	// never-drop priority frames).
-	let pumpFiber: Fiber.RuntimeFiber<void> | undefined;
-
-	function traceSize(): number {
-		return Option.getOrElse(traceQ.unsafeSize(), () => 0);
-	}
+	let pumpFiber: Fiber.Fiber<void> | undefined;
 
 	// Pull up to PUBLISH_BATCH_MAX frames, priority first, for one batch, and
 	// report how many leading frames came from the priority lane — the caller
@@ -167,11 +157,18 @@ export function createPublishSpine(
 		// Sample the trace backlog at the moment of the take, BEFORE draining it,
 		// so the gauge reports the depth at the take (the saturation a depth gauge
 		// exists to surface) rather than the post-drain residual (Decision 2 gauge).
-		yield* Metric.set(traceQueueDepth, traceSize());
-		const room = PUBLISH_BATCH_MAX - batch.length;
-		if (room > 0) {
-			const traceFrames = yield* Queue.takeUpTo(traceQ, room);
-			for (const frame of traceFrames) batch.push(frame);
+		const traceBacklog = Queue.sizeUnsafe(traceQ);
+		yield* Metric.update(traceQueueDepth, traceBacklog);
+		const traceCount = Math.min(traceBacklog, PUBLISH_BATCH_MAX - batch.length);
+		for (let i = 0; i < traceCount; i++) {
+			const taken = Queue.takeUnsafe(traceQ);
+			// Sync producer, single consumer: the sampled backlog is all present.
+			if (taken === undefined || !Exit.isSuccess(taken)) {
+				return yield* Effect.die(
+					new Error("trace queue shorter than its sampled size"),
+				);
+			}
+			batch.push(taken.value);
 		}
 		return { batch, priorityCount, takenAfterTeardown };
 	});
@@ -190,24 +187,30 @@ export function createPublishSpine(
 		// saturated trace backlog followed by the terminal STOPPED, all in one tick — is fully
 		// queued before the first takeBatch. takeBatch drains priority-first, so STOPPED leads
 		// the batch AHEAD of the trace backlog rather than a trace frame racing out first.
-		yield* Effect.yieldNow();
+		yield* Effect.yieldNow;
 		while (true) {
 			// Block while idle: an agent that never emits opens no stream. A stale
 			// coalesced wake causes at most one immediate take before re-blocking.
-			while (priority.length === 0 && traceSize() === 0 && !ended) {
+			while (
+				priority.length === 0 &&
+				Queue.sizeUnsafe(traceQ) === 0 &&
+				!ended
+			) {
 				yield* Queue.take(wake);
 			}
-			if (ended && priority.length === 0 && traceSize() === 0) return;
+			if (ended && priority.length === 0 && Queue.sizeUnsafe(traceQ) === 0)
+				return;
 			const { batch, priorityCount, takenAfterTeardown } = yield* takeBatch;
 			// Flush shape, classified on the flag as it stood AT the take. `drain`
 			// means taken after teardown began, so a full batch during teardown
 			// still reads `full` — saturation is the more specific fact.
-			yield* Metric.increment(
+			yield* Metric.update(
 				batch.length === PUBLISH_BATCH_MAX
 					? batchesFlushed.full
 					: takenAfterTeardown
 						? batchesFlushed.drain
 						: batchesFlushed.short,
+				1,
 			);
 			yield* Metric.update(
 				priorityCount === batch.length
@@ -220,13 +223,13 @@ export function createPublishSpine(
 			async function* oneBatch(): AsyncGenerator<PublishFrameRequest> {
 				for (const frame of batch) yield frame;
 			}
-			const result = yield* Effect.either(
+			const result = yield* Effect.result(
 				Effect.tryPromise(() => publish(oneBatch())),
 			).pipe(
 				// Decision 1 span: one per cycled batch send. Attributes are all known
 				// at span open (batch composition + pump-scoped retry level). The span
-				// wraps only the Effect.either(tryPromise) send — a failed batch is a
-				// normal counted event (Either resolves Left), so span status stays ok.
+				// wraps only the Effect.result(tryPromise) send — a failed batch is a
+				// normal counted event (a Failure result), so span status stays ok.
 				Effect.withSpan("compass_agent.transport.publish.batch", {
 					attributes: {
 						batch_size: batch.length,
@@ -235,10 +238,10 @@ export function createPublishSpine(
 					},
 				}),
 			);
-			if (Either.isRight(result)) {
+			if (Result.isSuccess(result)) {
 				priorityRetries = 0;
 				// Successful send resets the pump-scoped retry-depth level.
-				yield* Metric.set(priorityRetryDepth, 0);
+				yield* Metric.update(priorityRetryDepth, 0);
 				continue;
 			}
 			// A batch send failed (socket dropped, Runner mid-restart). Trace frames
@@ -247,7 +250,7 @@ export function createPublishSpine(
 			// frames are counted with the overflow drops.
 			failedBatchFrames += batch.length - priorityCount;
 			// Trace loss on a failed batch (Decision 2 counter, reason=failed_batch).
-			yield* Metric.incrementBy(
+			yield* Metric.update(
 				traceFramesLostFailedBatch,
 				batch.length - priorityCount,
 			);
@@ -259,7 +262,7 @@ export function createPublishSpine(
 			if (priorityRetries >= PRIORITY_BATCH_RETRY_MS.length) {
 				failedPriorityFrames += priorityCount;
 				// Never-drop priority loss (Decision 2 counter, kept separate).
-				yield* Metric.incrementBy(priorityFramesLost, priorityCount);
+				yield* Metric.update(priorityFramesLost, priorityCount);
 				continue;
 			}
 			priority.unshift(...batch.slice(0, priorityCount));
@@ -269,8 +272,8 @@ export function createPublishSpine(
 			priorityRetries++;
 			// A priority-batch retry attempt (monotone counter) + the new
 			// pump-scoped retry-depth level (gauge).
-			yield* Metric.increment(priorityBatchRetries);
-			yield* Metric.set(priorityRetryDepth, priorityRetries);
+			yield* Metric.update(priorityBatchRetries, 1);
+			yield* Metric.update(priorityRetryDepth, priorityRetries);
 			yield* Effect.sleep(Duration.millis(delay));
 		}
 	});
@@ -290,20 +293,20 @@ export function createPublishSpine(
 			// queue the effectful offer evicts the OLDEST, which the offer itself
 			// does not signal. Sync producer, so the read and the offer share one
 			// tick and no take interleaves.
-			if (traceSize() >= TRACE_QUEUE_CAP) {
+			if (Queue.sizeUnsafe(traceQ) >= TRACE_QUEUE_CAP) {
 				dropped++;
 				// Overflow drop (Decision 2 counter, reason=overflow). Sync enqueue
 				// site, so run it on the runtime like the queue offer below.
-				runtime.runSync(Metric.increment(traceFramesLostOverflow));
+				runtime.runSync(Metric.update(traceFramesLostOverflow, 1));
 			}
 			runtime.runSync(Queue.offer(traceQ, frame));
-			Queue.unsafeOffer(wake, undefined);
+			Queue.offerUnsafe(wake, undefined);
 			kick();
 		},
 		enqueuePriority(frame) {
 			if (ended) return;
 			priority.push(frame);
-			Queue.unsafeOffer(wake, undefined);
+			Queue.offerUnsafe(wake, undefined);
 			kick();
 		},
 		droppedTraceCount() {
@@ -322,7 +325,7 @@ export function createPublishSpine(
 				// the remaining queued frames priority-first (a same-tick STOPPED still
 				// leads), and RETURNS. Joining the fiber — never interrupting it — is
 				// what keeps a queued never-drop priority frame from being abandoned.
-				Queue.unsafeOffer(wake, undefined);
+				Queue.offerUnsafe(wake, undefined);
 				if (pumpFiber !== undefined) {
 					// Decision 1 span: the spine-side teardown flush (join the pump so
 					// every queued frame — notably a terminal STOPPED — is sent before

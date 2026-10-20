@@ -33,7 +33,7 @@ function recordingRuntime(exporter: InMemorySpanExporter): TransportRuntime {
 		resource: { serviceName: "compass-agent-test" },
 	}));
 	return ManagedRuntime.make(
-		Layer.merge(Logger.remove(Logger.defaultLogger), otel),
+		Layer.merge(Logger.layer([Logger.tracerLogger]), otel),
 	);
 }
 

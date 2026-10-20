@@ -8,25 +8,22 @@
 // registry, so instrumentation is invisible without a provider. NOT re-exported from the
 // package entry (export-surface.test.ts guards this). Names are exact — do not rename.
 
-import { Metric, MetricBoundaries } from "effect";
+import { Metric } from "effect";
 
 // Trace/session frames lost, carrying a `reason` label. The reasons sum to
 // droppedTraceCount(): "overflow" is the bounded queue evicting the oldest on a full
 // offer; "failed_batch" is the trace frames abandoned when a cycled batch send fails.
-// Pre-tagged constants (Metric.tagged) so each increment site names its reason directly.
+// Pre-tagged constants (Metric.withAttributes) give each increment site a reason.
 const traceFramesLost = Metric.counter(
 	"compass_agent.transport.publish.trace_frames_lost",
 	{ incremental: true },
 );
-export const traceFramesLostOverflow = Metric.tagged(
+export const traceFramesLostOverflow = Metric.withAttributes(traceFramesLost, {
+	reason: "overflow",
+});
+export const traceFramesLostFailedBatch = Metric.withAttributes(
 	traceFramesLost,
-	"reason",
-	"overflow",
-);
-export const traceFramesLostFailedBatch = Metric.tagged(
-	traceFramesLost,
-	"reason",
-	"failed_batch",
+	{ reason: "failed_batch" },
 );
 
 // Priority frames (lifecycle/STOPPED, control acks) lost after a failed batch
@@ -35,7 +32,7 @@ export const traceFramesLostFailedBatch = Metric.tagged(
 // Namespaced like the gauges: a concurrent file's give-up would race a test's delta.
 export const priorityFramesLostCounter = (
 	namespace = "",
-): Metric.Metric.Counter<number> =>
+): Metric.Counter<number> =>
 	Metric.counter(
 		`${namespace}compass_agent.transport.publish.priority_frames_lost`,
 		{ incremental: true },
@@ -44,7 +41,7 @@ export const priorityFramesLostCounter = (
 // Every priority-batch retry attempt (monotone).
 export const priorityBatchRetriesCounter = (
 	namespace = "",
-): Metric.Metric.Counter<number> =>
+): Metric.Counter<number> =>
 	Metric.counter(
 		`${namespace}compass_agent.transport.publish.priority_batch_retries`,
 		{ incremental: true },
@@ -55,21 +52,21 @@ export const priorityBatchRetriesCounter = (
 // production yields the bare name; a test passes a private prefix.
 export const batchesFlushedBy = (
 	namespace = "",
-): Record<"full" | "drain" | "short", Metric.Metric.Counter<number>> => {
+): Record<"full" | "drain" | "short", Metric.Counter<number>> => {
 	const base = Metric.counter(
 		`${namespace}compass_agent.transport.publish.batches_flushed`,
 		{ incremental: true },
 	);
 	return {
-		full: Metric.tagged(base, "reason", "full"),
-		drain: Metric.tagged(base, "reason", "drain"),
-		short: Metric.tagged(base, "reason", "short"),
+		full: Metric.withAttributes(base, { reason: "full" }),
+		drain: Metric.withAttributes(base, { reason: "drain" }),
+		short: Metric.withAttributes(base, { reason: "short" }),
 	};
 };
 
 // Hoisted, not rebuilt per call: a histogram's registry key includes the
 // boundaries OBJECT, so a fresh one per call reads back empty.
-const BATCH_SIZE_BOUNDARIES = MetricBoundaries.exponential({
+const BATCH_SIZE_BOUNDARIES = Metric.exponentialBoundaries({
 	start: 1,
 	factor: 2,
 	count: 10,
@@ -81,15 +78,15 @@ const BATCH_SIZE_BOUNDARIES = MetricBoundaries.exponential({
 // which share the same tiny-batch signature.
 export const batchSizeBy = (
 	namespace = "",
-): Record<"priority" | "trace" | "mixed", Metric.Metric.Histogram<number>> => {
+): Record<"priority" | "trace" | "mixed", Metric.Histogram<number>> => {
 	const base = Metric.histogram(
 		`${namespace}compass_agent.transport.publish.batch_size`,
-		BATCH_SIZE_BOUNDARIES,
+		{ boundaries: BATCH_SIZE_BOUNDARIES },
 	);
 	return {
-		priority: Metric.tagged(base, "lane", "priority"),
-		trace: Metric.tagged(base, "lane", "trace"),
-		mixed: Metric.tagged(base, "lane", "mixed"),
+		priority: Metric.withAttributes(base, { lane: "priority" }),
+		trace: Metric.withAttributes(base, { lane: "trace" }),
+		mixed: Metric.withAttributes(base, { lane: "mixed" }),
 	};
 };
 
@@ -97,18 +94,14 @@ export const batchSizeBy = (
 // is last-writer-wins, so a test reading one must not share its registry key with a
 // concurrent writer in a sibling file (the global registry keys on the NAME; bun runs
 // files concurrently). Production passes no prefix; a test a unique one. Counters read as a delta.
-export const priorityRetryDepthGauge = (
-	namespace = "",
-): Metric.Metric.Gauge<number> =>
+export const priorityRetryDepthGauge = (namespace = ""): Metric.Gauge<number> =>
 	// The pump-scoped consecutive retry budget as a LEVEL: set to the new retry
 	// depth on each retry, reset to 0 on a successful send.
 	Metric.gauge(
 		`${namespace}compass_agent.transport.publish.priority_retry_depth`,
 	);
 
-export const traceQueueDepthGauge = (
-	namespace = "",
-): Metric.Metric.Gauge<number> =>
+export const traceQueueDepthGauge = (namespace = ""): Metric.Gauge<number> =>
 	// Trace queue depth, sampled at each batch take.
 	Metric.gauge(`${namespace}compass_agent.transport.publish.trace_queue_depth`);
 
@@ -141,9 +134,7 @@ export const reconnects = Metric.counter(
 // the publish-spine gauges and for the same reason (the cross-file gauge race). Set to
 // `noProgress` after each drop's progress check, reset to 0 on progress. Production passes
 // no namespace; a test passes a unique prefix.
-export const noProgressDepthGauge = (
-	namespace = "",
-): Metric.Metric.Gauge<number> =>
+export const noProgressDepthGauge = (namespace = ""): Metric.Gauge<number> =>
 	Metric.gauge(`${namespace}compass_agent.transport.control.no_progress_depth`);
 
 // Every min-uptime flap reset of the backoff ladder — the reset-on-open
@@ -153,11 +144,9 @@ export const flapResets = Metric.counter(
 	"compass_agent.transport.control.flap_resets",
 	{ incremental: true },
 );
-
 // Control ops counted-unmapped through the single count() funnel, labeled by event type.
-// The `event_type` label is DYNAMIC (control:steer, control:replay, …), so unlike O2's
-// static reason tags this is the BASE counter, tagged per-call at the increment site with
-// Metric.tagged(controlUnmapped, "event_type", eventType).
+// The event_type label is dynamic, so increments tag the base counter per call with
+// Metric.withAttributes(controlUnmapped, { event_type: eventType }).
 export const controlUnmapped = Metric.counter(
 	"compass_agent.transport.control.unmapped",
 	{ incremental: true },

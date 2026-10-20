@@ -55,12 +55,12 @@ function line(...hashes: string[]): string {
 	return JSON.stringify(hashes.map((sha) => `blob:sha256:${sha}`));
 }
 
-function counterCount(metric: Metric.Metric.Counter<number>): number {
+function counterCount(metric: Metric.Counter<number>): number {
 	return Effect.runSync(Metric.value(metric)).count;
 }
 
 function waitForCounter(
-	metric: Metric.Metric.Counter<number>,
+	metric: Metric.Counter<number>,
 	baseline: number,
 	count: number,
 ): Promise<void> {

@@ -15,6 +15,40 @@ function priorityFrame(): PublishFrameRequest {
 	return create(PublishFrameRequestSchema, {});
 }
 
+test("drain resolves with no queued frames", async () => {
+	const spine = createPublishSpine(() => {
+		throw new Error("an empty drain must not publish");
+	});
+	await spine.drain();
+});
+
+test("drain sends queued frames in bounded full and partial batches", async () => {
+	const batches: number[] = [];
+	const spine = createPublishSpine(async (stream) => {
+		let count = 0;
+		for await (const _frame of stream) count += 1;
+		batches.push(count);
+	});
+	for (let i = 0; i < PUBLISH_BATCH_MAX + 3; i++) {
+		spine.enqueuePriority(priorityFrame());
+	}
+	await spine.drain();
+	expect(batches).toEqual([PUBLISH_BATCH_MAX, 3]);
+});
+
+test("drain sends queued trace frames in bounded full and partial batches", async () => {
+	const batches: number[] = [];
+	const spine = createPublishSpine(async (stream) => {
+		let count = 0;
+		for await (const _frame of stream) count += 1;
+		batches.push(count);
+	});
+	for (let i = 0; i < PUBLISH_BATCH_MAX + 3; i++) {
+		spine.enqueueTrace(priorityFrame());
+	}
+	await spine.drain();
+	expect(batches).toEqual([PUBLISH_BATCH_MAX, 3]);
+});
 test("drain() is bounded ~O(1) on a persistently-dead socket, not unbounded", async () => {
 	// One pump-run retry budget bounds all priority batches; drain must still resolve after it is exhausted.
 	let publishCalls = 0;

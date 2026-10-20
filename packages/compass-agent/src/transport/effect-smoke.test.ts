@@ -1,6 +1,12 @@
 // Pins the Effect runtime, queue, retry, timeout, and FiberSet semantics used by transport code.
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { NodeSdk } from "@effect/opentelemetry";
 import {
+	InMemorySpanExporter,
+	SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
+import {
+	Cause,
 	Deferred,
 	Duration,
 	Effect,
@@ -8,17 +14,22 @@ import {
 	Fiber,
 	FiberSet,
 	Layer,
+	Logger,
 	ManagedRuntime,
-	Option,
 	Queue,
 	Ref,
-	Schedule,
-	TestClock,
-	TestContext,
 } from "effect";
+import { TestClock } from "effect/testing";
+import {
+	DURABLE_RETRY_BACKOFF_MS,
+	DURABLE_RETRY_SCHEDULE,
+	durableRetryDelay,
+} from "./frame-sink";
+import { transportLoggerLayer } from "./runtime-channel";
 
-// ManagedRuntime runs async and sync Effects and disposes without leaking resources.
-test("ManagedRuntime runs Effects across both the promise and the sync seam", async () => {
+// ManagedRuntime is the transport's composition-point runtime: it runs both the
+// promise seam and synchronous emit path, then disposes cleanly.
+test("ManagedRuntime runs Effects across both the promise and sync seam", async () => {
 	const runtime = ManagedRuntime.make(Layer.empty);
 	const viaPromise = await runtime.runPromise(
 		Effect.succeed(41).pipe(Effect.map((n) => n + 1)),
@@ -28,78 +39,134 @@ test("ManagedRuntime runs Effects across both the promise and the sync seam", as
 	expect(viaSync).toBe("sync");
 	await runtime.dispose();
 });
+test("the transport logger layer drops console output and retains tracer span events", async () => {
+	const consoleSpies = [
+		spyOn(console, "log"),
+		spyOn(console, "info"),
+		spyOn(console, "warn"),
+		spyOn(console, "error"),
+		spyOn(console, "debug"),
+		spyOn(console, "trace"),
+	];
+	const exporter = new InMemorySpanExporter();
+	const otel: Layer.Layer<never> = NodeSdk.layer(() => ({
+		spanProcessor: new SimpleSpanProcessor(exporter),
+		resource: { serviceName: "compass-agent-test" },
+	}));
+	const runtime = ManagedRuntime.make(Layer.merge(transportLoggerLayer, otel));
+	try {
+		await runtime.runPromise(
+			Effect.logInfo("transport log").pipe(
+				Effect.withSpan("test.transport.log"),
+			),
+		);
+		expect(consoleSpies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+		const span = exporter
+			.getFinishedSpans()
+			.find((finished) => finished.name === "test.transport.log");
+		expect(span?.events.some((event) => event.name === "transport log")).toBe(
+			true,
+		);
+	} finally {
+		await runtime.dispose();
+		for (const spy of consoleSpies) spy.mockRestore();
+	}
+});
 
 // Queue.sliding's effectful offer drops the oldest item when full.
 test("Queue.sliding effectful offer drops the OLDEST element on overflow", async () => {
-	const program = Effect.gen(function* () {
-		const q = yield* Queue.sliding<number>(3);
-		yield* Effect.forEach([1, 2, 3, 4, 5], (n) => Queue.offer(q, n), {
-			discard: true,
-		});
-		const drained = yield* Queue.takeAll(q);
-		return Array.from(drained);
-	});
-	const survivors = await Effect.runPromise(program);
-	expect(survivors).toEqual([3, 4, 5]);
-});
-
-// In Effect 3.22.1, unsafeOffer bypasses sliding and rejects the newest item when full.
-test("Queue.unsafeOffer on a full sliding queue rejects-when-full (drop-NEWEST), NOT drop-oldest", async () => {
-	const program = Effect.gen(function* () {
-		const q = yield* Queue.sliding<number>(3);
-		const returns: boolean[] = [];
-		for (const n of [1, 2, 3, 4, 5]) returns.push(Queue.unsafeOffer(q, n));
-		const drained = yield* Queue.takeAll(q);
-		return { returns, survivors: Array.from(drained) };
-	});
-	const { returns, survivors } = await Effect.runPromise(program);
-	expect(survivors).toEqual([1, 2, 3]);
-	expect(returns).toEqual([true, true, true, false, false]);
-});
-
-// runSync(Queue.offer) is synchronous for a sliding queue and drops the oldest item on overflow.
-test("runtime.runSync(Queue.offer) is a synchronous drop-oldest enqueue with a pre-offer-countable drop", async () => {
-	const runtime = ManagedRuntime.make(Layer.empty);
-	const q = runtime.runSync(Queue.sliding<number>(3));
-	let drops = 0;
+	const q = Effect.runSync(Queue.sliding<number>(3));
 	for (const n of [1, 2, 3, 4, 5]) {
-		const sizeBefore = Option.getOrElse(q.unsafeSize(), () => 0);
-		if (sizeBefore >= 3) drops += 1;
-		runtime.runSync(Queue.offer(q, n)); // synchronous — throws if it ever suspends
+		await Effect.runPromise(Queue.offer(q, n));
 	}
-	const survivors = Array.from(runtime.runSync(Queue.takeAll(q)));
-	expect(survivors).toEqual([3, 4, 5]);
-	expect(drops).toBe(2);
-	await runtime.dispose();
+	const drained = Effect.runSync(Queue.takeAll(q));
+	expect(drained).toEqual([3, 4, 5]);
 });
 
-// TestClock pins retry attempts to the configured delay boundaries.
-test("Effect.retry(Schedule.fromDelays) fires attempts on the fixed ladder under virtual time", async () => {
-	const program = Effect.gen(function* () {
-		const attempts = yield* Ref.make(0);
-		const body = Effect.gen(function* () {
-			const n = yield* Ref.updateAndGet(attempts, (x) => x + 1);
-			return n < 3 ? yield* Effect.fail(new Error("transient")) : n;
-		});
-		const fiber = yield* Effect.fork(
-			Effect.retry(
-				body,
-				Schedule.fromDelays(Duration.millis(50), Duration.millis(200)),
+test("a failing runtime.runFork writes nothing to the console under the transport logger layer", async () => {
+	const consoleSpies = [
+		spyOn(console, "log"),
+		spyOn(console, "info"),
+		spyOn(console, "warn"),
+		spyOn(console, "error"),
+		spyOn(console, "debug"),
+		spyOn(console, "trace"),
+	];
+	const runtime = ManagedRuntime.make(transportLoggerLayer);
+	let exit: Exit.Exit<never, Error> | undefined;
+	try {
+		const fiber = runtime.runFork(
+			Effect.logError("lane failed").pipe(
+				Effect.andThen(Effect.fail(new Error("lane failed"))),
 			),
 		);
-		yield* TestClock.adjust(Duration.millis(49));
-		const afterFirstDelayMinusOne = yield* Ref.get(attempts); // first attempt fired, still waiting
-		yield* TestClock.adjust(Duration.millis(1)); // hit +50ms -> second attempt
-		const afterFirstDelay = yield* Ref.get(attempts);
-		yield* TestClock.adjust(Duration.millis(200)); // hit +200ms -> third attempt -> success
-		const result = yield* Fiber.join(fiber);
-		return { afterFirstDelayMinusOne, afterFirstDelay, result };
-	}).pipe(Effect.provide(TestContext.TestContext));
-	const { afterFirstDelayMinusOne, afterFirstDelay, result } =
-		await Effect.runPromise(program);
-	expect(afterFirstDelayMinusOne).toBe(1);
-	expect(afterFirstDelay).toBe(2);
-	expect(result).toBe(3);
+		exit = await runtime.runPromise(Fiber.await(fiber));
+		// dispose awaits every managed fiber, so any failure report has run by now.
+		await runtime.dispose();
+		expect(exit !== undefined && Exit.isFailure(exit)).toBe(true);
+		expect(consoleSpies.map((spy) => spy.mock.calls.length)).toEqual([
+			0, 0, 0, 0, 0, 0,
+		]);
+	} finally {
+		for (const spy of consoleSpies) spy.mockRestore();
+	}
+});
+
+test("Queue.offerUnsafe on a full sliding queue drops the oldest element synchronously", () => {
+	const q = Effect.runSync(Queue.sliding<number>(3));
+	let drops = 0;
+	const returns: boolean[] = [];
+	for (const n of [1, 2, 3, 4, 5]) {
+		if (Queue.sizeUnsafe(q) >= 3) drops += 1;
+		returns.push(Queue.offerUnsafe(q, n));
+	}
+	expect(Effect.runSync(Queue.takeAll(q))).toEqual([3, 4, 5]);
+	expect(returns).toEqual([true, true, true, true, true]);
+	expect(drops).toBe(2);
+});
+
+// Pin retry delays and recurrence count under virtual time.
+test("Effect.retry exhausts the finite durable delay ladder under virtual time", async () => {
+	const program = Effect.gen(function* () {
+		const attempts = yield* Ref.make(0);
+		const fiber = yield* Effect.forkChild(
+			Effect.retry(
+				Effect.gen(function* () {
+					yield* Ref.update(attempts, (n) => n + 1);
+					yield* Effect.fail(new Error("transient"));
+				}),
+				DURABLE_RETRY_SCHEDULE,
+			).pipe(Effect.exit),
+		);
+		yield* Effect.yieldNow;
+		const seen: number[] = [yield* Ref.get(attempts)];
+		for (const delay of DURABLE_RETRY_BACKOFF_MS) {
+			yield* TestClock.adjust(Duration.millis(delay - 1));
+			yield* Effect.yieldNow;
+			seen.push(yield* Ref.get(attempts));
+			yield* TestClock.adjust(Duration.millis(1));
+			yield* Effect.yieldNow;
+			seen.push(yield* Ref.get(attempts));
+		}
+		const exit = yield* Fiber.join(fiber);
+		return { exit, seen };
+	});
+	const { exit, seen } = await Effect.runPromise(
+		Effect.provide(program, TestClock.layer()),
+	);
+	expect(seen).toEqual([1, 1, 2, 2, 3, 3, 4, 4, 5]);
+	expect(Exit.isFailure(exit)).toBe(true);
+});
+
+test("a durable retry attempt past the delay ladder dies instead of retrying with no delay", () => {
+	const past = Effect.runSyncExit(
+		durableRetryDelay(DURABLE_RETRY_BACKOFF_MS.length + 1),
+	);
+	expect(Exit.isFailure(past) && Cause.hasDies(past.cause)).toBe(true);
+	const last = Effect.runSync(
+		durableRetryDelay(DURABLE_RETRY_BACKOFF_MS.length),
+	);
+	expect(Duration.toMillis(last)).toBe(2000);
 });
 
 // Effect.timeout converts an unresponsive durable call into a retryable fiber failure.
@@ -138,13 +205,13 @@ test("a forked consumer observes a synchronous enqueue burst only after the tick
 	const program = Effect.gen(function* () {
 		const q = yield* Queue.unbounded<number>();
 		const done = yield* Deferred.make<void>();
-		yield* Effect.fork(
+		yield* Effect.forkChild(
 			Effect.gen(function* () {
 				for (let i = 0; i < 3; i++) observed.push(yield* Queue.take(q));
 				yield* Deferred.succeed(done, undefined);
 			}),
 		);
-		for (const n of [1, 2, 3]) Queue.unsafeOffer(q, n); // one synchronous tick
+		for (const n of [1, 2, 3]) Queue.offerUnsafe(q, n); // one synchronous tick
 		const duringTick = observed.length;
 		yield* Deferred.await(done);
 		return duringTick;

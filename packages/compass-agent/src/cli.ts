@@ -1110,9 +1110,8 @@ export async function main(
 		);
 	}
 	// A pinned pattern sets the SDK's explicit-model flag (skips default-role
-	// fallback), so pinned-but-unresolvable is exactly `model === undefined`. This
-	// early throw bypasses the drain→close finally below, so release the two holders
-	// `main` owns (MCP manager, socket); nest so a rejecting disconnect still closes.
+	// fallback), so pinned-but-unresolvable is exactly `model === undefined`. A resumed
+	// session has already appended through the tee, so drain before close as below.
 	if (modelPattern !== undefined && session.model === undefined) {
 		try {
 			await mcp.disconnect();
@@ -1122,7 +1121,15 @@ export async function main(
 				disconnectError,
 			);
 		} finally {
-			transport.close();
+			try {
+				await storage.drain();
+			} finally {
+				try {
+					await sink.drain?.();
+				} finally {
+					transport.close();
+				}
+			}
 		}
 		throw new Error(
 			`[compass-agent] pinned model "${modelPattern}" did not resolve against the model registry — refusing to boot model-less (would throw "No model configured" on first turn)${modelError !== undefined ? `; config error: ${modelError.message}` : ""}`,

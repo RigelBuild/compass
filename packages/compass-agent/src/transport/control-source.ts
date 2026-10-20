@@ -38,7 +38,7 @@
 // publishSpine() and the source pushes acks on its never-dropped priority lane.
 
 import { create } from "@bufbuild/protobuf";
-import { Effect, Either, Fiber, Logger, ManagedRuntime, Metric } from "effect";
+import { Clock, Effect, Fiber, ManagedRuntime, Metric, Result } from "effect";
 import type { DeliverSourceNames } from "./../agent";
 import type { ForgeNotification, Message } from "./../compassv1";
 import type { AgentControl, ControlSource } from "./../control";
@@ -60,7 +60,7 @@ import {
 	noProgressDepthGauge,
 	reconnects,
 } from "./otel-metrics";
-import { getTransportRuntime } from "./runtime-channel";
+import { getTransportRuntime, transportLoggerLayer } from "./runtime-channel";
 
 // Bounded-backoff reconnect schedule for the Control server-stream (ms). A non-clean
 // end re-opens Control on this schedule; the Runner redelivers unacked ops from the
@@ -262,8 +262,7 @@ export function createSocketControlSource(
 	// by transport.close(). The fallback removes the default logger (no double-report).
 	const borrowedRuntime = getTransportRuntime(transport);
 	const ownsRuntime = borrowedRuntime === undefined;
-	const runtime =
-		borrowedRuntime ?? ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
+	const runtime = borrowedRuntime ?? ManagedRuntime.make(transportLoggerLayer);
 	// Seqs decoded to a representable op and queued but not yet applied. Dedups a
 	// redelivery of an op the source already holds against re-queueing; cleared as
 	// each is applied on pull.
@@ -285,7 +284,10 @@ export function createSocketControlSource(
 		// through the runtime synchronously (same runSync shape publish-spine.ts uses).
 		// event_type is tagged per-call because the wire eventType varies.
 		runtime.runSync(
-			Metric.increment(Metric.tagged(controlUnmapped, "event_type", eventType)),
+			Metric.update(
+				Metric.withAttributes(controlUnmapped, { event_type: eventType }),
+				1,
+			),
 		);
 		onUnmapped({ kind: "unmapped", eventType, reason });
 	}
@@ -443,12 +445,12 @@ export function createSocketControlSource(
 	}
 
 	// Consume the Control stream, reconnecting on a drop. A clean end closes the buffer
-	// (→ STOPPED); a non-clean end re-opens on the bounded backoff, from which the Runner
+	// (→ STOPPED); a non-clean end re-opens on bounded backoff, from which the Runner
 	// redelivers unacked ops. Runs as a forked interruptible fiber (§T4). The ladder is an
-	// explicit attempt-indexed loop, NOT Schedule.fromDelays: the flap reset zeroes it mid-ladder.
+	// explicit attempt-indexed loop, not a Schedule: a flap reset zeroes it mid-ladder.
 	const pumpEffect = Effect.gen(function* () {
 		let attempt = 0;
-		// Consecutive reconnects without progress. Progress is the applied count advancing
+		// Reconnects without progress. Progress is the applied count advancing
 		// OR an apply in flight (applyInFlight), not a timestamp: the count advances only
 		// on a genuinely new application, and the in-flight arm keeps a long mid-turn apply
 		// from reading as a wedge (RIG-1540).
@@ -473,14 +475,14 @@ export function createSocketControlSource(
 			// server-stream. Effect.tryPromise carries its settlement into the fiber (clean
 			// end → Right; drop → Left with the raw error, catch: identity) so buffer.fail()
 			// surfaces the real ConnectError, not an Effect wrapper.
-			const result = yield* Effect.either(
+			const result = yield* Effect.result(
 				Effect.gen(function* () {
 					// `established` is set inside the onHeader JS closure, invoked OUTSIDE any
 					// Effect context, so it becomes a span EVENT (Decision 1). Capture the live
 					// span handle inside withSpan and a clock so the event carries a walltime-
 					// nanos timestamp from the same source span start/end use.
 					const span = yield* Effect.currentSpan;
-					const clock = yield* Effect.clock;
+					const clock = yield* Clock.Clock;
 					return yield* Effect.tryPromise({
 						try: async () => {
 							const stream = transport.control(
@@ -490,7 +492,7 @@ export function createSocketControlSource(
 									onHeader: () => {
 										established = true;
 										openedAt = now();
-										span.event("established", clock.unsafeCurrentTimeNanos());
+										span.event("established", clock.currentTimeNanosUnsafe());
 									},
 								},
 							);
@@ -508,11 +510,11 @@ export function createSocketControlSource(
 					}),
 				),
 			);
-			if (Either.isRight(result)) {
+			if (Result.isSuccess(result)) {
 				buffer.close();
 				return;
 			}
-			const err = result.left;
+			const err = result.failure;
 			// The consumer's return() aborted the stream — not a transport drop.
 			// End quietly (buffer already closed by return()); never reconnect or
 			// fail() an intentional cancellation.
@@ -530,7 +532,7 @@ export function createSocketControlSource(
 			noProgress = madeProgress ? 0 : noProgress + 1;
 			// no_progress_depth (Decision 2): the gauge tracks the current consecutive-no-
 			// progress level, including the reset-to-0 madeProgress just applied.
-			yield* Metric.set(noProgressDepth, noProgress);
+			yield* Metric.update(noProgressDepth, noProgress);
 			appliedAtLastDrop = applied;
 			if (noProgress >= CONTROL_RECONNECT_NO_PROGRESS_MAX) {
 				buffer.fail(err);
@@ -548,7 +550,7 @@ export function createSocketControlSource(
 			if (established && now() - openedAt >= CONTROL_RECONNECT_MIN_UPTIME_MS) {
 				attempt = 0;
 				// flap_resets (design.md Decision 2): count only when the reset fires.
-				yield* Metric.increment(flapResets);
+				yield* Metric.update(flapResets, 1);
 			}
 			if (attempt >= CONTROL_RECONNECT_BACKOFF_MS.length) {
 				buffer.fail(err);
@@ -556,7 +558,7 @@ export function createSocketControlSource(
 			}
 			const delay = CONTROL_RECONNECT_BACKOFF_MS[attempt++];
 			// reconnects (design.md Decision 2): one increment per backoff taken.
-			yield* Metric.increment(reconnects);
+			yield* Metric.update(reconnects, 1);
 			// The backoff wait is sleepOrAbort raced against a single source-lifetime abort
 			// listener, always detached on both settle paths (wrapped in Effect.promise, one
 			// live listener for the wait, zero after; §T4, pinned by control-source.test.ts
@@ -570,7 +572,7 @@ export function createSocketControlSource(
 	// second for-await never spawns a duplicate pump); `pumpFiber` is only the interrupt
 	// handle return() nulls for idempotency.
 	let started = false;
-	let pumpFiber: Fiber.RuntimeFiber<void> | undefined;
+	let pumpFiber: Fiber.Fiber<void> | undefined;
 	return {
 		[Symbol.asyncIterator](): AsyncIterator<AgentControl> {
 			if (!started) {

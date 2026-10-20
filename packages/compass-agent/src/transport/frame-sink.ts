@@ -26,10 +26,10 @@ import { randomUUID } from "node:crypto";
 import { create } from "@bufbuild/protobuf";
 import {
 	Cause,
+	Duration,
 	Effect,
 	Exit,
 	FiberSet,
-	Logger,
 	ManagedRuntime,
 	Metric,
 	Option,
@@ -49,7 +49,7 @@ import {
 import { AgentSessionState } from "./../gen/compass/v1/compass_pb";
 import type { RunnerTransport } from "./index";
 import { durableAttempts, durableGiveUps } from "./otel-metrics";
-import { getTransportRuntime } from "./runtime-channel";
+import { getTransportRuntime, transportLoggerLayer } from "./runtime-channel";
 
 // Bounded-backoff retry schedule for the durable unary (ms). A transient unary error
 // is retried on this schedule; after the last delay the frame is definitively erred
@@ -57,6 +57,19 @@ import { getTransportRuntime } from "./runtime-channel";
 // would wedge drain() past the shutdown deadline).
 export const DURABLE_RETRY_BACKOFF_MS: readonly number[] = [50, 200, 800, 2000];
 
+// A count past the ladder is a programming error, so it dies rather than retrying unthrottled.
+export function durableRetryDelay(
+	attempt: number,
+): Effect.Effect<Duration.Duration> {
+	const delay = DURABLE_RETRY_BACKOFF_MS[attempt - 1];
+	return delay === undefined
+		? Effect.die(new Error(`no durable retry delay for attempt ${attempt}`))
+		: Effect.succeed(Duration.millis(delay));
+}
+
+export const DURABLE_RETRY_SCHEDULE = Schedule.recurs(
+	DURABLE_RETRY_BACKOFF_MS.length,
+).pipe(Schedule.modifyDelay(({ attempt }) => durableRetryDelay(attempt)));
 // Per-attempt deadline on the durable unary (ms). Without it, a Runner that accepts
 // but never responds leaves postConversationFrame pending forever (Effect.retry
 // advances only on a FAILED attempt). Kept as Connect's timeoutMs (it cancels the wire
@@ -106,8 +119,7 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	// not double-report (the give-up already surfaces to emitDurable's caller).
 	const borrowedRuntime = getTransportRuntime(transport);
 	const ownsRuntime = borrowedRuntime === undefined;
-	const runtime =
-		borrowedRuntime ?? ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
+	const runtime = borrowedRuntime ?? ManagedRuntime.make(transportLoggerLayer);
 	// A sink-lifetime scope backing the FiberSet: it must outlive each fork (a scoped run
 	// would interrupt the set the moment its Effect returned); drain() closes it after.
 	const fiberScope = runtime.runSync(Scope.make());
@@ -115,7 +127,7 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	// every uncommitted transcript frame via FiberSet.awaitEmpty. A fiber removes itself
 	// from the set on completion.
 	const inflight = runtime.runSync(
-		Scope.extend(FiberSet.make<void>(), fiberScope),
+		Scope.provide(FiberSet.make<void>(), fiberScope),
 	);
 	// Per-sink random nonce + monotonic counter feed the idempotency key: STABLE across
 	// retries of one frame (Runner dedups a lost-response retry) AND DISTINCT across all
@@ -132,7 +144,7 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	// caller the real ConnectError, not a FiberFailure wrapper (T2). A tryPromise failure
 	// carries the raw rejection (Cause.failureOption); a defect/interrupt squashes.
 	function causeError(cause: Cause.Cause<unknown>): unknown {
-		return Option.getOrElse(Cause.failureOption(cause), () =>
+		return Option.getOrElse(Cause.findErrorOption(cause), () =>
 			Cause.squash(cause),
 		);
 	}
@@ -156,11 +168,11 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 		// index in lockstep with the durableAttempts tick sharing the same re-run unit.
 		const send = Ref.make(0).pipe(
 			Effect.flatMap((attemptRef) =>
-				Metric.increment(durableAttempts).pipe(
+				Metric.update(durableAttempts, 1).pipe(
 					// Count each durable attempt (initial + every retry). The increment is
 					// INSIDE the unit Effect.retry re-runs, so it ticks once per attempt
 					// (Decision 2 counter, frame_sink.durable_attempts).
-					Effect.zipRight(
+					Effect.andThen(
 						// Read-and-increment the attempt index in the SAME re-run unit as the
 						// metric tick and the tryPromise, so span N carries attempt === N.
 						Ref.getAndUpdate(attemptRef, (n) => n + 1),
@@ -185,12 +197,7 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 							),
 						),
 					),
-					Effect.retry(
-						Schedule.fromDelays(
-							DURABLE_RETRY_BACKOFF_MS[0],
-							...DURABLE_RETRY_BACKOFF_MS.slice(1),
-						),
-					),
+					Effect.retry(DURABLE_RETRY_SCHEDULE),
 				),
 			),
 			// Decision 1 parent span: the whole durable send (all attempts). Placed
@@ -210,7 +217,7 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 				if (Exit.isFailure(exit)) {
 					// Definitive give-up: retry budget exhausted (Decision 2 counter,
 					// frame_sink.durable_give_ups). Only the error arm — never success.
-					yield* Metric.increment(durableGiveUps);
+					yield* Metric.update(durableGiveUps, 1);
 					onSettle(causeError(exit.cause));
 				} else {
 					onSettle(undefined);
