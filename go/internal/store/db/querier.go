@@ -471,6 +471,7 @@ type Querier interface {
 	ListTopicsWithStats(ctx context.Context, arg ListTopicsWithStatsParams) ([]ListTopicsWithStatsRow, error)
 	ListUserPeerings(ctx context.Context, userID string) ([]ListUserPeeringsRow, error)
 	ListVisibleAccounts(ctx context.Context, id string) ([]ListVisibleAccountsRow, error)
+	LiveWriteIntentByKey(ctx context.Context, arg LiveWriteIntentByKeyParams) (ForgeWriteIntent, error)
 	LoadDeliveryCursor(ctx context.Context, arg LoadDeliveryCursorParams) (LoadDeliveryCursorRow, error)
 	LoadForgeArtifactCursor(ctx context.Context, arg LoadForgeArtifactCursorParams) (LoadForgeArtifactCursorRow, error)
 	// Forge repo-subscription / watermark queries (sqlc adoption T6, RIG-3034). These

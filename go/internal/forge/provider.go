@@ -231,6 +231,8 @@ type UpdatePR struct {
 	Body    string
 	BaseRef string
 	Ready   bool
+	// BodyOnly sends only Body, leaving the title, base, and draft state as the forge has them.
+	BodyOnly bool
 }
 
 // WrittenRef identifies an object recovered from a write marker or intent id.

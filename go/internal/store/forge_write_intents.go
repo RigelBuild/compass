@@ -129,6 +129,22 @@ func (s *Store) PRIntentForHead(ctx context.Context, provider ForgeProvider, hos
 	return writeIntentFromRow(row), nil
 }
 
+// LiveWriteIntentByKey returns the agent's non-failed attempt for a request key,
+// the row RecordWriteIntent would replay, without claiming the key.
+func (s *Store) LiveWriteIntentByKey(ctx context.Context, agent AccountID, key string) (WriteIntent, error) {
+	if agent == "" || key == "" {
+		return WriteIntent{}, fmt.Errorf("%w: agent and client request id are required", ErrInvalidArgument)
+	}
+	row, err := s.q.LiveWriteIntentByKey(ctx, db.LiveWriteIntentByKeyParams{AgentAccountID: string(agent), ClientRequestID: key})
+	if err != nil {
+		if noRows(err) {
+			return WriteIntent{}, fmt.Errorf("%w: write intent for key %q", ErrNotFound, key)
+		}
+		return WriteIntent{}, fmt.Errorf("store: read forge write intent by key: %w", err)
+	}
+	return writeIntentFromRow(row), nil
+}
+
 // CompleteWriteIntent records artifact ownership or a comment/review forge key
 // and marks the pending attempt done in one transaction.
 func (s *Store) CompleteWriteIntent(ctx context.Context, id string, artifact *AuthoredArtifact, forgeKey string) (retErr error) {

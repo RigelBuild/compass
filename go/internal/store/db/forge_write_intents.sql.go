@@ -96,6 +96,44 @@ func (q *Queries) EndForgeWriteIntent(ctx context.Context, arg EndForgeWriteInte
 	return result.RowsAffected(), nil
 }
 
+const liveWriteIntentByKey = `-- name: LiveWriteIntentByKey :one
+SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
+       agent_account_id, owner_user_id, session_id, client_request_id,
+       forge_key, state, created_at, tenant_id
+FROM forge_write_intents
+WHERE agent_account_id = $1
+  AND client_request_id = $2
+  AND state <> 'failed'
+`
+
+type LiveWriteIntentByKeyParams struct {
+	AgentAccountID  string
+	ClientRequestID string
+}
+
+func (q *Queries) LiveWriteIntentByKey(ctx context.Context, arg LiveWriteIntentByKeyParams) (ForgeWriteIntent, error) {
+	row := q.db.QueryRow(ctx, liveWriteIntentByKey, arg.AgentAccountID, arg.ClientRequestID)
+	var i ForgeWriteIntent
+	err := row.Scan(
+		&i.ID,
+		&i.ForgeProvider,
+		&i.ForgeHost,
+		&i.Repo,
+		&i.Kind,
+		&i.ParentNumber,
+		&i.HeadRef,
+		&i.AgentAccountID,
+		&i.OwnerUserID,
+		&i.SessionID,
+		&i.ClientRequestID,
+		&i.ForgeKey,
+		&i.State,
+		&i.CreatedAt,
+		&i.TenantID,
+	)
+	return i, err
+}
+
 const lockWriteIntent = `-- name: LockWriteIntent :one
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref,
        agent_account_id, owner_user_id, session_id, client_request_id,

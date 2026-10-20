@@ -420,13 +420,20 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, repo string, in CreatePR
 	return out.toPullRequest(), nil
 }
 
-// UpdatePullRequest replaces the PR title, body, and base, then optionally marks it ready.
+// UpdatePullRequest replaces the PR title, body, and base (only the body on
+// BodyOnly), then optionally marks it ready.
 func (g *GitHub) UpdatePullRequest(ctx context.Context, repo string, number uint64, u UpdatePR) (PullRequest, error) {
-	body := struct {
+	var body any = struct {
 		Title string `json:"title"`
 		Body  string `json:"body"`
 		Base  string `json:"base"`
 	}{Title: u.Title, Body: u.Body, Base: u.BaseRef}
+	if u.BodyOnly {
+		// Sending no title or base keeps whatever another writer set since our read.
+		body = struct {
+			Body string `json:"body"`
+		}{Body: u.Body}
+	}
 	url := g.apiBase() + "/repos/" + repo + "/pulls/" + strconv.FormatUint(number, 10)
 	var detail ghPullDetail
 	if err := g.doJSON(ctx, http.MethodPatch, url, body, &detail); err != nil {
