@@ -8,8 +8,9 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// appIcon is the macOS Dock icon for an unbundled binary (the dev loop). GTK4
-// has no runtime icon API; Linux takes the icon from the desktop entry.
+// appIcon is the macOS Dock icon on every run; Wails sets it at startup, so it
+// also overrides a bundle's AppIcon.icns (built from this same PNG). GTK4 has no
+// runtime icon API; Linux takes the icon from the desktop entry.
 //
 //go:embed icon/appicon.png
 var appIcon []byte
