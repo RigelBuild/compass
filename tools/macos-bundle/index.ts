@@ -4,7 +4,8 @@
 // Keep dist beside the executable and sidecars beside the shell for runtime discovery.
 // Postgres remains a container rather than a bundled sidecar.
 
-import { cp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { $ } from "bun";
 
@@ -559,14 +560,10 @@ async function main(): Promise<void> {
 	await rm(stageRoot, { recursive: true, force: true });
 	await mkdir(macosDir, { recursive: true });
 	await mkdir(resourcesDir, { recursive: true });
-	// Outside stageRoot: hdiutil packs everything under it into the dmg.
-	const iconsetDir = join(
-		dirname(args.out),
-		"macos-bundle-icon",
-		"AppIcon.iconset",
-	);
-	await rm(dirname(iconsetDir), { recursive: true, force: true });
-	await mkdir(iconsetDir, { recursive: true });
+	// Outside stageRoot (hdiutil packs everything under it), in a fresh temp dir.
+	const iconTmp = await mkdtemp(join(tmpdir(), "macos-bundle-icon-"));
+	const iconsetDir = join(iconTmp, "AppIcon.iconset");
+	await mkdir(iconsetDir);
 	for (const [filename, size] of [
 		["icon_16x16.png", 16],
 		["icon_16x16@2x.png", 32],
@@ -582,7 +579,7 @@ async function main(): Promise<void> {
 	}
 	await cp(appIcon, join(iconsetDir, "icon_512x512@2x.png"));
 	await $`iconutil -c icns ${iconsetDir} -o ${join(resourcesDir, "AppIcon.icns")}`.quiet();
-	await rm(dirname(iconsetDir), { recursive: true, force: true });
+	await rm(iconTmp, { recursive: true, force: true });
 
 	// Contents/MacOS/compass-app — the darwin shell binary.
 	const stagedBinary = join(macosDir, SHELL_EXECUTABLE_NAME);

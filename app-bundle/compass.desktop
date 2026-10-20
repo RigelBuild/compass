@@ -6,4 +6,3 @@ Exec=compass-app
 Icon=compass
 Terminal=false
 Categories=Development;
-StartupWMClass=build.rigel.compass
