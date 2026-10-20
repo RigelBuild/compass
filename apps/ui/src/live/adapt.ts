@@ -294,6 +294,31 @@ export function adaptAgentBoard(w: WireAgentBoard): AgentBoard {
 	};
 }
 
+/** Return unique, active subagents in stable start order for a board snapshot. */
+export function runningSubagents(board: AgentBoard): BoardSubagent[] {
+	const seen = new Set<string>();
+	const running: BoardSubagent[] = [];
+	for (const task of board.tasks) {
+		for (const subagent of task.subagents) {
+			if (
+				subagent.status !== "started" ||
+				subagent.endedAtUnixMs !== undefined ||
+				seen.has(subagent.id)
+			) {
+				continue;
+			}
+			seen.add(subagent.id);
+			running.push(subagent);
+		}
+	}
+	running.sort((a, b) => {
+		if (a.startedAtUnixMs !== b.startedAtUnixMs)
+			return a.startedAtUnixMs - b.startedAtUnixMs;
+		return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+	});
+	return running;
+}
+
 /** Fold an AgentBoardChanged board into the roster summary. The event carries
  *  no derived refs, so the server's waiting-on-you count stands until a re-read. */
 export function applyBoardEvent(
@@ -775,6 +800,7 @@ export interface AgentPresenceInfo {
 	readonly lifecycle?: AgentState;
 	readonly activity?: string;
 	readonly board?: AgentBoardSummary;
+	readonly subagents?: readonly BoardSubagent[];
 	/** Counts AgentBoardChanged events; an automatic patch keeps the board's write time. */
 	readonly boardEvents?: number;
 }

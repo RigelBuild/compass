@@ -17,7 +17,12 @@ import type { CommandId } from "../keyboard/commands";
 import { detectPlatform } from "../keyboard/dispatch";
 import { shortcutForAria } from "../keyboard/keymap";
 import { openLink } from "../open-link";
-import { type Agent, type AgentTreeNode, agentTree } from "../stub-data";
+import {
+	type Agent,
+	type AgentTreeNode,
+	agentTree,
+	type BoardSubagent,
+} from "../stub-data";
 import { DEMO_AGENTS, isDemoId } from "../tour/demo";
 import { CoachTip, CoachTipContent, CoachTipTrigger } from "./CoachTip";
 import { Glyph } from "./Glyph";
@@ -161,6 +166,9 @@ const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 					<For each={props.node.channels}>
 						{(channel) => <ChannelRow channel={channel} />}
 					</For>
+					<For each={props.node.agent.subagents ?? []}>
+						{(subagent) => <SubagentRow subagent={subagent} />}
+					</For>
 					<For each={props.node.children}>
 						{(child) => <Node node={child} />}
 					</For>
@@ -170,10 +178,32 @@ const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 	);
 };
 
+/** Read-only worker row; subagents have no session route in the store yet. */
+const SubagentRow: Component<{ subagent: BoardSubagent }> = (props) => (
+	<div
+		class="tree-subagent-row"
+		role="img"
+		title={props.subagent.description}
+		aria-label={
+			props.subagent.description
+				? `${props.subagent.agent} subagent: ${props.subagent.description}`
+				: `${props.subagent.agent} subagent`
+		}
+	>
+		<StateDot state="working" scale={2} />
+		<span class="name">{props.subagent.agent}</span>
+		<span class="tree-subagent-desc">{props.subagent.description}</span>
+	</div>
+);
+
 /** Child agents or channels render the parent form; otherwise render the plain leaf. */
 const Node: Component<{ node: AgentTreeNode }> = (props) => (
 	<Show
-		when={props.node.children.length > 0 || props.node.channels.length > 0}
+		when={
+			props.node.children.length > 0 ||
+			props.node.channels.length > 0 ||
+			(props.node.agent.subagents?.length ?? 0) > 0
+		}
 		fallback={<AgentLeaf agent={props.node.agent} />}
 	>
 		<Branch node={props.node} />

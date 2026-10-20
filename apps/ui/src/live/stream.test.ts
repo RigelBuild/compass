@@ -18,7 +18,11 @@ import {
 	type ChannelGroup as WireChannelGroup,
 	type RosterEntry as WireRosterEntry,
 } from "@compass/client";
-import type { CommsState, MapMessage } from "./comms-state";
+import {
+	type CommsState,
+	type MapMessage,
+	reduceSnapshot,
+} from "./comms-state";
 import { fetchSnapshot, runCommsStream } from "./stream";
 
 // Exercise SubscribeComms snapshot, tail, resync, and reconnect behavior with a fake client.
@@ -193,6 +197,7 @@ interface RecordedCalls {
 		snapshotSeq: bigint;
 	}[];
 	readonly subscribeSinceSeqs: bigint[];
+	readonly listAgentBoardsCalls: { readonly limit: number }[];
 	readonly subscribeEpochs: bigint[];
 }
 
@@ -222,6 +227,8 @@ interface FakeConfig {
 	/** When set, GetRoster rejects with this error instead of returning — the
 	 *  read-failure path (the snapshot must abort, not seed an empty map). */
 	readonly getRosterError?: Error;
+	readonly boards?: WireAgentBoard[];
+	readonly listAgentBoardsError?: Error;
 }
 
 const MESSAGE_PAGE = 200;
@@ -239,6 +246,7 @@ function createFakeClient(
 		listChannelsSeqs: [],
 		listChannelGroupsSeqs: [],
 		getRosterScopes: [],
+		listAgentBoardsCalls: [],
 		listMessages: [],
 		subscribeSinceSeqs: [],
 		subscribeEpochs: [],
@@ -274,6 +282,11 @@ function createFakeClient(
 			config.onRosterAfter?.();
 			if (config.rosterAfterError) throw config.rosterAfterError;
 			return { entries: config.rosterAfter ?? config.roster ?? [] };
+		},
+		listAgentBoards: async (req: { limit: number }) => {
+			calls.listAgentBoardsCalls.push({ limit: req.limit });
+			if (config.listAgentBoardsError) throw config.listAgentBoardsError;
+			return { boards: config.boards ?? [] };
 		},
 		listTopics: async (req: { channelId: string }) => ({
 			topics: config.topicsByChannel?.[req.channelId] ?? [],
@@ -964,6 +977,42 @@ describe("fetchSnapshot — paging + opaque token", () => {
 			"m4",
 		]);
 	});
+});
+
+test("fetchSnapshot keeps roster presence when listAgentBoards rejects", async () => {
+	const controller = new AbortController();
+	const { client, calls } = createFakeClient(controller, {
+		roster: [wireRosterEntry("acc-cook", AgentPresence.WORKING, "cooking")],
+		listAgentBoardsError: new Error("board read failed"),
+	});
+
+	const snapshot = await fetchSnapshot(
+		client,
+		mapMessage,
+		42n,
+		controller.signal,
+	);
+	const state = reduceSnapshot(CALLER, snapshot);
+
+	expect(state.presence.get("acc-cook")?.lifecycle).toBe("working");
+	expect(state.presence.get("acc-cook")?.activity).toBe("cooking");
+	expect(state.presence.get("acc-cook")?.subagents).toBeUndefined();
+	expect(snapshot.boards).toEqual([]);
+	expect(calls.listAgentBoardsCalls).toEqual([{ limit: 100 }]);
+});
+
+test("fetchSnapshot rejects when listAgentBoards fails after an abort", async () => {
+	const controller = new AbortController();
+	const aborted = new Error("aborted board read");
+	const { client } = createFakeClient(controller, {
+		listAgentBoardsError: aborted,
+	});
+	controller.abort();
+
+	// A cancelled read must not look like an empty board list.
+	await expect(
+		fetchSnapshot(client, mapMessage, 42n, controller.signal),
+	).rejects.toBe(aborted);
 });
 
 describe("runCommsStream — presence seed + tail", () => {

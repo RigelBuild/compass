@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
 	AccountSchema,
 	AgentAccountSchema,
+	AgentBoardSchema,
 	AgentPresence,
+	BoardSubagentSchema,
+	BoardTaskSchema,
 	ChannelGroupSchema,
 	ChannelKind,
 	ChannelSchema,
@@ -105,6 +108,7 @@ describe("reduceSnapshot", () => {
 				}),
 			],
 			topics: [],
+			boards: [],
 			roster: [],
 			// Deliberately out of (atUnixMs,id) order so the sort is observable.
 			messages: [msg("m2", 200), msg("m1", 100), msg("m3", 100)],
@@ -142,6 +146,7 @@ describe("reduceSnapshot", () => {
 				}),
 			],
 			messages: [],
+			boards: [],
 		};
 
 		const state = reduceSnapshot(CALLER, snap);
@@ -157,6 +162,86 @@ describe("reduceSnapshot", () => {
 			activity: undefined,
 		});
 		expect(state.presence.size).toBe(2);
+	});
+
+	test("seeds running subagents from boards without replacing roster presence", () => {
+		const snap: CommsSnapshot = {
+			accounts: [],
+			channelGroups: [],
+			channels: [],
+			topics: [],
+			messages: [],
+			roster: [
+				create(RosterEntrySchema, {
+					agentAccountId: "acc-cook",
+					presence: AgentPresence.WORKING,
+					activity: "cooking",
+				}),
+			],
+			boards: [
+				create(AgentBoardSchema, {
+					agentAccountId: "acc-cook",
+					tasks: [
+						create(BoardTaskSchema, {
+							key: "task-a",
+							subagents: [
+								create(BoardSubagentSchema, {
+									id: "sub-running",
+									agent: "builder",
+									description: "Implementing",
+									status: "started",
+									startedAtUnixMs: 10n,
+								}),
+								create(BoardSubagentSchema, {
+									id: "sub-ended",
+									agent: "tester",
+									status: "started",
+									startedAtUnixMs: 20n,
+									endedAtUnixMs: 21n,
+								}),
+								create(BoardSubagentSchema, {
+									id: "sub-done",
+									agent: "reviewer",
+									status: "completed",
+									startedAtUnixMs: 30n,
+								}),
+							],
+						}),
+					],
+				}),
+			],
+		};
+
+		const state = reduceSnapshot(CALLER, snap);
+
+		expect(state.presence.get("acc-cook")).toMatchObject({
+			lifecycle: "working",
+			activity: "cooking",
+			subagents: [
+				{
+					id: "sub-running",
+					agent: "builder",
+					description: "Implementing",
+					status: "started",
+					startedAtUnixMs: 10,
+				},
+			],
+		});
+	});
+
+	test("a board with no running subagents adds no presence entry", () => {
+		const state = reduceSnapshot(CALLER, {
+			accounts: [],
+			channelGroups: [],
+			channels: [],
+			topics: [],
+			messages: [],
+			roster: [],
+			boards: [create(AgentBoardSchema, { agentAccountId: "acc-idle" })],
+		});
+
+		// joinAgents falls back to "stopped" only when the agent has no entry.
+		expect(state.presence.has("acc-idle")).toBe(false);
 	});
 });
 
@@ -408,8 +493,133 @@ describe("applyEvent — board update", () => {
 				stale: false,
 			},
 			boardEvents: 1,
+			subagents: [],
 		});
 		expect(next.presence).not.toBe(seeded.presence);
+	});
+	test("boardChanged keeps only unique running subagents in start order", () => {
+		const subagent = (
+			id: string,
+			agent: string,
+			status: string,
+			startedAtUnixMs: number,
+			endedAtUnixMs?: number,
+		) => ({
+			id,
+			agent,
+			description: agent,
+			status,
+			startedAtUnixMs,
+			endedAtUnixMs,
+		});
+		const firstTask = board.tasks[0];
+		const secondTask = board.tasks[1];
+		if (!firstTask || !secondTask)
+			throw new Error("Missing board task fixture");
+		const withSubagents: AgentBoard = {
+			...board,
+			tasks: [
+				{
+					...firstTask,
+					subagents: [
+						subagent("sub-b", "builder", "started", 20),
+						subagent("sub-a", "writer", "started", 10),
+						subagent("sub-dup", "first", "started", 30),
+						subagent("sub-ended", "ended", "started", 1, 2),
+						subagent("sub-done", "done", "completed", 3),
+					],
+				},
+				{
+					...secondTask,
+					subagents: [
+						subagent("sub-dup", "second", "started", 5),
+						subagent("sub-c", "tester", "started", 20),
+					],
+				},
+			],
+		};
+		const seeded = {
+			...baseState(),
+			presence: new Map([
+				[
+					"acc-cook",
+					{
+						...presence,
+						subagents: [subagent("sub-old", "old", "started", 1)],
+					},
+				],
+			]),
+		};
+
+		const next = applyEvent(seeded, {
+			kind: "boardChanged",
+			accountId: "acc-cook",
+			board: withSubagents,
+		});
+		const running = next.presence.get("acc-cook")?.subagents;
+		expect(running?.map((item) => item.id)).toEqual([
+			"sub-a",
+			"sub-b",
+			"sub-c",
+			"sub-dup",
+		]);
+		expect(running?.find((item) => item.id === "sub-dup")?.agent).toBe("first");
+		expect(next.presence.get("acc-cook")?.lifecycle).toBe("working");
+
+		const completed: AgentBoard = {
+			...withSubagents,
+			tasks: withSubagents.tasks.map((task) => ({
+				...task,
+				subagents: task.subagents.map((item) =>
+					item.id === "sub-a" ? { ...item, status: "completed" } : item,
+				),
+			})),
+		};
+		const afterCompletion = applyEvent(next, {
+			kind: "boardChanged",
+			accountId: "acc-cook",
+			board: completed,
+		});
+		expect(
+			afterCompletion.presence
+				.get("acc-cook")
+				?.subagents?.map((item) => item.id),
+		).toEqual(["sub-b", "sub-c", "sub-dup"]);
+	});
+	test("boardSummary updates preserve subagents", () => {
+		const seeded = {
+			...baseState(),
+			presence: new Map([
+				[
+					"acc-cook",
+					{
+						...presence,
+						subagents: [
+							{
+								id: "sub-running",
+								agent: "builder",
+								description: "Implementing",
+								status: "started",
+								startedAtUnixMs: 10,
+							},
+						],
+					},
+				],
+			]),
+		};
+		const next = applyEvent(seeded, {
+			kind: "boardSummary",
+			accountId: "acc-cook",
+			board: {
+				taskCount: 0,
+				waitingOnOperator: 0,
+				writtenAtUnixMs: 0,
+				stale: false,
+			},
+		});
+		expect(next.presence.get("acc-cook")?.subagents).toBe(
+			seeded.presence.get("acc-cook")?.subagents,
+		);
 	});
 
 	test("a presence delta keeps the board summary", () => {

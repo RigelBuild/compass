@@ -289,6 +289,29 @@
 	border-left: 1px solid var(--cx-border);
 }
 
+/* Keep read-only worker state nested without implying channel or agent navigation. */
+.tree-subagent-row {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	min-width: 0;
+	padding: 5px 8px;
+	color: var(--cx-text-faint);
+	font-size: 12px;
+}
+
+.tree-subagent-row .name {
+	flex: 0 0 auto;
+	color: var(--cx-text-dim);
+}
+
+.tree-subagent-desc {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* A parent agent's row: a caret sub-button (collapse) beside the agent's own
  *  select button (the .tree-agent leaf), so selecting the agent and toggling
  *  its children are distinct affordances. */

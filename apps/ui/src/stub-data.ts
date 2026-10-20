@@ -490,6 +490,8 @@ export interface Agent {
 	/** UI-only. Optional for a live agent. */
 	cwd?: string;
 	board?: AgentBoardSummary;
+	/** OMP worker children currently running under this agent's board. */
+	subagents?: readonly BoardSubagent[];
 	/** Live-only: AgentBoardChanged events seen for this agent. */
 	boardEvents?: number;
 	/** Fixture-only. */

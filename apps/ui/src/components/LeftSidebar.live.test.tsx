@@ -7,6 +7,7 @@ import {
 	AgentPresence,
 	BoardHaltKind,
 	BoardHaltSchema,
+	BoardSubagentSchema,
 	BoardTaskSchema,
 	ChannelKind,
 	ChannelSchema,
@@ -211,6 +212,61 @@ describe("LeftSidebar — live roster (T4/T5)", () => {
 			leaf()?.querySelector(".agent-halt-dot")?.getAttribute("data-halt"),
 		).toBe("blocked");
 		expect(count()).toBe("1 waiting on you");
+	});
+	test("shows running subagents beneath their agent and removes them when completed", async () => {
+		const fake = createFakeComms({
+			accounts: [wireUserAccount(CALLER), wireAgentAccount("acc-cook")],
+			roster: [wireRosterEntry("acc-cook", AgentPresence.WORKING)],
+		});
+		const { container } = await mountLive(fake);
+		const makeSubagent = (status: string) =>
+			create(BoardSubagentSchema, {
+				id: "sub-build",
+				agent: "builder",
+				description: "Implementing snapshot support",
+				status,
+				startedAtUnixMs: 10n,
+			});
+		const emitBoard = (status: string, seq: bigint) =>
+			fake.emit(
+				{
+					case: "agentBoardChanged",
+					value: {
+						agentAccountId: "acc-cook",
+						board: create(AgentBoardSchema, {
+							agentAccountId: "acc-cook",
+							tasks: [
+								create(BoardTaskSchema, {
+									key: "task-a",
+									title: "Implement feature",
+									subagents: [makeSubagent(status)],
+								}),
+							],
+						}),
+					},
+				},
+				seq,
+			);
+
+		await emitBoard("started", 1n);
+		const row = () =>
+			container.querySelector<HTMLElement>(".tree-subagent-row");
+		expect(row()?.querySelector(".name")?.textContent).toBe("builder");
+		expect(row()?.querySelector(".tree-subagent-desc")?.textContent).toBe(
+			"Implementing snapshot support",
+		);
+		expect(row()?.getAttribute("aria-label")).toBe(
+			"builder subagent: Implementing snapshot support",
+		);
+		expect(
+			row()?.closest(".folder")?.querySelector(".tree-agent .name")
+				?.textContent,
+		).toBe("acc-cook");
+		expect(row()?.getAttribute("title")).toBe("Implementing snapshot support");
+
+		await emitBoard("completed", 2n);
+		expect(row()).toBeNull();
+		fake.close();
 	});
 	test("live home channel links to its agent in either event order like a snapshot", async () => {
 		const agentId = "acc-go-migration";
