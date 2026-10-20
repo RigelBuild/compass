@@ -203,6 +203,7 @@ func (c *Comms) CreateAgent(
 		return nil, edgeError(err)
 	}
 	c.publishAccountChanged(ctx, acc)
+	c.publishHomeChannelChanged(ctx, acc.Agent.HomeChannelID)
 	c.emitCoordChanges(ctx, coordChanges)
 	return &compassv1.CreateAgentResponse{Account: accountToWire(acc)}, nil
 }
