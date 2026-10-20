@@ -141,23 +141,13 @@ func run(ctx context.Context) error {
 		}
 	})
 
-	// The menu is installed in every mode. The embedded-only quit item is gated
-	// on quitter; setup and client mode have no stack teardown controller.
-	menu := application.NewMenu()
+	actions := appMenuActions{newWindow: newWindowOpener(app, svc)}
 	if quitter != nil {
 		quitter.quit = app.Quit
-		fileMenu := menu.AddSubmenu("File")
-		fileMenu.Add("Quit and stop stack").OnClick(func(_ *application.Context) {
-			// stopStackAndQuit derives its bounded teardown deadline from the run root.
-			quitter.stopStackAndQuit(ctx)
-		})
+		// stopStackAndQuit derives its bounded teardown deadline from the run root.
+		actions.stopStackAndQuit = func() { quitter.stopStackAndQuit(ctx) }
 	}
-	windowMenu := menu.AddSubmenu("Window")
-	windowMenu.Add("New Window").OnClick(func(_ *application.Context) {
-		name := nextWindowName(app)
-		newAppWindow(app, svc, name, "Compass")
-	})
-	app.Menu.Set(menu)
+	app.Menu.Set(buildAppMenu(actions))
 
 	// Restore saved windows; each page reads shell state when its script loads.
 	names := windowNamesOrDefault(loadWindowSet(stateDir))
@@ -219,15 +209,25 @@ func newAppWindow(app *application.App, svc *bridgeService, name, title string) 
 	})
 }
 
-// nextWindowName returns the first window name that has no live window on app.
-// The default window is defaultWindowName ("bridge"); additional windows are
-// suffixed bridge-2, bridge-3, … The live-window check goes through the app, so
-// the pure name selection is factored into firstFreeName for unit testing.
-func nextWindowName(app *application.App) string {
-	return firstFreeName(defaultWindowName, func(n string) bool {
-		_, ok := app.Window.GetByName(n)
-		return ok
-	})
+// newWindowOpener is File > New Window: it opens the next free bridge window.
+func newWindowOpener(app *application.App, svc *bridgeService) func() {
+	return serialOpener(
+		func(n string) bool { _, ok := app.Window.GetByName(n); return ok },
+		func(name string) { newAppWindow(app, svc, name, "Compass") },
+	)
+}
+
+// serialOpener returns a func that opens the next free bridge, bridge-2, …
+// window. Wails runs each menu click on its own goroutine, so naming and
+// creation share one lock; create must register the name before it returns.
+// The lock is a channel so synctest sees a waiting opener as durably blocked.
+func serialOpener(taken func(string) bool, create func(name string)) func() {
+	sem := make(chan struct{}, 1)
+	return func() {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+		create(firstFreeName(defaultWindowName, taken))
+	}
 }
 
 // firstFreeName returns base if exists(base) is false, else the first

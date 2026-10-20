@@ -58,7 +58,11 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 
-	e2eApp = application.New(application.Options{Name: "compass-multiwindow-e2e"})
+	// Tests close every window they open; the app must outlive that until m.Run ends.
+	e2eApp = application.New(application.Options{
+		Name:  "compass-multiwindow-e2e",
+		Linux: application.LinuxOptions{DisableQuitOnLastWindowClosed: true},
+	})
 	e2eApp.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		close(e2eReady)
 	})

@@ -1613,10 +1613,12 @@ jobs:
           assert_pass() {
             local backend="$1" log="$2" rc="$3"
             cat "$log"
-            if ! grep -q -- '--- PASS: TestMultiWindowCloseCancelsOnlyClosingWindowE2E' "$log"; then
-              echo "::error::gtk4 e2e gate ($backend) did not PASS TestMultiWindowCloseCancelsOnlyClosingWindowE2E — it skipped (no display came up), the build tag broke, or the test did not run"
-              return 1
-            fi
+            for t in TestMultiWindowCloseCancelsOnlyClosingWindowE2E TestNewWindowOpenerOpensUniqueWindowsE2E; do
+              if ! grep -q -- "--- PASS: $t" "$log"; then
+                echo "::error::gtk4 e2e gate ($backend) did not PASS $t — see the log above for a FAIL; otherwise it skipped (no display), the build tag broke, or it did not run"
+                return 1
+              fi
+            done
             return "$rc"
           }
 
@@ -1676,7 +1678,7 @@ jobs:
           rc=0
           WAYLAND_DISPLAY="$wl_sock" GDK_BACKEND=wayland \
             dbus-run-session --config-file="$dbus_conf" -- \
-            go test -tags 'unix gtk4' -run 'E2E' -count=1 -v -timeout 10m \
+            go test -tags 'unix gtk4' -run 'E2E|TestBuildAppMenu' -count=1 -v -timeout 10m \
             ./cmd/compass-app/ >/tmp/gtk4-e2e.log 2>&1 || rc=$?
           cp /tmp/gtk4-e2e.log /tmp/gtk4-e2e-wayland.log
           kill "$weston_pid" 2>/dev/null || true
@@ -1686,6 +1688,11 @@ jobs:
             wl_pass=1
             echo "--- weston compositor log (bring-up diagnostics) ---"
             cat /tmp/weston.log 2>/dev/null || echo "(no weston log)"
+          fi
+          # The menu composition pins Linux-only choices (no Edit menu, one Close).
+          if ! grep -q -- '--- PASS: TestBuildAppMenu' /tmp/gtk4-e2e-wayland.log; then
+            echo "::error::gtk4 (wayland): TestBuildAppMenu did not run+pass"
+            wl_pass=1
           fi
 
           # --- SECONDARY: X11 regression lane (GTK4 retains the X11 backend).
@@ -1955,10 +1962,10 @@ jobs:
           # the ONLY lane that executes it. The moon `compass-go:test` lane runs
           # untagged (`go test ./...`), which compiles the non-gtk4 stub and
           # excludes main_test.go, machine_test.go and embedded_test.go; the
-          # gtk4-e2e lane compiles the gtk4 build but `-run E2E`-filters, so it
-          # never reaches any of them. These tests defend contracts that ARE the
-          # darwin behaviour this lane ships, so their regression guards live
-          # here or nowhere:
+          # gtk4-e2e lane compiles the gtk4 build but filters to
+          # `-run 'E2E|TestBuildAppMenu'`, so it never reaches any of them.
+          # These tests defend contracts that ARE the darwin behaviour this lane
+          # ships, so their regression guards live here or nowhere:
           #   - DistDirForExecutable: the .app dist-resolution contract
           #     (Contents/Resources/dist under a Contents/MacOS executable,
           #     else dist beside it).
@@ -1979,7 +1986,7 @@ jobs:
           # package because that package also holds GUI E2E tests that need a
           # display; the machine and preflight tests live in internal/embedded.
           CGO_ENABLED=1 go -C go test -trimpath \
-            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout|TestShellGlobalsMiddleware' \
+            -run 'TestDistDirForExecutable|TestHandleStackVersionMismatch|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout|TestShellGlobalsMiddleware|TestBuildAppMenu|TestSerialOpener' \
             -count=1 -v \
             ./cmd/compass-app/ ./internal/embedded/ | tee /tmp/darwin-unit.log
           for t in TestDistDirForExecutable \
@@ -1991,7 +1998,9 @@ jobs:
                    TestRealPreflightDepsWiresDarwinMachineAdapter \
                    TestClassifyPreflightUnwiredDarwinMachineIsFatal \
                    TestBringUpTimeoutBudgetsDarwinColdProvisioning \
-                   TestShellGlobalsMiddlewareUsesLiveState; do
+                   TestShellGlobalsMiddlewareUsesLiveState \
+                   TestBuildAppMenu \
+                   TestSerialOpenerNamesConcurrentOpensUniquely; do
             grep -q "^--- PASS: $t" /tmp/darwin-unit.log || {
               echo "::error::darwin: $t did not run+pass (renamed or skipped?)"
               exit 1

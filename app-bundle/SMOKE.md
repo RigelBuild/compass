@@ -298,9 +298,22 @@ matches the exact URL. Paste it once more to save it under the origin
 (`NormalizeServerURL` in `go/internal/appconfig/appconfig.go` and `Store.Read`
 in `go/internal/tokenstore/tokenstore.go`).
 
-Before connecting, open a second window via **Window → New Window** while the
+Before connecting, open a second window via **File → New Window** while the
 first window still shows the chooser. Confirm the second window also shows the
 chooser. In the first window, choose **Connect to a server**.
+
+Check native text editing in the server-URL field. Type `https://example.test`,
+press Backspace rapidly several times, and confirm the characters delete in
+order. Select the field (Ctrl+A), cut it (Ctrl+X), and paste it back (Ctrl+V);
+confirm the text returns once. Then select only `example` with the mouse, copy
+it (Ctrl+C), click at the end, and paste (Ctrl+V); confirm the field ends in
+`example`, not a second full URL. The Linux menu bar has no Edit menu, so these keys
+go straight to WebKitGTK.
+
+Separate macOS check, when a Mac is available: build a `.dmg` as in
+`tools/macos-bundle/README.md`, open `Compass.app` from it, and repeat the whole
+check, rapid Backspace included, with Cmd+A, Cmd+X, Cmd+C, and Cmd+V. Those reach
+the webview only through the **Edit** menu, which also binds Backspace to Delete.
 
 Test each rejected URL in the first window's form. Enter `http://x` and a
 temporary non-secret value in the token field, then click **Connect**. Confirm
@@ -474,9 +487,14 @@ rm -rf "$CCONFIG" "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
 
 - [ ] with no `app.toml`, `--mode`, or `COMPASS_APP_MODE` override, the app opens
       the first-run chooser (§Part (b), 3)
-- [ ] open **Window → New Window** while both windows show the chooser; complete
+- [ ] open **File → New Window** while both windows show the chooser; complete
       the invalid-URL checks and connect in the first window, then confirm the
       second window leaves the chooser and reaches the board (§Part (b), 3)
+- [ ] in the server-URL field, rapid Backspace deletes in order, Ctrl+A, Ctrl+X,
+      Ctrl+V round-trips the text once, and copying just `example` then pasting
+      appends only `example` (§Part (b), 3)
+- [ ] optional, on a Mac: the same editing check in `Compass.app` with Cmd
+      (§Part (b), 3)
 - [ ] before the successful connection, `http://x` and `https://h/p` each show a
       validation message and leave `app.toml` absent (§Part (b), 3)
 - [ ] a valid connection writes client `app.toml` with the normalized origin and
