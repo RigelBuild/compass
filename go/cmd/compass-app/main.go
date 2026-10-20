@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/RigelBuild/compass/go/internal/appconfig"
 	"github.com/RigelBuild/compass/go/internal/bridge"
@@ -141,8 +142,15 @@ func run(ctx context.Context) error {
 		}
 	})
 
+	// Wails runs each menu click on its own goroutine; a held Cmd+N would
+	// otherwise race two windows onto the same free name.
+	var newWindowMu sync.Mutex
 	actions := appMenuActions{
-		newWindow: func() { newAppWindow(app, svc, nextWindowName(app), "Compass") },
+		newWindow: func() {
+			newWindowMu.Lock()
+			defer newWindowMu.Unlock()
+			newAppWindow(app, svc, nextWindowName(app), "Compass")
+		},
 	}
 	if quitter != nil {
 		quitter.quit = app.Quit

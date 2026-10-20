@@ -27,6 +27,21 @@ func submenuLabels(menu *application.Menu) map[string][]string {
 	return out
 }
 
+// accelerators returns every accelerator bound anywhere in the menu tree.
+func accelerators(menu *application.Menu) []string {
+	var out []string
+	for i := 0; menu.ItemAt(i) != nil; i++ {
+		item := menu.ItemAt(i)
+		if a := item.GetAccelerator(); a != "" {
+			out = append(out, a)
+		}
+		if item.IsSubmenu() {
+			out = append(out, accelerators(item.GetSubmenu())...)
+		}
+	}
+	return out
+}
+
 func TestBuildAppMenu(t *testing.T) {
 	// Role constructors read the app name from the Wails global. New returns the
 	// existing app when the GTK e2e harness already created one.
@@ -55,13 +70,13 @@ func TestBuildAppMenu(t *testing.T) {
 		if !slices.Contains(menus[quitMenu], quitLabel) {
 			t.Errorf("embedded=%v: %s menu lacks %q: %v", embedded, quitMenu, quitLabel, menus[quitMenu])
 		}
-		// darwin delivers Cmd+V to the webview only through Edit > Paste; Linux
-		// must not register Edit accelerators over WebKitGTK's own handling.
-		if got := slices.Contains(menus["Edit"], "Paste"); got != darwin {
-			t.Errorf("embedded=%v: Edit > Paste present = %v, want %v", embedded, got, darwin)
-		}
-		if _, hasEdit := menus["Edit"]; !darwin && hasEdit {
-			t.Errorf("embedded=%v: Edit menu present off darwin", embedded)
+		// darwin delivers Cmd+C/V/X/A/Z and Backspace to the webview only through
+		// Edit; Linux must bind none of them over WebKitGTK's own handling.
+		bound := accelerators(buildAppMenu(actions))
+		for _, key := range editingAccelerators(t) {
+			if got := slices.Contains(bound, key); got != darwin {
+				t.Errorf("embedded=%v: accelerator %q bound = %v, want %v", embedded, key, got, darwin)
+			}
 		}
 		closeCount := 0
 		for _, items := range menus {
@@ -80,4 +95,18 @@ func TestBuildAppMenu(t *testing.T) {
 			}
 		}
 	}
+}
+
+// editingAccelerators renders the Wails Edit-role keys in GetAccelerator's form.
+func editingAccelerators(t *testing.T) []string {
+	t.Helper()
+	specs := []string{
+		"CmdOrCtrl+z", "CmdOrCtrl+Shift+z", "CmdOrCtrl+x", "CmdOrCtrl+c",
+		"CmdOrCtrl+v", "CmdOrCtrl+a", "backspace",
+	}
+	keys := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		keys = append(keys, application.NewMenuItem("").SetAccelerator(spec).GetAccelerator())
+	}
+	return keys
 }
