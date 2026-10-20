@@ -154,12 +154,13 @@ export function attachSubagentBoardSync(
 	let inFlight: Promise<void> | undefined;
 	let detached = false;
 	let closed = false;
-	// Open rows stored before this session belong to a process that is gone.
+	// Open rows stored before this session belong to a process that is gone; the first
+	// send closes them, so an idle sync makes no calls.
 	let sweepPending = true;
 
 	const arm = (): void => {
-		if (detached || inFlight || cancel !== undefined) return;
-		if (changed.size === 0 && !sweepPending) return;
+		if (detached || inFlight || cancel !== undefined || changed.size === 0)
+			return;
 		cancel = timer.set(SUBAGENT_SYNC_MS, () => {
 			cancel = undefined;
 			// Wait for the startup read so the patch lands on the stored focus task.
@@ -560,8 +561,6 @@ export function attachSubagentBoardSync(
 			for (const run of queue)
 				if (run.row.endedAtUnixMs === 0n) run.row = aborted(run.row);
 	};
-
-	arm();
 
 	return async () => {
 		unsubscribe();

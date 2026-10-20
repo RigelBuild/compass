@@ -383,7 +383,8 @@ describe("subagent board synchronization", () => {
 
 	test("a row the store trims from a full task is logged", async () => {
 		const h = attached("parent-task");
-		// The startup sweep runs first; rows stored after it are another live writer's.
+		// The first send runs the startup sweep; rows stored after it are a live writer's.
+		h.emit("first", "completed");
 		await h.window();
 		h.transport.addOpenRows(
 			"parent-task",
@@ -548,6 +549,7 @@ describe("subagent board synchronization", () => {
 
 	test("open rows another writer stored count toward the cap", async () => {
 		const h = attached("parent-task");
+		h.emit("first", "completed");
 		await h.window();
 		h.transport.addOpenRows(
 			"parent-task",
@@ -556,7 +558,7 @@ describe("subagent board synchronization", () => {
 		h.freshness.noteBoard(h.transport.board);
 		h.emit("s", "started");
 		await h.window();
-		expect(h.writes()).toHaveLength(0);
+		expect(h.writes()).toHaveLength(1);
 		void h.detach();
 	});
 
@@ -626,6 +628,9 @@ describe("subagent board synchronization", () => {
 		const h = attached("parent-task", { seeded: false });
 		h.transport.addOpenRows("parent-task", ["old"]);
 		h.freshness.seed(1n, 1_000, h.transport.board);
+		// An idle sync makes no calls; the sweep rides the first real send.
+		await h.window();
+		expect(h.patches()).toHaveLength(0);
 		h.emit("live", "started");
 		await h.window();
 		const task = h.transport.board.tasks.find((t) => t.key === "parent-task");
