@@ -2754,7 +2754,7 @@ jobs:
           cat /tmp/ui-tier.log
           [ "$rc" -eq 0 ] || exit "$rc"
           # A podman skip also exits 0, so require each PASS line.
-          for name in TestUITierPostAndReply TestUITierLiveChannel; do
+          for name in TestUITierPostAndReply TestUITierLiveChannel TestUITierDMAndSession; do
             grep -qE "^--- PASS: $name " /tmp/ui-tier.log || { echo "::error::UI-tier e2e did not report PASS for $name"; exit 1; }
           done
 

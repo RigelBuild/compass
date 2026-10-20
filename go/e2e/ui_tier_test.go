@@ -196,3 +196,82 @@ func TestUITierLiveChannel(t *testing.T) {
 		t.Fatalf("live UI scenario: %v", waitErr)
 	}
 }
+
+const (
+	uiTierDMAgent = "ui-tier-dm-agent"
+	uiTierDMTopic = "ui-tier-dm-history"
+	uiTierDMText  = "ui tier: posted in the DM before the page loaded"
+)
+
+// TestUITierDMAndSession loads the UI after a DM between two of the admin's
+// agents has history and after one agent's turn settled to READY: the DM must
+// show its message, and that agent's Session Log header must read idle.
+func TestUITierDMAndSession(t *testing.T) {
+	if !podmanUsable(t.Context()) {
+		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
+	}
+
+	ctx := context.Background() // test root, threaded into the fixture and the browser process
+	devPort := freePort(t, ctx)
+	f := NewFixture(ctx, t,
+		WithCORSOrigin("http://127.0.0.1:"+strconv.Itoa(devPort)),
+		WithCannedScript(CannedText("ui tier dm turn")),
+	)
+
+	accountID, err := f.CreateAgent(ctx, uiTierDMAgent, "UI Tier DM Agent")
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	containerName, err := f.Provision(ctx, accountID, "ui-tier-dm-provision")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	// Rootless conmon outlives stack Down, so reap the container by name.
+	t.Cleanup(func() {
+		_ = f.RemoveWorkspace(ctx, containerName, "ui-tier-dm-teardown")
+	})
+	sessionID, err := f.StartSession(ctx, containerName)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	// Open before the post so the turn's state frames cannot be missed.
+	tail, err := f.OpenSessionTail(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("OpenSessionTail: %v", err)
+	}
+	defer tail.Close()
+
+	_, supervisorComms, err := f.AsObserver(ctx, rootSupervisorHandle)
+	if err != nil {
+		t.Fatalf("AsObserver(supervisor): %v", err)
+	}
+	rctx, rcancel := context.WithTimeout(ctx, rpcTimeout)
+	dm, err := supervisorComms.OpenDM(rctx, &compassv1.OpenDMRequest{PeerHandle: uiTierDMAgent})
+	rcancel()
+	if err != nil {
+		t.Fatalf("OpenDM(supervisor, %s): %v", uiTierDMAgent, err)
+	}
+	// The DM delivers this post to the agent, which drives its turn to READY.
+	if _, err := f.PostMessage(ctx, dm.GetChannel().GetId(), uiTierDMTopic, uiTierDMText); err != nil {
+		t.Fatalf("PostMessage(dm): %v", err)
+	}
+	if err := f.AwaitTurnSettled(ctx, tail); err != nil {
+		t.Fatalf("AwaitTurnSettled: %v", err)
+	}
+
+	cmd := exec.CommandContext(ctx, "bunx", "playwright", "test", "--config", "playwright.live.config.ts", "dm-and-session.spec.ts")
+	cmd.Dir = filepath.Join("..", "..", "apps", "ui")
+	cmd.Env = append(os.Environ(),
+		"PLAYWRIGHT_DEV_PORT="+strconv.Itoa(devPort),
+		"VITE_COMPASS_BASE_URL="+f.ServerURL(),
+		"VITE_COMPASS_TOKEN="+f.AdminToken(),
+		"UI_TIER_DM_AGENT="+uiTierDMAgent,
+		"UI_TIER_DM_TOPIC="+uiTierDMTopic,
+		"UI_TIER_DM_TEXT="+uiTierDMText,
+	)
+	out, err := cmd.CombinedOutput()
+	t.Logf("playwright output:\n%s", out)
+	if err != nil {
+		t.Fatalf("live UI scenario: %v", err)
+	}
+}

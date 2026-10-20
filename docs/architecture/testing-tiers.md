@@ -16,8 +16,10 @@ The exact commands and flags are in the `pgtest` and `e2e` jobs of
 
 The `podman uitier` scenarios drive the real Vite UI in headless Chromium against
 an H1 fixture. One checks that the agent reply renders in a topic started from the
-UI. The other checks that a channel joined while the page is open shows its earlier
-messages, and that an agent created then gets its home channel. Run them with
+UI. Another checks that a channel joined while the page is open shows its earlier
+messages, and that an agent created then gets its home channel. The third checks
+that a DM shows messages posted before the page loaded, and that a READY session's
+Session Log header reads idle. Run them with
 `cd go && direnv exec .. go test -tags 'podman uitier' -count=1 -p 1 -v -run '^TestUITier' ./e2e/`.
 It runs on pushes to `main` and nightly, not on pull requests.
 
