@@ -78,13 +78,18 @@ func registerFanoutFixtureOptions() {
 
 	registerSharedFixtureOption(
 		WithCannedMarkerScript(t3FanoutMarker,
+			// A tool turn with no board write earns one board re-prompt turn per action.
 			CannedToolCall("comms_post_message", fanArgs),
+			CannedText(t3Settle),
 			CannedText(t3Settle),
 			CannedToolCall("comms_post_message", missArgs),
 			CannedText(t3Settle),
+			CannedText(t3Settle),
 			CannedToolCall("comms_post_message", mintCanaryArgs),
 			CannedText(t3Settle),
+			CannedText(t3Settle),
 			CannedToolCall("comms_post_message", topic2Args),
+			CannedText(t3Settle),
 			CannedText(t3Settle),
 			CannedToolCall("comms_post_message", chan2Args),
 			CannedText(t3Settle),

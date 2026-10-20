@@ -59,9 +59,12 @@ func registerToolsFixtureOptions() {
 	// advances one slot per round-trip.
 	registerSharedFixtureOption(
 		WithCannedMarkerScript(toolsMarker,
+			// A tool turn with no board write earns one board re-prompt turn per action.
 			CannedToolCall("compass_set_status", statusArgs),
 			CannedText(toolsSettle),
+			CannedText(toolsSettle),
 			CannedToolCall("compass_roster", rosterArgs),
+			CannedText(toolsSettle),
 			CannedText(toolsSettle),
 			CannedToolCall("comms_post_ask", askArgs),
 			CannedText(toolsSettle),

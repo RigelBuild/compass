@@ -147,6 +147,8 @@ func registerListMessagesFixtureOptions() {
 		WithCannedMarkerScript(listMessagesMarker,
 			CannedToolCall("comms_list_messages", fmt.Sprintf(`{"channel":%q}`, listMessagesChannel)),
 			CannedText(listMessagesSettleExplicit),
+			// A tool turn with no board write earns one board re-prompt turn.
+			CannedText(listMessagesSettleExplicit),
 			CannedToolCall("comms_list_messages", `{}`),
 			CannedText(listMessagesSettleOmitted),
 		),
