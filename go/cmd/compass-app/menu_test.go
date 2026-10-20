@@ -57,7 +57,8 @@ func TestBuildAppMenu(t *testing.T) {
 		if embedded {
 			actions.stopStackAndQuit = func() {}
 		}
-		menus := submenuLabels(buildAppMenu(actions))
+		menu := buildAppMenu(actions)
+		menus := submenuLabels(menu)
 
 		if got := slices.Contains(menus["File"], "Quit and stop stack"); got != embedded {
 			t.Errorf("embedded=%v: File has stop-stack item = %v", embedded, got)
@@ -72,7 +73,7 @@ func TestBuildAppMenu(t *testing.T) {
 		}
 		// darwin delivers Cmd+C/V/X/A/Z and Backspace to the webview only through
 		// Edit; Linux must bind none of them over WebKitGTK's own handling.
-		bound := accelerators(buildAppMenu(actions))
+		bound := accelerators(menu)
 		for _, key := range editingAccelerators(t) {
 			if got := slices.Contains(bound, key); got != darwin {
 				t.Errorf("embedded=%v: accelerator %q bound = %v, want %v", embedded, key, got, darwin)

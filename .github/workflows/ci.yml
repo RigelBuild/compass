@@ -1613,10 +1613,12 @@ jobs:
           assert_pass() {
             local backend="$1" log="$2" rc="$3"
             cat "$log"
-            if ! grep -q -- '--- PASS: TestMultiWindowCloseCancelsOnlyClosingWindowE2E' "$log"; then
-              echo "::error::gtk4 e2e gate ($backend) did not PASS TestMultiWindowCloseCancelsOnlyClosingWindowE2E — it skipped (no display came up), the build tag broke, or the test did not run"
-              return 1
-            fi
+            for t in TestMultiWindowCloseCancelsOnlyClosingWindowE2E TestNewWindowOpenerOpensUniqueWindowsE2E; do
+              if ! grep -q -- "--- PASS: $t" "$log"; then
+                echo "::error::gtk4 e2e gate ($backend) did not PASS $t — it skipped (no display came up), the build tag broke, or the test did not run"
+                return 1
+              fi
+            done
             return "$rc"
           }
 

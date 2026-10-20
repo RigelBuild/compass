@@ -308,9 +308,11 @@ order. Select the field (Ctrl+A), cut it (Ctrl+X), and paste it back (Ctrl+V);
 confirm the text returns once. Then select only `example` with the mouse, copy
 it (Ctrl+C), click at the end, and paste (Ctrl+V); confirm the field ends in
 `example`, not a second full URL. The Linux menu bar has no Edit menu, so these keys
-go straight to WebKitGTK. On a Mac, build a `.dmg` as in
+go straight to WebKitGTK.
+
+Separate macOS check, when a Mac is available: build a `.dmg` as in
 `tools/macos-bundle/README.md`, open `Compass.app` from it, and repeat the whole
-check, rapid Backspace included, with Cmd+A, Cmd+X, Cmd+C, and Cmd+V; those reach
+check, rapid Backspace included, with Cmd+A, Cmd+X, Cmd+C, and Cmd+V. Those reach
 the webview only through the **Edit** menu, which also binds Backspace to Delete.
 
 Test each rejected URL in the first window's form. Enter `http://x` and a
@@ -490,7 +492,9 @@ rm -rf "$CCONFIG" "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
       second window leaves the chooser and reaches the board (§Part (b), 3)
 - [ ] in the server-URL field, rapid Backspace deletes in order, Ctrl+A, Ctrl+X,
       Ctrl+V round-trips the text once, and copying just `example` then pasting
-      appends only `example` (Cmd on macOS) (§Part (b), 3)
+      appends only `example` (§Part (b), 3)
+- [ ] optional, on a Mac: the same editing check in `Compass.app` with Cmd
+      (§Part (b), 3)
 - [ ] before the successful connection, `http://x` and `https://h/p` each show a
       validation message and leave `app.toml` absent (§Part (b), 3)
 - [ ] a valid connection writes client `app.toml` with the normalized origin and

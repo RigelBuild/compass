@@ -141,11 +141,7 @@ func run(ctx context.Context) error {
 		}
 	})
 
-	openNext := serialOpener(
-		func(n string) bool { _, ok := app.Window.GetByName(n); return ok },
-		func(name string) { newAppWindow(app, svc, name, "Compass") },
-	)
-	actions := appMenuActions{newWindow: openNext}
+	actions := appMenuActions{newWindow: newWindowOpener(app, svc)}
 	if quitter != nil {
 		quitter.quit = app.Quit
 		// stopStackAndQuit derives its bounded teardown deadline from the run root.
@@ -213,9 +209,18 @@ func newAppWindow(app *application.App, svc *bridgeService, name, title string) 
 	})
 }
 
+// newWindowOpener is File > New Window: it opens the next free bridge window.
+func newWindowOpener(app *application.App, svc *bridgeService) func() {
+	return serialOpener(
+		func(n string) bool { _, ok := app.Window.GetByName(n); return ok },
+		func(name string) { newAppWindow(app, svc, name, "Compass") },
+	)
+}
+
 // serialOpener returns a func that opens the next free bridge, bridge-2, …
 // window. Wails runs each menu click on its own goroutine, so naming and
 // creation share one lock; create must register the name before it returns.
+// The lock is a channel so synctest sees a waiting opener as durably blocked.
 func serialOpener(taken func(string) bool, create func(name string)) func() {
 	sem := make(chan struct{}, 1)
 	return func() {
