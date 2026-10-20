@@ -514,6 +514,20 @@ func (c *Comms) publishChannelChanged(ctx context.Context, ch store.Channel, rem
 		},
 	})
 }
+
+// publishHomeChannelChanged announces the home channel the store created with
+// the agent; an open client otherwise holds its id with no channel to render.
+// The read follows a committed create, so a caller that hung up must not drop it.
+func (c *Comms) publishHomeChannelChanged(ctx context.Context, channelID store.ChannelID) {
+	ctx = context.WithoutCancel(ctx)
+	channel, err := c.store.GetChannel(ctx, channelID)
+	if err != nil {
+		slog.ErrorContext(ctx, "comms: reading new home channel for event", "channel_id", channelID, "err", err)
+		return
+	}
+	c.publishChannelChanged(ctx, channel, nil)
+}
+
 func (c *Comms) publishAgentWorkspaceChanged(ctx context.Context, w store.AgentWorkspace) {
 	c.bus.Publish(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_AgentWorkspaceChanged{

@@ -24,6 +24,7 @@ test("a channel that appears live shows its earlier history", async ({
 	const topicName = requiredEnv("UI_TIER_LIVE_TOPIC");
 	const earlierText = requiredEnv("UI_TIER_LIVE_EARLIER_TEXT");
 	const readyMarker = requiredEnv("UI_TIER_READY_MARKER");
+	const agentHandle = requiredEnv("UI_TIER_LIVE_AGENT");
 
 	await page.goto("/");
 	await page.getByRole("button", { name: "Skip tour" }).click();
@@ -31,6 +32,9 @@ test("a channel that appears live shows its earlier history", async ({
 	await expect(page.locator(".tree-agent-row .name").first()).toBeVisible();
 	const channelRow = page.locator(".ch-row .ch-name", { hasText: channelName });
 	await expect(channelRow).toHaveCount(0);
+	await expect(
+		page.locator(".tree-agent-row .name", { hasText: agentHandle }),
+	).toHaveCount(0);
 	// go/e2e reads this line from stdout and only then adds the caller.
 	process.stdout.write(`${readyMarker}\n`);
 
@@ -43,5 +47,13 @@ test("a channel that appears live shows its earlier history", async ({
 	await expect(
 		page.locator(".msg .markdown-content", { hasText: earlierText }),
 	).toBeVisible({ timeout: 15_000 });
+
+	// An agent created while the page is open gets its home channel without a reload.
+	const agentFolder = page.locator(".folder", {
+		has: page.locator(".tree-agent-row .name", { hasText: agentHandle }),
+	});
+	await expect(
+		agentFolder.locator(".ch-row .ch-name", { hasText: agentHandle }),
+	).toBeVisible({ timeout: 30_000 });
 	expect(pageErrors).toEqual([]);
 });

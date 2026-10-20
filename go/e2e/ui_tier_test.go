@@ -99,12 +99,13 @@ const (
 	uiTierLiveChannel     = "ui-tier-live-channel"
 	uiTierLiveTopic       = "ui-tier-earlier-work"
 	uiTierLiveEarlierText = "ui tier: posted before the UI saw this channel"
+	uiTierLiveAgent       = "ui-tier-live-agent"
 	uiTierReadyMarker     = "UI_TIER_PAGE_READY"
 )
 
 // TestUITierLiveChannel opens the UI first, then adds the caller to a channel
-// whose message predates the join. The channel is absent from the page's
-// snapshot, so it and its history reach the UI only through the live stream.
+// whose message predates the join, and creates an agent. Neither the channel nor
+// the agent's home channel is in the page's snapshot; both arrive only live.
 func TestUITierLiveChannel(t *testing.T) {
 	if !podmanUsable(t.Context()) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
@@ -149,6 +150,7 @@ func TestUITierLiveChannel(t *testing.T) {
 		"UI_TIER_LIVE_TOPIC="+uiTierLiveTopic,
 		"UI_TIER_LIVE_EARLIER_TEXT="+uiTierLiveEarlierText,
 		"UI_TIER_READY_MARKER="+uiTierReadyMarker,
+		"UI_TIER_LIVE_AGENT="+uiTierLiveAgent,
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -179,6 +181,9 @@ func TestUITierLiveChannel(t *testing.T) {
 		rcancel()
 		if err != nil {
 			t.Errorf("UpdateChannelMembers: %v", err)
+		}
+		if _, err := f.CreateAgent(runCtx, uiTierLiveAgent, "UI Tier Live Agent"); err != nil {
+			t.Errorf("CreateAgent: %v", err)
 		}
 	}
 	_, _ = io.Copy(io.Discard, reader)
