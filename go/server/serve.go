@@ -1988,6 +1988,7 @@ func buildForgeWriteService(
 	}
 	svc := newForgeService(st, issueBrd, registry)
 	svc.enforceScopes = !fc.ScopeEnforcementDisabled
+	svc.mirror = cfg.Mirror
 	return svc, nil
 }
 

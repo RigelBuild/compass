@@ -1276,6 +1276,8 @@ func scopedWriteCalls() map[string]*compassv1internal.ForgeCallRequest {
 		"transition_issue_state":        {Call: &compassv1internal.ForgeCallRequest_TransitionIssueState{TransitionIssueState: &compassv1internal.TransitionIssueStateRequest{Repo: testRepo, IssueNumber: 1, State: "closed"}}},
 		"transition_pull_request_state": {Call: &compassv1internal.ForgeCallRequest_TransitionPullRequestState{TransitionPullRequestState: &compassv1internal.TransitionPullRequestStateRequest{Repo: testRepo, PrNumber: 1, State: "closed"}}},
 		"edit_issue":                    editIssueCall("new title"),
+		"submit_stack":                  stackCall("k-ss", "", nil, &compassv1internal.StackEntry{HeadRef: "feature", Title: "t", Body: "body"}),
+		"retire_head":                   retireCall("feature"),
 	}
 }
 
@@ -1285,18 +1287,16 @@ func scopedWriteCalls() map[string]*compassv1internal.ForgeCallRequest {
 func TestForgeCallArmsHaveScopeClassification(t *testing.T) {
 	ungated := map[string]bool{"get_issue": true, "list_issues": true, "get_pull_request": true, "unsubscribe": true, "stack_status": true}
 	mirrorGated := map[string]bool{"mirror_messages": true}
-	// Scoped writes whose dispatch lands with their arms; the gate tests cover them then.
-	undispatchedWrites := map[string]bool{"submit_stack": true, "retire_head": true}
 	writes := scopedWriteCalls()
 	fields := (&compassv1internal.ForgeCallRequest{}).ProtoReflect().Descriptor().Oneofs().ByName("call").Fields()
-	if n := len(writes) + len(undispatchedWrites) + len(ungated) + len(mirrorGated); n != fields.Len() {
+	if n := len(writes) + len(ungated) + len(mirrorGated); n != fields.Len() {
 		t.Fatalf("classified arms = %d, descriptor arms = %d", n, fields.Len())
 	}
 	for i := range fields.Len() {
 		name := string(fields.Get(i).Name())
 		call, isWrite := writes[name]
 		classes := 0
-		for _, in := range []bool{isWrite, undispatchedWrites[name], ungated[name], mirrorGated[name]} {
+		for _, in := range []bool{isWrite, ungated[name], mirrorGated[name]} {
 			if in {
 				classes++
 			}
@@ -1349,12 +1349,18 @@ func TestForgeScopeGateAllowsEveryGrantedWrite(t *testing.T) {
 			svc, st := newForgeServiceForTest(t, author, reviewer)
 			svc.enforceScopes = true
 			st.scopes = map[string]bool{fmt.Sprintf("%s|%d|%s|%s", testOwnerID, store.ForgeProviderGitHub, testHost, testRepo): true}
+			// The PR arms act only on the caller's own open PR.
+			seedOwnPR(st, 1, testAgentID)
+			author.FindPRResult, author.FindPRFound = forge.PullRequest{Number: 1, State: "open", HeadRef: "feature", BaseRef: "main"}, true
+			svc.mirror = &fakeMirror{events: &[]string{}}
 
 			res := svc.ExecuteForgeCallAsAccountMust(t, call)
 			if fe := res.GetError(); fe != nil {
 				t.Fatalf("granted write error = %v", fe)
 			}
-			if name != "subscribe" && len(author.Calls())+len(reviewer.Calls()) != 1 {
+			// The stack arms make several reads per write; the gate is what this test pins.
+			multi := name == "subscribe" || name == "submit_stack" || name == "retire_head"
+			if !multi && len(author.Calls())+len(reviewer.Calls()) != 1 {
 				t.Fatalf("provider calls = %d, want 1", len(author.Calls())+len(reviewer.Calls()))
 			}
 		})

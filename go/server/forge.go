@@ -152,6 +152,8 @@ type forgeService struct {
 	scheduleMirrorAfter func(time.Duration, func()) func() bool
 	mirrorPoster        mirror.Poster
 	mirrorRecheckRetry  map[string]int
+	// mirror pushes agent bundles for submit_stack and deletes retired branches; nil means off.
+	mirror forge.Mirror
 }
 
 type mirrorTimer struct {
@@ -212,6 +214,12 @@ func (s *forgeService) ExecuteForgeCallAsAccount(
 		return s.unsubscribeForge(ctx, caller, c.Unsubscribe), nil
 	case *compassv1internal.ForgeCallRequest_MirrorMessages:
 		return s.mirrorMessages(ctx, caller, sessionID, call, c.MirrorMessages), nil
+	case *compassv1internal.ForgeCallRequest_SubmitStack:
+		return s.submitStack(ctx, caller, sessionID, call, c.SubmitStack), nil
+	case *compassv1internal.ForgeCallRequest_StackStatus:
+		return s.stackStatus(ctx, caller, call, c.StackStatus), nil
+	case *compassv1internal.ForgeCallRequest_RetireHead:
+		return s.retireHead(ctx, caller, call, c.RetireHead), nil
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, "forge: call has no operation variant set")
 	}
@@ -771,6 +779,10 @@ func (s *forgeService) transitionPullRequestState(ctx context.Context, caller st
 		return forgeErrorResult(fe)
 	}
 	if fe := transitionStateDomain(req.GetState()); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	// Only the author changes a PR's state; a PR with no row is a human's or another App's.
+	if fe := s.requirePRAuthor(ctx, caller, rf, req.GetRepo(), req.GetPrNumber()); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	pr, err := rf.author.TransitionPullRequestState(ctx, req.GetRepo(), req.GetPrNumber(), forge.TransitionState{State: req.GetState()})

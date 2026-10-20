@@ -107,7 +107,8 @@ func TestForgeTransitionIssueStateDispatchesAndReturnsUpdatedIssue(t *testing.T)
 func TestForgeTransitionPullRequestStateDispatchesAndReturnsUpdatedPR(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
 	reviewer := forge.NewFakeProvider("gh-reviewer")
-	svc, _ := newForgeServiceForTest(t, author, reviewer)
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+	seedOwnPR(st, 9, testAgentID)
 	author.TransitionPRResult = forge.PullRequest{Number: 9, Title: "t", State: "closed"}
 
 	res := svc.ExecuteForgeCallAsAccountMust(t, transitionPRCall("closed"))
@@ -269,7 +270,8 @@ func TestForgeTransitionLinearWorkflowStateReachesProvider(t *testing.T) {
 // forwarding an issue refinement onto the PR path.
 func TestForgeTransitionPRArmCarriesNoRefinements(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
-	svc, _ := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+	seedOwnPR(st, 9, testAgentID)
 	author.TransitionPRResult = forge.PullRequest{Number: 9, State: "open"}
 
 	if fe := svc.ExecuteForgeCallAsAccountMust(t, transitionPRCall("open")).GetError(); fe != nil {
@@ -292,6 +294,7 @@ func TestForgeTransitionUnsupportedIsUnimplemented(t *testing.T) {
 	author := forge.NewFakeProvider("linear")
 	svc, st := newLinearForgeServiceForTest(t, author)
 	author.SetError("TransitionPullRequestState", forge.ErrUnsupported)
+	st.recordArtifact(store.AuthoredArtifact{Provider: store.ForgeProviderLinear, Host: "linear.app", Repo: testRepo, Kind: store.ForgeArtifactKindPullRequest, Number: 9, AgentAccountID: testAgentID, OwnerUserID: testOwnerID})
 
 	fe := svc.ExecuteForgeCallAsAccountMust(t, transitionPRCall("closed")).GetError()
 	if fe == nil || fe.GetCode() != "unimplemented" {
@@ -352,6 +355,7 @@ func TestForgeTransitionPRMemoCarriesPortableStateAndPRKind(t *testing.T) {
 	author := forge.NewFakeProvider("gh-author")
 	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
 	author.TransitionPRResult = forge.PullRequest{Number: 9, State: "merged"}
+	seedOwnPR(st, 9, testAgentID)
 
 	if fe := svc.ExecuteForgeCallAsAccountMust(t, transitionPRCall("closed")).GetError(); fe != nil {
 		t.Fatalf("transition returned an in-band error: %v", fe)
@@ -386,6 +390,7 @@ func TestForgeTransitionProviderFailureLeavesNoMemo(t *testing.T) {
 			author := forge.NewFakeProvider("gh-author")
 			svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
 			author.SetError(arm.method, &forge.StatusError{Status: 422, Message: "cannot reopen a merged pull request"})
+			seedOwnPR(st, 9, testAgentID)
 
 			fe := svc.ExecuteForgeCallAsAccountMust(t, arm.call).GetError()
 			if fe == nil || fe.GetCode() != "invalid_argument" {

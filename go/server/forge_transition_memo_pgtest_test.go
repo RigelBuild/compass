@@ -60,6 +60,13 @@ func TestForgeTransitionMemoResolvesFromWebhookCoordinate(t *testing.T) {
 	githubPR := func(t *testing.T, callerRepo, webhookRepo string, n uint64) (*compassv1internal.ForgeCallRequest, forge.ForgeEvent) {
 		t.Helper()
 		author.TransitionPRResult = forge.PullRequest{Number: n, State: "closed"}
+		// Only the author closes a PR, so the agent must own it.
+		if err := st.RecordAuthoredArtifact(ctx, store.AuthoredArtifact{
+			Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: webhookRepo, Kind: store.ForgeArtifactKindPullRequest,
+			Number: n, AgentAccountID: agent.ID, OwnerUserID: u.ID, SessionID: "sess", CreatedAtUnixMS: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("RecordAuthoredArtifact: %v", err)
+		}
 		call := &compassv1internal.ForgeCallRequest{Call: &compassv1internal.ForgeCallRequest_TransitionPullRequestState{
 			TransitionPullRequestState: &compassv1internal.TransitionPullRequestStateRequest{Repo: callerRepo, PrNumber: n, State: "closed"},
 		}}
