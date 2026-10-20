@@ -70,6 +70,10 @@ a subagent spawn.
 - **`forge_subscribe`, `forge_unsubscribe`** — manage notifications for forge artifacts.
 - **`forge_mirror_messages`** — mirror one visible topic or selected messages to an AUTO-enabled issue or pull request. Choose exactly one source. A topic mirrors its newest 50 messages; selected messages must come from one channel. An optional channel is a visible channel name, and an optional note appears above the messages. The Server checks source visibility, AUTO mode, repository scope, and idempotent delivery before posting.
 
+- **Foreign-base rebases in `forge_submit_stack`** — when the Server moves a
+  sibling agent's bookmark, it stores a notice before posting the owner a DM.
+  The write-intent sweep retries delivery failures and stops after 24 hours.
+
 ## The general flow
 
 1. **Orient** — `compass_roster` to see who is around; read your home channel

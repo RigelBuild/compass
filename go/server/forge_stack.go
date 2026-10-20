@@ -318,7 +318,7 @@ func (r *stackRun) rebaseForeign(ctx context.Context, f *foreignBase, entries []
 		return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: rebase base %s: %v", f.pr.HeadRef, err))
 	}
 	if conflict {
-		r.notify(ctx, f, fmt.Sprintf("Your bookmark %s (PR #%d) conflicts with %s, so I could not rebase my line onto it. Please rebase it onto %s, resolve the conflict, and push. I will submit again after that.", f.pr.HeadRef, f.pr.Number, f.pr.BaseRef, f.pr.BaseRef))
+		r.notify(ctx, f, fmt.Sprintf("Your bookmark %s (PR #%d) conflicts with %s, so I could not rebase my line onto it. Please rebase it onto %s, resolve the conflict, and push. I will submit again after that.", f.pr.HeadRef, f.pr.Number, f.pr.BaseRef, f.pr.BaseRef), oldHead)
 		return forgeErr(connect.CodeFailedPrecondition, fmt.Sprintf("forge: base %s (pull request #%d) conflicts with %s; its agent was asked to resolve it", f.pr.HeadRef, f.pr.Number, f.pr.BaseRef))
 	}
 	if len(heads) == 0 {
@@ -330,19 +330,48 @@ func (r *stackRun) rebaseForeign(ctx context.Context, f *foreignBase, entries []
 	for ref := range heads {
 		r.pushed[strings.TrimPrefix(ref, "refs/heads/")] = true
 	}
-	r.notify(ctx, f, fmt.Sprintf("I rebased your bookmark %s (PR #%d) onto %s so my line could build on it. Old head %s, new head %s. Sync before you push again.", f.pr.HeadRef, f.pr.Number, f.pr.BaseRef, oldHead, heads[foreignRef]))
+	r.notify(ctx, f, fmt.Sprintf("I rebased your bookmark %s (PR #%d) onto %s so my line could build on it. Old head %s, new head %s. Sync before you push again.", f.pr.HeadRef, f.pr.Number, f.pr.BaseRef, oldHead, heads[foreignRef]), heads[foreignRef])
 	return nil
 }
 
-// notify posts a notice from the caller in its DM with the owning agent. The
-// rebase already happened, so a failed notice is logged rather than failing the call.
-func (r *stackRun) notify(ctx context.Context, f *foreignBase, text string) {
-	if r.s.notifier == nil {
-		slog.WarnContext(ctx, "forge: no notifier for a foreign rebase notice", "pr", f.pr.Number)
+// notify records before delivery; failure cannot fail a completed rebase.
+func (r *stackRun) notify(ctx context.Context, f *foreignBase, text, foreignHead string) {
+	// Client request ids are unique per agent, so the sender scopes the tenant-wide notice key.
+	key := string(r.caller) + ":" + r.key + ":notice:" + f.pr.HeadRef + ":" + foreignHead
+	notice, err := r.s.store.RecordNotice(ctx, store.Notice{
+		FromAccountID: r.caller,
+		ToAccountID:   f.agent,
+		RequestKey:    key,
+		Text:          text,
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "forge: record foreign rebase notice failed", "pr", f.pr.Number, "error", err)
 		return
 	}
-	if err := r.s.notifyAgent(ctx, r.caller, f.agent, r.key+":notice:"+f.pr.HeadRef, text); err != nil {
-		slog.WarnContext(ctx, "forge: foreign rebase notice failed", "pr", f.pr.Number, "error", err)
+	if err := r.s.notifyAgent(ctx, r.caller, f.agent, notice.RequestKey, notice.Text); err != nil {
+		slog.WarnContext(
+			ctx,
+			"forge: foreign rebase notice failed",
+			"pr", f.pr.Number,
+			"error", err,
+		)
+		if bumpErr := r.s.store.BumpNoticeAttempt(ctx, notice.ID); bumpErr != nil {
+			slog.WarnContext(
+				ctx,
+				"forge: bump foreign rebase notice attempt failed",
+				"pr", f.pr.Number,
+				"error", bumpErr,
+			)
+		}
+		return
+	}
+	if err := r.s.store.MarkNoticeDelivered(ctx, notice.ID); err != nil {
+		slog.WarnContext(
+			ctx,
+			"forge: mark foreign rebase notice delivered failed",
+			"pr", f.pr.Number,
+			"error", err,
+		)
 	}
 }
 

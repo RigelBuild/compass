@@ -291,8 +291,7 @@ func (s *forgeService) runWriteSweep(ctx context.Context) error {
 	}
 }
 
-// sweepWriteIntents runs each minute: it resolves pending intents (D2) and drops
-// held keys past the idempotency window, as a pending one turns lost there.
+// sweepWriteIntents resolves pending intents, drops expired holds, and retries durable notices.
 func (s *forgeService) sweepWriteIntents(ctx context.Context) error {
 	now := s.now()
 	var errs []error
@@ -301,7 +300,8 @@ func (s *forgeService) sweepWriteIntents(ctx context.Context) error {
 	}
 	pending, err := s.store.PendingWriteIntents(store.WithSystemRole(ctx), now.Add(-writeSweepMinAge), writeSweepLimit)
 	if err != nil {
-		return errors.Join(append(errs, fmt.Errorf("forge: list pending write intents: %w", err))...)
+		errs = append(errs, fmt.Errorf("forge: list pending write intents: %w", err))
+		pending = nil
 	}
 	for _, in := range pending {
 		tctx := store.WithTenant(store.WithoutSystemRole(ctx), in.TenantID)
@@ -323,5 +323,44 @@ func (s *forgeService) sweepWriteIntents(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("forge: mark write intent %s lost: %w", in.ID, err))
 		}
 	}
+	errs = append(errs, s.sweepForgeNotices(ctx, now)...)
 	return errors.Join(errs...)
+}
+
+func (s *forgeService) sweepForgeNotices(ctx context.Context, now time.Time) []error {
+	notices, err := s.store.UndeliveredNotices(store.WithSystemRole(ctx), writeSweepLimit)
+	if err != nil {
+		return []error{fmt.Errorf("forge: list undelivered notices: %w", err)}
+	}
+	errs := make([]error, 0)
+	for _, notice := range notices {
+		tctx := store.WithTenant(store.WithoutSystemRole(ctx), notice.TenantID)
+		if err := s.retryForgeNotice(tctx, now, notice); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
+}
+
+func (s *forgeService) retryForgeNotice(ctx context.Context, now time.Time, notice store.Notice) error {
+	if now.Sub(notice.CreatedAt) >= writeLostAfter {
+		if err := s.store.MarkNoticeDelivered(ctx, notice.ID); err != nil {
+			return fmt.Errorf("forge: stop retrying expired notice %s: %w", notice.ID, err)
+		}
+		slog.WarnContext(ctx, "forge: giving up on expired notice", "notice", notice.ID, "target_agent", notice.ToAccountID)
+		return nil
+	}
+	if err := s.notifyAgent(ctx, notice.FromAccountID, notice.ToAccountID, notice.RequestKey, notice.Text); err != nil {
+		if bumpErr := s.store.BumpNoticeAttempt(ctx, notice.ID); bumpErr != nil {
+			return errors.Join(
+				fmt.Errorf("forge: bump notice %s attempt: %w", notice.ID, bumpErr),
+				fmt.Errorf("forge: deliver notice %s: %w", notice.ID, err),
+			)
+		}
+		return fmt.Errorf("forge: deliver notice %s: %w", notice.ID, err)
+	}
+	if err := s.store.MarkNoticeDelivered(ctx, notice.ID); err != nil {
+		return fmt.Errorf("forge: mark notice %s delivered: %w", notice.ID, err)
+	}
+	return nil
 }

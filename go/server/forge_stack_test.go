@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
@@ -438,9 +439,10 @@ func TestSubmitStackForeignHeadRefuses(t *testing.T) {
 
 // fakeNotifier records notices as the comms seam would post them.
 type fakeNotifier struct {
-	opened []string
-	posts  []string
-	keys   []string
+	opened  []string
+	posts   []string
+	keys    []string
+	postErr error
 }
 
 func (n *fakeNotifier) OpenDMAsAccount(_ context.Context, account store.AccountID, req *compassv1.OpenDMRequest) (*compassv1.OpenDMResponse, error) {
@@ -449,8 +451,13 @@ func (n *fakeNotifier) OpenDMAsAccount(_ context.Context, account store.AccountI
 }
 
 func (n *fakeNotifier) PostAsAccount(_ context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
-	n.posts = append(n.posts, string(account)+"@"+req.GetChannelId()+": "+req.GetBlocks()[0].GetText())
 	n.keys = append(n.keys, req.GetClientRequestId())
+	if n.postErr != nil {
+		err := n.postErr
+		n.postErr = nil
+		return nil, err
+	}
+	n.posts = append(n.posts, string(account)+"@"+req.GetChannelId()+": "+req.GetBlocks()[0].GetText())
 	return &compassv1.PostMessageResponse{}, nil
 }
 
@@ -471,6 +478,93 @@ func foreignLineCall() *compassv1internal.ForgeCallRequest {
 	a := stackEntry("a", "owner/repo#7")
 	a.BaseRef = "base"
 	return stackCall("k", "", []byte("bundle"), a, stackEntry("b", "owner/repo#7"))
+}
+
+func TestSubmitStackRetriesForeignRebaseNoticeInSweep(t *testing.T) {
+	svc, st, p, m := newStackServiceForTest(t)
+	const sibling = store.AccountID("acct-sibling")
+	st.accounts[sibling] = store.Account{ID: sibling, Handle: "sibling", Agent: &store.AgentAccount{OwnerUserID: testOwnerID}}
+	st.recordArtifact(store.AuthoredArtifact{Provider: store.ForgeProviderGitHub, Host: testHost, Repo: testRepo, Kind: store.ForgeArtifactKindPullRequest, Number: 9, AgentAccountID: sibling, OwnerUserID: testOwnerID})
+	p.prs["base"] = &forge.PullRequest{Number: 9, Title: "sibling work", Body: "sibling text", State: "open", HeadRef: "base", BaseRef: "main"}
+	n := &fakeNotifier{postErr: errors.New("temporary notifier failure")}
+	svc.notifier = n
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, foreignLineCall()))
+	if statuses(got)[0] != doneStatus || statuses(got)[1] != doneStatus {
+		t.Fatalf("first submit results = %v, want rebase and submit success", got)
+	}
+	if len(st.notices) != 1 || st.notices[0].DeliveredAt != nil || st.notices[0].Attempts != 1 || len(n.keys) != 1 {
+		t.Fatalf("after failed post: notices=%+v keys=%v, want one pending attempt and one post", st.notices, n.keys)
+	}
+	noticeKey := st.notices[0].RequestKey
+	if err := svc.sweepWriteIntents(t.Context()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(st.notices) != 1 || st.notices[0].DeliveredAt == nil || len(n.keys) != 2 || n.keys[0] != noticeKey || n.keys[1] != noticeKey {
+		t.Fatalf(
+			"after sweep: notices=%+v keys=%v, want one delivered notice with the same ClientRequestId",
+			st.notices,
+			n.keys,
+		)
+	}
+	if len(n.posts) != 1 || len(m.pushes) != 1 {
+		t.Fatalf("posts=%v pushes=%v, want one successful notice post and no repeated rebase", n.posts, m.pushes)
+	}
+}
+
+func TestSweepRetriesNoticeUntilADayThenStops(t *testing.T) {
+	svc, _, _, n := seedForeignBase(t, testOwnerID)
+	st := svc.store.(*fakeForgeStore)
+	created := nowStub()
+	st.notices = []store.Notice{{ID: "notice-1", TenantID: "tenant-test", FromAccountID: testAgentID, ToAccountID: "acct-sibling", RequestKey: "k", Text: "moved", CreatedAt: created}}
+
+	n.postErr = errors.New("temporary notifier failure")
+	svc.now = func() time.Time { return created.Add(writeLostAfter - time.Second) }
+	if err := svc.sweepWriteIntents(t.Context()); err == nil {
+		t.Fatal("sweep before the cutoff: want the post failure reported")
+	}
+	if st.notices[0].DeliveredAt != nil || st.notices[0].Attempts != 1 || len(n.keys) != 1 {
+		t.Fatalf("before cutoff: notice=%+v keys=%v, want one retried, undelivered attempt", st.notices[0], n.keys)
+	}
+
+	svc.now = func() time.Time { return created.Add(writeLostAfter) }
+	if err := svc.sweepWriteIntents(t.Context()); err != nil {
+		t.Fatalf("sweep at cutoff: %v", err)
+	}
+	if st.notices[0].DeliveredAt == nil || len(n.keys) != 1 || len(n.posts) != 0 {
+		t.Fatalf("at cutoff: notice=%+v keys=%v posts=%v, want retries stopped without a post", st.notices[0], n.keys, n.posts)
+	}
+}
+
+func TestNoticeKeyIsScopedBySender(t *testing.T) {
+	svc, _, _, n := seedForeignBase(t, testOwnerID)
+	st := svc.store.(*fakeForgeStore)
+	f := &foreignBase{pr: forge.PullRequest{Number: 9, HeadRef: "base"}, agent: "acct-sibling"}
+	for _, caller := range []store.AccountID{testAgentID, "acct-other"} {
+		r := &stackRun{s: svc, caller: caller, key: "shared-request"}
+		r.notify(t.Context(), f, "moved", "base-new")
+	}
+	if len(st.notices) != 2 || st.notices[0].RequestKey == st.notices[1].RequestKey {
+		t.Fatalf("notices = %+v, want one per sender for the same request id and head", st.notices)
+	}
+	if len(n.keys) != 2 {
+		t.Fatalf("posted keys = %v, want one post per sender", n.keys)
+	}
+}
+
+func TestSubmitStackNoticePersistenceFailureDoesNotFailRebase(t *testing.T) {
+	svc, _, m, n := seedForeignBase(t, testOwnerID)
+	st := svc.store.(*fakeForgeStore)
+	st.noticeErr = errors.New("notice store unavailable")
+	got := stackEntries(t, svc.ExecuteForgeCallAsAccountMust(t, foreignLineCall()))
+	if statuses(got)[0] != doneStatus || statuses(got)[1] != doneStatus {
+		t.Fatalf("submit results = %v, want rebase and submit success", got)
+	}
+	if len(st.notices) != 0 || len(n.posts) != 0 {
+		t.Fatalf("notices = %+v, posts = %v; want no recorded or posted notice", st.notices, n.posts)
+	}
+	if len(m.pushes) != 1 {
+		t.Fatalf("pushes = %v, want completed rebase push", m.pushes)
+	}
 }
 
 func TestSubmitStackSameOwnerForeignBaseIsRebasedPushedAndRestamped(t *testing.T) {

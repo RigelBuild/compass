@@ -34,9 +34,10 @@ const ownerHeaderSentinel = "<!-- compass:owner "
 
 // Models caller resolution, write intents (one non-failed attempt per agent and key), and ownership rows.
 type fakeForgeStore struct {
-	accounts map[store.AccountID]store.Account
-	intents  []store.WriteIntent
-	recorded []store.AuthoredArtifact
+	accounts  map[store.AccountID]store.Account
+	intents   []store.WriteIntent
+	notices   []store.Notice
+	noticeErr error
 	// beforeHold runs inside HoldWriteIntent before the key is read, to interleave another call.
 	beforeHold func()
 	getErr     error // if set, GetAccount returns it verbatim
@@ -45,6 +46,7 @@ type fakeForgeStore struct {
 	clock func() time.Time
 
 	prCreates []prCreate
+	recorded  []store.AuthoredArtifact
 
 	// Records transition order and can force a memo-write fault.
 	transitions []recordedTransition
@@ -285,6 +287,55 @@ func (f *fakeForgeStore) DeleteExpiredHeldWriteIntents(_ context.Context, olderT
 	}
 	f.intents = kept
 	return n, nil
+}
+
+func (f *fakeForgeStore) RecordNotice(_ context.Context, notice store.Notice) (store.Notice, error) {
+	if f.noticeErr != nil {
+		return store.Notice{}, f.noticeErr
+	}
+	for _, existing := range f.notices {
+		if existing.RequestKey == notice.RequestKey {
+			return existing, nil
+		}
+	}
+	notice.ID = fmt.Sprintf("notice-%d", len(f.notices)+1)
+	notice.TenantID = "tenant-test"
+	notice.CreatedAt = f.clock()
+	f.notices = append(f.notices, notice)
+	return notice, nil
+}
+
+func (f *fakeForgeStore) MarkNoticeDelivered(_ context.Context, id string) error {
+	for i := range f.notices {
+		if f.notices[i].ID == id {
+			if f.notices[i].DeliveredAt == nil {
+				deliveredAt := f.clock()
+				f.notices[i].DeliveredAt = &deliveredAt
+			}
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
+func (f *fakeForgeStore) UndeliveredNotices(_ context.Context, limit int) ([]store.Notice, error) {
+	out := make([]store.Notice, 0, len(f.notices))
+	for _, notice := range f.notices {
+		if notice.DeliveredAt == nil && len(out) < limit {
+			out = append(out, notice)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeForgeStore) BumpNoticeAttempt(_ context.Context, id string) error {
+	for i := range f.notices {
+		if f.notices[i].ID == id && f.notices[i].DeliveredAt == nil {
+			f.notices[i].Attempts++
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }
 
 func (f *fakeForgeStore) AuthoredArtifactByCoordinateFold(_ context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64) (store.AuthoredArtifact, error) {
