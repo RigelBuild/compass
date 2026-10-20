@@ -72,6 +72,7 @@ type WriteIntent struct {
 	HeadRef        string
 	BaseRef        string
 	BaseIsDefault  bool
+	HeadPushed     bool
 	IssueLink      *ForgeCoord
 	AgentAccountID AccountID
 	OwnerUserID    AccountID
@@ -123,7 +124,7 @@ func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteInt
 	return writeIntentFromRow(db.ForgeWriteIntent{
 		ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
 		Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
-		BaseIsDefault:  row.BaseIsDefault,
+		BaseIsDefault: row.BaseIsDefault, HeadPushed: row.HeadPushed,
 		AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
 		ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
 		IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
@@ -154,7 +155,7 @@ func (s *Store) HoldWriteIntent(ctx context.Context, in WriteIntent) (WriteInten
 	return writeIntentFromRow(db.ForgeWriteIntent{
 		ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
 		Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
-		BaseIsDefault:  row.BaseIsDefault,
+		BaseIsDefault: row.BaseIsDefault, HeadPushed: row.HeadPushed,
 		AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
 		ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
 		IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
@@ -276,12 +277,49 @@ func (s *Store) PRIntentForHead(ctx context.Context, provider ForgeProvider, hos
 	return writeIntentFromRow(db.ForgeWriteIntent{
 		ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
 		Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
-		BaseIsDefault:  row.BaseIsDefault,
+		BaseIsDefault: row.BaseIsDefault, HeadPushed: row.HeadPushed,
 		AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
 		ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
 		IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
 		ForgeKey: row.ForgeKey, ForgeUrl: row.ForgeUrl, State: row.State, CreatedAt: row.CreatedAt, TenantID: row.TenantID,
 	}), nil
+}
+
+// HasPushedPRHead reports whether this agent previously pushed the PR head.
+func (s *Store) HasPushedPRHead(ctx context.Context, provider ForgeProvider, host, repo, headRef string, agent AccountID) (bool, error) {
+	if err := validCoordinate(provider, host, repo); err != nil {
+		return false, err
+	}
+	if headRef == "" || agent == "" {
+		return false, fmt.Errorf("%w: pull request head ref and agent are required", ErrInvalidArgument)
+	}
+	repo = (ForgeCoord{Provider: provider, Repo: repo}).Normalized().Repo
+	hasPushed, err := s.q.HasPushedPRHead(ctx, db.HasPushedPRHeadParams{
+		ForgeProvider:  int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum.
+		ForgeHost:      host,
+		Repo:           repo,
+		HeadRef:        headRef,
+		AgentAccountID: string(agent),
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: check pushed PR head: %w", err)
+	}
+	return hasPushed, nil
+}
+
+// MarkWriteIntentHeadPushed records that an intent's stack bundle reached the forge.
+func (s *Store) MarkWriteIntentHeadPushed(ctx context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: write intent id is required", ErrInvalidArgument)
+	}
+	affected, err := s.q.MarkWriteIntentHeadPushed(ctx, id)
+	if err != nil {
+		return fmt.Errorf("store: mark write intent head pushed: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("%w: write intent %q", ErrNotFound, id)
+	}
+	return nil
 }
 
 // CompleteWriteIntent records artifact ownership or a comment/review forge key
@@ -500,7 +538,7 @@ func (s *Store) PendingWriteIntents(ctx context.Context, olderThan time.Time, li
 		intents = append(intents, writeIntentFromRow(db.ForgeWriteIntent{
 			ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
 			Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
-			BaseIsDefault:  row.BaseIsDefault,
+			BaseIsDefault: row.BaseIsDefault, HeadPushed: row.HeadPushed,
 			AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
 			ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
 			IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
@@ -562,7 +600,7 @@ func writeIntentFromRow(row db.ForgeWriteIntent) WriteIntent {
 		AgentAccountID: AccountID(row.AgentAccountID), OwnerUserID: AccountID(row.OwnerUserID),
 		SessionID: row.SessionID, RequestKey: row.ClientRequestID,
 		State: WriteState(row.State), ForgeKey: row.ForgeKey, ForgeURL: row.ForgeUrl,
-		CreatedAt: row.CreatedAt.Time, TenantID: TenantID(row.TenantID),
+		CreatedAt: row.CreatedAt.Time, TenantID: TenantID(row.TenantID), HeadPushed: row.HeadPushed,
 	}
 }
 

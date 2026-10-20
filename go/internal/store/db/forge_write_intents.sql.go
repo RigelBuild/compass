@@ -218,6 +218,41 @@ func (q *Queries) EndForgeWriteIntent(ctx context.Context, arg EndForgeWriteInte
 	return result.RowsAffected(), nil
 }
 
+const hasPushedPRHead = `-- name: HasPushedPRHead :one
+SELECT EXISTS (
+    SELECT 1
+    FROM forge_write_intents
+    WHERE forge_provider = $1
+      AND forge_host = $2
+      AND repo = $3
+      AND head_ref = $4
+      AND kind = 2
+      AND agent_account_id = $5
+      AND head_pushed
+)
+`
+
+type HasPushedPRHeadParams struct {
+	ForgeProvider  int16
+	ForgeHost      string
+	Repo           string
+	HeadRef        string
+	AgentAccountID string
+}
+
+func (q *Queries) HasPushedPRHead(ctx context.Context, arg HasPushedPRHeadParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasPushedPRHead,
+		arg.ForgeProvider,
+		arg.ForgeHost,
+		arg.Repo,
+		arg.HeadRef,
+		arg.AgentAccountID,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const holdForgeWriteIntent = `-- name: HoldForgeWriteIntent :one
 INSERT INTO forge_write_intents (
     id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
@@ -235,7 +270,7 @@ DO UPDATE SET id = forge_write_intents.id
 RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
           agent_account_id, owner_user_id, session_id, client_request_id,
           issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-          forge_key, forge_url, state, created_at, tenant_id
+          forge_key, forge_url, state, created_at, tenant_id, head_pushed
 `
 
 type HoldForgeWriteIntentParams struct {
@@ -277,6 +312,7 @@ type HoldForgeWriteIntentRow struct {
 	State                  string
 	CreatedAt              pgtype.Timestamptz
 	TenantID               string
+	HeadPushed             bool
 }
 
 func (q *Queries) HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIntentParams) (HoldForgeWriteIntentRow, error) {
@@ -319,6 +355,7 @@ func (q *Queries) HoldForgeWriteIntent(ctx context.Context, arg HoldForgeWriteIn
 		&i.State,
 		&i.CreatedAt,
 		&i.TenantID,
+		&i.HeadPushed,
 	)
 	return i, err
 }
@@ -327,7 +364,7 @@ const lockWriteIntent = `-- name: LockWriteIntent :one
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-       forge_key, forge_url, state, created_at, tenant_id
+       forge_key, forge_url, state, created_at, tenant_id, head_pushed
 FROM forge_write_intents
 WHERE id = $1
 FOR UPDATE
@@ -356,6 +393,7 @@ type LockWriteIntentRow struct {
 	State                  string
 	CreatedAt              pgtype.Timestamptz
 	TenantID               string
+	HeadPushed             bool
 }
 
 func (q *Queries) LockWriteIntent(ctx context.Context, id string) (LockWriteIntentRow, error) {
@@ -384,15 +422,30 @@ func (q *Queries) LockWriteIntent(ctx context.Context, id string) (LockWriteInte
 		&i.State,
 		&i.CreatedAt,
 		&i.TenantID,
+		&i.HeadPushed,
 	)
 	return i, err
+}
+
+const markWriteIntentHeadPushed = `-- name: MarkWriteIntentHeadPushed :execrows
+UPDATE forge_write_intents
+SET head_pushed = true
+WHERE id = $1
+`
+
+func (q *Queries) MarkWriteIntentHeadPushed(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, markWriteIntentHeadPushed, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const pRWriteIntentByHead = `-- name: PRWriteIntentByHead :one
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-       forge_key, forge_url, state, created_at, tenant_id
+       forge_key, forge_url, state, created_at, tenant_id, head_pushed
 FROM forge_write_intents
 WHERE forge_provider = $1
   AND forge_host = $2
@@ -433,6 +486,7 @@ type PRWriteIntentByHeadRow struct {
 	State                  string
 	CreatedAt              pgtype.Timestamptz
 	TenantID               string
+	HeadPushed             bool
 }
 
 func (q *Queries) PRWriteIntentByHead(ctx context.Context, arg PRWriteIntentByHeadParams) (PRWriteIntentByHeadRow, error) {
@@ -466,6 +520,7 @@ func (q *Queries) PRWriteIntentByHead(ctx context.Context, arg PRWriteIntentByHe
 		&i.State,
 		&i.CreatedAt,
 		&i.TenantID,
+		&i.HeadPushed,
 	)
 	return i, err
 }
@@ -474,7 +529,7 @@ const pendingForgeWriteIntents = `-- name: PendingForgeWriteIntents :many
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-       forge_key, forge_url, state, created_at, tenant_id
+       forge_key, forge_url, state, created_at, tenant_id, head_pushed
 FROM forge_write_intents
 WHERE state = 'pending' AND created_at < $1::timestamptz
 ORDER BY created_at ASC, id ASC
@@ -509,6 +564,7 @@ type PendingForgeWriteIntentsRow struct {
 	State                  string
 	CreatedAt              pgtype.Timestamptz
 	TenantID               string
+	HeadPushed             bool
 }
 
 func (q *Queries) PendingForgeWriteIntents(ctx context.Context, arg PendingForgeWriteIntentsParams) ([]PendingForgeWriteIntentsRow, error) {
@@ -543,6 +599,7 @@ func (q *Queries) PendingForgeWriteIntents(ctx context.Context, arg PendingForge
 			&i.State,
 			&i.CreatedAt,
 			&i.TenantID,
+			&i.HeadPushed,
 		); err != nil {
 			return nil, err
 		}
@@ -613,7 +670,7 @@ DO UPDATE SET id = forge_write_intents.id
 RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
           agent_account_id, owner_user_id, session_id, client_request_id,
           issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-          forge_key, forge_url, state, created_at, tenant_id
+          forge_key, forge_url, state, created_at, tenant_id, head_pushed
 `
 
 type RecordForgeWriteIntentParams struct {
@@ -659,6 +716,7 @@ type RecordForgeWriteIntentRow struct {
 	State                  string
 	CreatedAt              pgtype.Timestamptz
 	TenantID               string
+	HeadPushed             bool
 }
 
 // Durable create attempts. Failed attempts may reuse a request key; pending,
@@ -707,6 +765,7 @@ func (q *Queries) RecordForgeWriteIntent(ctx context.Context, arg RecordForgeWri
 		&i.State,
 		&i.CreatedAt,
 		&i.TenantID,
+		&i.HeadPushed,
 	)
 	return i, err
 }
@@ -715,7 +774,7 @@ const writeIntentByID = `-- name: WriteIntentByID :one
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-       forge_key, forge_url, state, created_at, tenant_id
+       forge_key, forge_url, state, created_at, tenant_id, head_pushed
 FROM forge_write_intents
 WHERE id = $1
 `
@@ -743,6 +802,7 @@ type WriteIntentByIDRow struct {
 	State                  string
 	CreatedAt              pgtype.Timestamptz
 	TenantID               string
+	HeadPushed             bool
 }
 
 func (q *Queries) WriteIntentByID(ctx context.Context, id string) (WriteIntentByIDRow, error) {
@@ -771,6 +831,7 @@ func (q *Queries) WriteIntentByID(ctx context.Context, id string) (WriteIntentBy
 		&i.State,
 		&i.CreatedAt,
 		&i.TenantID,
+		&i.HeadPushed,
 	)
 	return i, err
 }

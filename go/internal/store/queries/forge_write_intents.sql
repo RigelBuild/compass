@@ -21,13 +21,13 @@ DO UPDATE SET id = forge_write_intents.id
 RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
           agent_account_id, owner_user_id, session_id, client_request_id,
           issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-          forge_key, forge_url, state, created_at, tenant_id;
+          forge_key, forge_url, state, created_at, tenant_id, head_pushed;
 
 -- name: PRWriteIntentByHead :one
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-       forge_key, forge_url, state, created_at, tenant_id
+       forge_key, forge_url, state, created_at, tenant_id, head_pushed
 FROM forge_write_intents
 WHERE forge_provider = sqlc.arg(forge_provider)
   AND forge_host = sqlc.arg(forge_host)
@@ -36,6 +36,24 @@ WHERE forge_provider = sqlc.arg(forge_provider)
   AND kind = 2 AND state IN ('pending', 'done')
 ORDER BY created_at ASC, id ASC
 LIMIT 1;
+
+-- name: HasPushedPRHead :one
+SELECT EXISTS (
+    SELECT 1
+    FROM forge_write_intents
+    WHERE forge_provider = sqlc.arg(forge_provider)
+      AND forge_host = sqlc.arg(forge_host)
+      AND repo = sqlc.arg(repo)
+      AND head_ref = sqlc.arg(head_ref)
+      AND kind = 2
+      AND agent_account_id = sqlc.arg(agent_account_id)
+      AND head_pushed
+);
+
+-- name: MarkWriteIntentHeadPushed :execrows
+UPDATE forge_write_intents
+SET head_pushed = true
+WHERE id = sqlc.arg(id);
 
 -- name: EndForgeWriteIntent :execrows
 UPDATE forge_write_intents
@@ -46,7 +64,7 @@ WHERE id = sqlc.arg(id) AND state = 'pending';
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-       forge_key, forge_url, state, created_at, tenant_id
+       forge_key, forge_url, state, created_at, tenant_id, head_pushed
 FROM forge_write_intents
 WHERE id = sqlc.arg(id);
 
@@ -67,7 +85,7 @@ DO UPDATE SET id = forge_write_intents.id
 RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
           agent_account_id, owner_user_id, session_id, client_request_id,
           issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-          forge_key, forge_url, state, created_at, tenant_id;
+          forge_key, forge_url, state, created_at, tenant_id, head_pushed;
 
 -- name: PromoteForgeWriteIntent :execrows
 UPDATE forge_write_intents
@@ -84,7 +102,7 @@ WHERE id = sqlc.arg(id) AND state = 'held';
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-       forge_key, forge_url, state, created_at, tenant_id
+       forge_key, forge_url, state, created_at, tenant_id, head_pushed
 FROM forge_write_intents
 WHERE id = sqlc.arg(id)
 FOR UPDATE;
@@ -159,7 +177,7 @@ WHERE forge_write_intents.id = sqlc.arg(id) AND forge_write_intents.state = 'pen
 SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
-       forge_key, forge_url, state, created_at, tenant_id
+       forge_key, forge_url, state, created_at, tenant_id, head_pushed
 FROM forge_write_intents
 WHERE state = 'pending' AND created_at < sqlc.arg(older_than)::timestamptz
 ORDER BY created_at ASC, id ASC
