@@ -99,35 +99,93 @@ function pair(registry: Registry, commits: Commit[], head: string) {
 	});
 }
 
-/** Head index → commits whose queued publish lands at that point. */
-type Landings = Record<number, string[]>;
+type Step = { kind: "gate" | "land" | "tag"; head: number };
 
-/**
- * One release run per head: its gate, then (if it publishes) its own index,
- * then tag-main. `landBefore[i]` lists heads whose queued publish lands just
- * before head i's gate; `landBetween[i]` lands between its gate and tag-main.
- * Returns each head's resolved server commit, or the exit code it failed with.
- */
-async function runBurst(
+/** One point in a burst: published tags, gate decisions, tag-main results. */
+type BurstState = {
+	tags: Set<string>;
+	order: Step[];
+	publishes: Map<number, boolean>;
+	tagged: Map<number, string | number>;
+};
+
+/** The steps that may run next. Gates start in push order; a publishing
+ * head's index lands before its own tag-main; a skipping head's tag-main runs
+ * any time after its gate, even while an earlier publish is still queued. */
+function nextSteps(state: BurstState, heads: string[]): Step[] {
+	return [...heads.keys()].flatMap((head) => stepsFor(state, heads, head));
+}
+
+function stepsFor(state: BurstState, heads: string[], head: number): Step[] {
+	const publishes = state.publishes.get(head);
+	if (publishes === undefined) {
+		const gateOpen = head === 0 || state.publishes.has(head - 1);
+		return gateOpen ? [{ kind: "gate", head }] : [];
+	}
+	const landed = state.tags.has(short(heads[head] as string));
+	const steps: Step[] = [];
+	if (publishes && !landed) steps.push({ kind: "land", head });
+	if (!state.tagged.has(head) && (!publishes || landed)) {
+		steps.push({ kind: "tag", head });
+	}
+	return steps;
+}
+
+async function apply(
+	state: BurstState,
+	step: Step,
 	commits: Commit[],
 	heads: string[],
-	registry: Registry,
-	landBefore: Landings = {},
-	landBetween: Landings = {},
-): Promise<(string | number)[]> {
-	const out: (string | number)[] = [];
-	for (const [i, head] of heads.entries()) {
-		for (const c of landBefore[i] ?? []) registry.tags.add(short(c));
-		const decision = await gate(registry, commits, head);
-		for (const c of landBetween[i] ?? []) registry.tags.add(short(c));
-		if (decision.shouldPublish) registry.tags.add(short(head));
-		try {
-			out.push((await pair(registry, commits, head)).server.commit);
-		} catch (err) {
-			out.push((err as RetagError).code);
+): Promise<BurstState> {
+	const head = heads[step.head] as string;
+	const registry = new Registry();
+	for (const t of state.tags) registry.tags.add(t);
+	const next = { ...state, order: [...state.order, step] };
+	switch (step.kind) {
+		case "gate": {
+			const { shouldPublish } = await gate(registry, commits, head);
+			return {
+				...next,
+				publishes: new Map(state.publishes).set(step.head, shouldPublish),
+			};
+		}
+		case "land":
+			return { ...next, tags: new Set(state.tags).add(short(head)) };
+		case "tag": {
+			const result = await pair(registry, commits, head).then(
+				(p) => p.server.commit,
+				(err: RetagError) => err.code,
+			);
+			return { ...next, tagged: new Map(state.tagged).set(step.head, result) };
 		}
 	}
-	return out;
+}
+
+/** Every order a burst's release runs can take, with each head's tag-main
+ * result: the resolved server commit, or the exit code it failed with. */
+async function* everyInterleaving(
+	commits: Commit[],
+	heads: string[],
+	published: string[],
+	state: BurstState = {
+		tags: new Set(published.map(short)),
+		order: [],
+		publishes: new Map(),
+		tagged: new Map(),
+	},
+): AsyncGenerator<{ order: Step[]; tagged: (string | number)[] }> {
+	const steps = nextSteps(state, heads);
+	if (steps.length === 0) {
+		yield {
+			order: state.order,
+			tagged: heads.map((_, i) => state.tagged.get(i) ?? -1),
+		};
+		return;
+	}
+	for (const step of steps) {
+		const next = await apply(state, step, commits, heads);
+		yield* everyInterleaving(commits, heads, published, next);
+	}
 }
 
 describe("decidePublish under back-to-back main merges", () => {
@@ -147,48 +205,42 @@ describe("decidePublish under back-to-back main merges", () => {
 	});
 
 	test("the docs merge publishes while the closure merge's publish is queued", async () => {
-		expect(await runBurst(commits, [sha(3)], new Registry(sha(1)))).toEqual([
-			sha(3),
-		]);
+		expect(
+			(await gate(new Registry(sha(1)), commits, sha(3))).shouldPublish,
+		).toBe(true);
 	});
 
 	test("a docs merge after the closure image landed skips and tags that image", async () => {
-		const registry = new Registry(sha(1));
-		expect(await runBurst(commits, [sha(2), sha(3)], registry)).toEqual([
-			sha(2),
-			sha(2),
-		]);
-		expect(registry.tags.has(short(sha(3)))).toBe(false);
+		const registry = new Registry(sha(1), sha(2));
+		expect((await gate(registry, commits, sha(3))).shouldPublish).toBe(false);
+		expect((await pair(registry, commits, sha(3))).server.commit).toBe(sha(2));
 	});
 
-	test("a burst of 3 tags a closure-matching image per head under every landing order", async () => {
+	test("every interleaving of a 3-head burst tags a closure-matching image per head", async () => {
 		const burst: Commit[] = [
 			...commits,
 			{ sha: sha(4), set: { "server-image/Dockerfile": "1" } },
 		];
 		const heads = [sha(2), sha(3), sha(4)];
-		// Each head's own publish lands in its run; the earlier heads' queued
-		// publishes land before or between the later gates.
-		const orders: [Landings, Landings][] = [
-			[{}, {}],
-			[{ 2: [sha(2)] }, {}],
-			[{}, { 1: [sha(2)] }],
-			[{}, { 2: [sha(2), sha(3)] }],
-		];
-		for (const [before, between] of orders) {
-			const registry = new Registry(sha(1));
-			const resolved = await runBurst(burst, heads, registry, before, between);
+		let orders = 0;
+		for await (const { order, tagged } of everyInterleaving(burst, heads, [
+			sha(1),
+		])) {
+			orders++;
 			for (const [i, head] of heads.entries()) {
-				expect(typeof resolved[i]).toBe("string");
+				const resolved = tagged[i];
+				if (typeof resolved !== "string") {
+					throw new Error(
+						`head ${i} failed with exit ${resolved} in ${JSON.stringify(order)}`,
+					);
+				}
 				const { changedSince } = history(burst, head);
-				const lacks = closureChanges(
-					CLOSURE,
-					await changedSince(resolved[i] as string),
-					"server",
-				);
-				expect(lacks).toEqual([]);
+				expect(
+					closureChanges(CLOSURE, await changedSince(resolved), "server"),
+				).toEqual([]);
 			}
 		}
+		expect(orders).toBeGreaterThan(10);
 	});
 
 	test("a head that reverts a queued closure change publishes, so a late landing cannot red it", async () => {
@@ -199,18 +251,13 @@ describe("decidePublish under back-to-back main merges", () => {
 		];
 		const decision = await gate(new Registry(sha(1)), revert, sha(3));
 		expect(decision.shouldPublish).toBe(true);
-		// sha(2)'s publish lands between sha(3)'s gate and its tag-main.
-		expect(
-			await runBurst(
-				revert,
-				[sha(3)],
-				new Registry(sha(1)),
-				{},
-				{
-					0: [sha(2)],
-				},
-			),
-		).toEqual([sha(3)]);
+		for await (const { order, tagged } of everyInterleaving(
+			revert,
+			[sha(2), sha(3)],
+			[sha(1)],
+		)) {
+			expect({ order, tagged }).toEqual({ order, tagged: [sha(2), sha(3)] });
+		}
 	});
 
 	test("an already published head skips", async () => {
