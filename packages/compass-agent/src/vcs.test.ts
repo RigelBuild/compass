@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import {
+	create,
+	type ForgeCallRequest,
+	type ForgeCallResult,
+	ForgeCallResultSchema,
+	PullRequestSchema,
+	StackEntryResultSchema,
+	StackResultSchema,
+} from "./compassv1";
 import { ForgeBroker } from "./forge";
 import {
 	createVcsTools,
@@ -38,6 +47,11 @@ const forge = new ForgeBroker({
 		throw new Error("unexpected forge call");
 	},
 });
+const unusedGit = {
+	async run(): Promise<never> {
+		throw new Error("unexpected git call");
+	},
+};
 const flags = ["--no-pager", "--color=never"] as const;
 const cwd = "/repo";
 const workspaceRoot = `${cwd}/workspaces/agent`;
@@ -141,6 +155,7 @@ const deps = (
 	} = {},
 ) => ({
 	jj,
+	git: unusedGit,
 	cwd: options.root ?? cwd,
 	forge,
 	readFile:
@@ -190,6 +205,17 @@ const rebaseArgs = (base: string): string[] => [
 	"-o",
 	base,
 	"--skip-emptied",
+];
+const untrackedArgs = (tip: string): string[] => [
+	...flags,
+	"bookmark",
+	"list",
+	"--remote",
+	"exact:origin",
+	"-r",
+	`::${tip} ~ ::trunk()`,
+	"-T",
+	'if(remote && !tracked, name ++ "\\n")',
 ];
 
 const conflictRows =
@@ -455,11 +481,12 @@ describe("local VCS tools", () => {
 			trunk: false,
 			remoteBookmarks: ["other@origin"],
 		});
-		const jj = new FakeJj(ok(), ok(stack), ok(), ok(stack));
+		const jj = new FakeJj(ok(), ok(), ok(stack), ok(), ok(stack));
 		const sync = tool(createVcsTools(deps(jj)), "vcs_sync");
 		await exec(sync, { bookmark: "topic" });
 		expect(jj.calls).toEqual([
 			call([...flags, "git", "fetch", "--remote", "origin"]),
+			call(untrackedArgs('"topic"')),
 			call(logArgs(ownRevset)),
 			call(rebaseArgs("other@origin")),
 			call(logArgs(ownRevset)),
@@ -478,12 +505,20 @@ describe("local VCS tools", () => {
 			trunk: true,
 			remoteBookmarks: ["main@origin"],
 		});
-		const jj = new FakeJj(ok(), ok(tipRows()), ok(stack), ok(), ok(stack));
+		const jj = new FakeJj(
+			ok(),
+			ok(tipRows()),
+			ok(),
+			ok(stack),
+			ok(),
+			ok(stack),
+		);
 		const sync = tool(createVcsTools(deps(jj)), "vcs_sync");
 		await exec(sync, {});
 		expect(jj.calls).toEqual([
 			call([...flags, "git", "fetch", "--remote", "origin"]),
 			call(logArgs("@ | @-")),
+			call(untrackedArgs('"topic"')),
 			call(logArgs(ownRevset)),
 			call(rebaseArgs("trunk()")),
 			call(logArgs(ownRevset)),
@@ -495,13 +530,14 @@ describe("local VCS tools", () => {
 			trunk: true,
 			remoteBookmarks: ["main@origin"],
 		});
-		const jj = new FakeJj(ok(), ok(stack), ok(), ok(conflictRows));
+		const jj = new FakeJj(ok(), ok(), ok(stack), ok(), ok(conflictRows));
 		const sync = tool(createVcsTools(deps(jj)), "vcs_sync");
 		await expect(exec(sync, { bookmark: "topic" })).rejects.toThrow(
 			/vcs_sync: rebase conflicts: own-2, own-1/i,
 		);
 		expect(jj.calls).toEqual([
 			call([...flags, "git", "fetch", "--remote", "origin"]),
+			call(untrackedArgs('"topic"')),
 			call(logArgs(ownRevset)),
 			call(rebaseArgs("trunk()")),
 			call(logArgs(ownRevset)),
@@ -510,13 +546,14 @@ describe("local VCS tools", () => {
 
 	test("sync keeps reporting nonzero rebase exits", async () => {
 		const stack = ownStackRows({ trunk: true, remoteBookmarks: [] });
-		const jj = new FakeJj(ok(), ok(stack), failed("rebase failed", 1));
+		const jj = new FakeJj(ok(), ok(), ok(stack), failed("rebase failed", 1));
 		const sync = tool(createVcsTools(deps(jj)), "vcs_sync");
 		await expect(exec(sync, { bookmark: "topic" })).rejects.toThrow(
 			"vcs_sync: rebase failed",
 		);
 		expect(jj.calls).toEqual([
 			call([...flags, "git", "fetch", "--remote", "origin"]),
+			call(untrackedArgs('"topic"')),
 			call(logArgs(ownRevset)),
 			call(rebaseArgs("trunk()")),
 		]);
@@ -526,6 +563,7 @@ describe("local VCS tools", () => {
 		const stack = ownStackRows({ trunk: true, remoteBookmarks: [] });
 		const jj = new FakeJj(
 			ok(),
+			ok(),
 			ok(stack),
 			failed("Error: cannot rebase: conflict marker limit exceeded", 1),
 			ok(stack),
@@ -534,6 +572,78 @@ describe("local VCS tools", () => {
 		await expect(exec(sync, { bookmark: "topic" })).rejects.toThrow(
 			"vcs_sync: Error: cannot rebase",
 		);
+	});
+
+	test("sync tracks an untracked remote bookmark only when the caller authored its PR", async () => {
+		const stack = ownStackRows({ trunk: true, remoteBookmarks: [] });
+		// fetch, untracked list, divergence check (empty), track, rows, rebase, rows.
+		const jj = new FakeJj(
+			ok(),
+			ok("topic\nother\n"),
+			ok(),
+			ok(),
+			ok(stack),
+			ok(),
+			ok(stack),
+		);
+		const transport = {
+			requests: [] as ForgeCallRequest[],
+			async forge(req: ForgeCallRequest): Promise<ForgeCallResult> {
+				this.requests.push(req);
+				return create(ForgeCallResultSchema, {
+					result: {
+						case: "stack",
+						value: create(StackResultSchema, {
+							entries: [
+								create(StackEntryResultSchema, {
+									headRef: "topic",
+									authored: true,
+									pullRequest: create(PullRequestSchema, { number: 7 }),
+								}),
+								create(StackEntryResultSchema, {
+									headRef: "other",
+									authored: false,
+									pullRequest: create(PullRequestSchema, { number: 8 }),
+								}),
+							],
+						}),
+					},
+				});
+			},
+		};
+		const git = {
+			async run() {
+				return {
+					stdout: "git@github.com:octo/repo.git\n",
+					stderr: "",
+					code: 0,
+				};
+			},
+		};
+		const sync = tool(
+			createVcsTools({ ...deps(jj), git, forge: new ForgeBroker(transport) }),
+			"vcs_sync",
+		);
+		await exec(sync, { bookmark: "topic" });
+		const req = transport.requests[0];
+		if (req?.call.case !== "stackStatus") throw new Error("arm");
+		expect(req.call.value.repo).toBe("octo/repo");
+		expect(req.call.value.headRefs).toEqual(["topic", "other"]);
+		const remote = 'remote_bookmarks(exact:"topic", remote=exact:"origin")';
+		expect(jj.calls.slice(0, 4)).toEqual([
+			call([...flags, "git", "fetch", "--remote", "origin"]),
+			call(untrackedArgs('"topic"')),
+			call(logArgs(`bookmarks(exact:"topic") ~ ::${remote} ~ ${remote}::`)),
+			call([
+				...flags,
+				"bookmark",
+				"track",
+				"exact:topic",
+				"--remote",
+				"exact:origin",
+			]),
+		]);
+		expect(jj.calls[4]).toEqual(call(logArgs(ownRevset)));
 	});
 
 	test("update-stale lists workspaces without snapshotting a stale caller", async () => {

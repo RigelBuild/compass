@@ -64,13 +64,18 @@ a subagent spawn.
 
 - **`forge_get_issue`, `forge_get_pull_request`, `forge_list_issues`** — read forge state.
 - **`forge_comment_on_issue`, `forge_comment_on_pull_request`, `forge_submit_review`** — write comments and reviews under server-stamped agent attribution.
-- **`forge_create_issue`, `forge_create_pull_request`** — create forge artifacts with idempotent retries.
+- **`forge_create_issue`** — create an issue with idempotent retries.
 - **`forge_transition_issue_state`, `forge_transition_pull_request_state`** — change artifact state.
 - **`forge_edit_issue`** — edit an issue's title, body, or both under server-stamped caller attribution.
 - **`forge_subscribe`, `forge_unsubscribe`** — manage notifications for forge artifacts.
 - **`forge_mirror_messages`** — mirror one visible topic or selected messages to an AUTO-enabled issue or pull request. Choose exactly one source. A topic mirrors its newest 50 messages; selected messages must come from one channel. An optional channel is a visible channel name, and an optional note appears above the messages. The Server checks source visibility, AUTO mode, repository scope, and idempotent delivery before posting.
 
-- **Foreign-base rebases in `forge_submit_stack`** — when the Server moves a
+## Version control — commits, stacks, and pull requests
+
+- **`vcs_status`, `vcs_commit`, `vcs_workspace`, `vcs_sync`** — read the own stack, commit with PR-template sections, manage subagent working copies, and rebase onto trunk or a foreign base.
+- **`vcs_submit`** — run the repo's pre-push hook, then send a bundle of the own commits to the Server, which pushes them and creates or updates one draft PR per bookmark. Each new PR needs an issue.
+- **`vcs_pr_status`, `vcs_retire`** — read each bookmark's PR and checks; close an own PR and delete its branch.
+- **Foreign-base rebases in `vcs_submit`** — when the Server moves a
   sibling agent's bookmark, it stores a notice before posting the owner a DM.
   The write-intent sweep retries delivery failures and stops after 24 hours.
 

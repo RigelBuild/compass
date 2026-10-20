@@ -78,23 +78,25 @@ Both tools render names/handles only — never account, container, or session id
 
 ## The forge toolset
 
-Fourteen native forge tools ship (`src/forge.ts`), one per registered tool,
-over a thin `ForgeBroker` on the `RunnerTransport.forge()` seam — the same
-broker/identity/registration shape as comms:
+Thirteen native forge tools ship (`src/forge.ts`) for issue and PR artifact
+work, over a thin `ForgeBroker` on the `RunnerTransport.forge()` seam — the
+same broker/identity/registration shape as comms. The stack arms
+(`submitStack`, `stackStatus`, `retireHead`) have no forge tool; they back the
+`vcs_*` tools.
 
 - Reads (`approval: "read"`): `forge_get_issue`, `forge_get_pull_request`,
   `forge_list_issues`.
 - Writes (`approval: "write"`): `forge_comment_on_issue`,
   `forge_comment_on_pull_request`, `forge_submit_review`, `forge_create_issue`,
-  `forge_create_pull_request`, `forge_transition_issue_state`,
-  `forge_edit_issue`, `forge_transition_pull_request_state`, `forge_subscribe`,
+  `forge_edit_issue`, `forge_transition_issue_state`,
+  `forge_transition_pull_request_state`, `forge_subscribe`,
   `forge_unsubscribe`, `forge_mirror_messages`.
 
-`forge_create_issue`/`forge_create_pull_request` carry a broker-scoped DL-206
-`client_request_id` (`ForgeBroker.idempotencyKey`); the other arms send none.
-`forge_create_pull_request` takes an optional `issue` (selector + `repo` +
-`number`) that links the PR to that issue on the board; the server checks only
-its shape, never reads the issue.
+PRs are created and updated by `vcs_submit` (`src/vcs-submit.ts`), not a
+forge tool: the agent cannot push, so the Server pushes its bundle and writes
+the PRs. The create-issue, comment, review, mirror, and submit-stack arms carry
+a broker-scoped DL-206 `client_request_id` (`ForgeBroker.idempotencyKey`); reads,
+subscriptions, and lifecycle transitions do not.
 Every tool spreads an optional forge selector (`forge_provider` +
 `forge_host`): unset = the configured default GitHub forge (DL-202);
 `forge_provider: "linear"` targets the issues-only Linear provider (DL-051)

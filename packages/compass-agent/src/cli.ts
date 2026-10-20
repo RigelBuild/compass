@@ -75,6 +75,9 @@ import {
 	type RunnerTransport,
 } from "./transport/index";
 import { TurnSequence } from "./turn-sequence";
+import { createVcsTools } from "./vcs";
+import { gitRunner, jjRunner } from "./vcs-runner";
+import { createSubmitTools } from "./vcs-submit";
 
 /**
  * The in-container path the Runner bind-mounts this agent's socket to. Fixed by
@@ -1027,11 +1030,14 @@ export async function main(
 	const lifecycleBroker = new LifecycleBroker(transport);
 	const forgeBroker = new ForgeBroker(transport);
 	const boardBroker = new BoardBroker(transport);
+	const vcsDeps = { jj: jjRunner, git: gitRunner, cwd, forge: forgeBroker };
 	// The natives are AgentTools; the adapter gives them the CustomTool call order.
 	const nativeTools = [
 		...createCommsTools(commsBroker, turnSequence),
 		...createLifecycleTools(lifecycleBroker),
 		...createForgeTools(forgeBroker),
+		...createVcsTools(vcsDeps),
+		...createSubmitTools(vcsDeps),
 		...createBoardTools(boardBroker),
 		...createAgentBoardTools(commsBroker, turnSequence, boardFreshness),
 	].map(nativeAsCustomTool);

@@ -1,4 +1,4 @@
-// The agent's forge surface: a thin broker over the Runner transport, plus the fourteen native
+// The agent's forge surface: a thin broker over the Runner transport, plus the thirteen native
 // tools to read and write forge artifacts — issues, PRs, comments, reviews, state
 // transitions, subscriptions, and message mirroring.
 
@@ -32,7 +32,6 @@ import {
 	CommentOnIssueRequestSchema,
 	CommentOnPullRequestRequestSchema,
 	CreateIssueRequestSchema,
-	CreatePullRequestRequestSchema,
 	create,
 	EditIssueRequestSchema,
 	ForgeArtifactKind,
@@ -49,7 +48,6 @@ import {
 	ListIssuesRequestSchema,
 	MirrorMessagesRequestSchema,
 	type PullRequest,
-	PullRequestIssueLinkSchema,
 	ReviewCommentInputSchema,
 	type ReviewRef,
 	SubmitReviewRequestSchema,
@@ -246,30 +244,6 @@ export const createIssueParameters = type({
 });
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
-export const createPullRequestParameters = type({
-	...forgeSelector,
-	repo: nonBlank(REPO_DESC),
-	title: nonBlank("Pull request title; must not be blank"),
-	"body?": type("string").describe(
-		"Optional markdown body; the server stamps an owner header (DL-050) — do NOT write an attribution header yourself",
-	),
-	head_ref: nonBlank(
-		"The branch you ALREADY pushed with your own git credential; must not be blank",
-	),
-	"base_ref?": type("string").describe(
-		"Base branch; omitted = the repo default branch",
-	),
-	"draft?": type("boolean").describe("Open the PR as a draft"),
-	"issue?": type({
-		...forgeSelector,
-		"repo?": type("string").describe(
-			"The issue's repo or Linear team key; omitted = this PR's repo (same forge only)",
-		),
-		number: type("number.integer >= 1"),
-	}).describe("The issue this PR works on, so the PR shows on that issue"),
-});
-
-/** Exported so a test can validate the wire contract the agent loop enforces. */
 export const subscribeParameters = type({
 	...forgeSelector,
 	repo: nonBlank(REPO_DESC),
@@ -403,7 +377,7 @@ function forgeRef(params: {
  *     all. That is a protocol violation; succeeding silently would hand the model
  *     a fabricated empty result.
  */
-function forgeFailure(
+export function forgeFailure(
 	result: ForgeCallResult,
 	toolName: string,
 	expected: string,
@@ -570,18 +544,13 @@ function reviewAck(
 	return `Submitted ${attr(verdict)} review on PR #${attr(String(prNumber))}: ${ref(review.url)}`;
 }
 
-// DL-206 dedup-hit: a replayed create returns a skeletal artifact carrying only
-// {forge, repo, number} with an empty `url` — so the create renderer branches on
+// DL-206 dedup-hit: a replayed create returns a skeletal issue carrying only
+// {forge, repo, number} with an empty `url` — so the renderer branches on
 // the empty url and reports "already created" rather than a broken link.
-function createAck(
-	kind: string,
-	number: number,
-	repo: string,
-	url: string,
-): string {
+function createAck(number: number, repo: string, url: string): string {
 	return url.length > 0
-		? `Created ${kind} #${attr(String(number))} in ${ref(repo)}: ${ref(url)}`
-		: `${kind === "issue" ? "Issue" : "PR"} #${attr(String(number))} in ${ref(repo)} already created by an earlier attempt`;
+		? `Created issue #${attr(String(number))} in ${ref(repo)}: ${ref(url)}`
+		: `Issue #${attr(String(number))} in ${ref(repo)} already created by an earlier attempt`;
 }
 
 const SCOPE_DISCIPLINE =
@@ -632,7 +601,7 @@ function renderSubscribed(
 }
 
 /**
- * The native forge tool set. Fourteen tools, including the mirror arm.
+ * The native forge tool set. Thirteen tools, including the mirror arm.
  *
  * Wired into the container entrypoint by `cli.ts main()`: merged into the
  * session's `customTools` and registered as `#withNatives` natives. This
@@ -960,53 +929,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 				content: [
 					{
 						type: "text",
-						text: createAck("issue", issue.number, issue.repo, issue.url),
-					},
-				],
-			};
-		},
-	};
-
-	const createPullRequest: AgentTool<typeof createPullRequestParameters> = {
-		name: "forge_create_pull_request",
-		label: "Create forge pull request",
-		approval: "write",
-		description: `Open a new pull request (GitHub only). head_ref must be a branch you ALREADY pushed with your own git credential. ${REPO_ADDRESSING} ${SCOPE_DISCIPLINE} ${SELECTOR_RULE} ${STAMP_RULE}`,
-		parameters: createPullRequestParameters,
-		execute: async (toolCallId, params) => {
-			const result = await broker.call(
-				create(ForgeCallRequestSchema, {
-					callId: toolCallId,
-					call: {
-						case: "createPullRequest",
-						value: create(CreatePullRequestRequestSchema, {
-							repo: params.repo,
-							title: params.title,
-							body: params.body ?? "",
-							headRef: params.head_ref,
-							baseRef: params.base_ref ?? "",
-							draft: params.draft ?? false,
-							issue: params.issue
-								? create(PullRequestIssueLinkSchema, {
-										forge: forgeRef(params.issue),
-										repo: params.issue.repo ?? "",
-										number: BigInt(params.issue.number),
-									})
-								: undefined,
-						}),
-					},
-					forge: forgeRef(params),
-					clientRequestId: broker.idempotencyKey(toolCallId),
-				}),
-			);
-			if (result.result.case !== "pullRequest")
-				throw forgeFailure(result, "forge_create_pull_request", "pullRequest");
-			const pr = result.result.value;
-			return {
-				content: [
-					{
-						type: "text",
-						text: createAck("pull request", pr.number, pr.repo, pr.url),
+						text: createAck(issue.number, issue.repo, issue.url),
 					},
 				],
 			};
@@ -1215,7 +1138,6 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 		commentOnPullRequest,
 		submitReview,
 		createIssue,
-		createPullRequest,
 		transitionIssueState,
 		editIssue,
 		transitionPullRequestState,

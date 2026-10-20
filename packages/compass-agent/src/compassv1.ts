@@ -9,6 +9,7 @@ export {
 	fromJson,
 	type JsonValue,
 	type MessageInitShape,
+	toBinary,
 	toJson,
 } from "@bufbuild/protobuf";
 export {
@@ -22,9 +23,9 @@ export {
 	type BoardCallResult,
 	BoardCallResultSchema,
 	// The agent-initiated forge call envelopes (internal-only AgentGateway gen). Request
-	// carries `call_id`, a oneof over fourteen forge arms, an optional `ForgeRef`, and a
-	// `client_request_id` (create and mirror arms); Result retypes to canonical Issue/PullRequest/etc
-	// plus an in-band `error` arm carrying `retry_after_ms`. Reused as RelayForgeCall payloads.
+	// carries `call_id`, a oneof over the forge arms, an optional `ForgeRef`, and a
+	// `client_request_id` (create-issue, comment, review, mirror, and submit-stack arms);
+	// Result retypes to canonical Issue/PullRequest/etc plus an in-band `error` arm carrying `retry_after_ms`.
 	CommentOnIssueRequestSchema,
 	CommentOnPullRequestRequestSchema,
 	// The agent-initiated comms call envelopes (internal-only AgentGateway gen). Request
@@ -67,6 +68,7 @@ export {
 	ListIssuesResponseSchema,
 	MirrorMessagesRequestSchema,
 	PullRequestIssueLinkSchema,
+	RetireHeadRequestSchema,
 	type ReviewCommentInput,
 	ReviewCommentInputSchema,
 	// The agent's activity-status upsert (internal-only AgentGateway gen): the
@@ -88,7 +90,15 @@ export {
 	SpawnPeerRequestSchema,
 	type SpawnPeerResponse,
 	SpawnPeerResponseSchema,
+	type StackEntry,
+	type StackEntryResult,
+	StackEntryResultSchema,
+	StackEntrySchema,
+	StackEntryStatus,
+	StackResultSchema,
+	StackStatusRequestSchema,
 	SubmitReviewRequestSchema,
+	SubmitStackRequestSchema,
 	SubscribeForgeRequestSchema,
 	type SubscribeForgeResponse,
 	SubscribeForgeResponseSchema,

@@ -1,7 +1,14 @@
 import { isAbsolute, resolve } from "node:path";
 import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { ForgeBroker } from "./forge";
+import {
+	create,
+	ForgeCallRequestSchema,
+	type StackEntryResult,
+	StackStatusRequestSchema,
+} from "./compassv1";
+import { type ForgeBroker, forgeFailure } from "./forge";
+import type { CommandRunner } from "./vcs-runner";
 
 export interface JjResult {
 	stdout: string;
@@ -15,12 +22,16 @@ export interface JjRunner {
 
 export interface VcsDeps {
 	jj: JjRunner;
+	// Runs git in the colocated clone: the origin URL, the pre-push hook, and the bundle.
+	git: CommandRunner;
 	cwd: string;
 	forge: ForgeBroker;
 	readFile?: (path: string) => Promise<string | undefined>;
+	// Overrides the 120 s pre-push limit (OQ-9) in tests.
+	hookTimeoutMs?: number;
 }
 
-const JJ_FLAGS = ["--no-pager", "--color=never"] as const;
+export const JJ_FLAGS = ["--no-pager", "--color=never"] as const;
 const LOG_TEMPLATE =
 	'json(self) ++ "\\t" ++ self.local_bookmarks().map(|bookmark| bookmark.name()).join(",") ++ "\\t" ++ self.remote_bookmarks().map(|bookmark| bookmark.name() ++ "@" ++ bookmark.remote()).join(",") ++ "\\t" ++ json(self.contained_in("trunk()")) ++ "\\t" ++ json(self.conflict()) ++ "\\t" ++ json(self.empty()) ++ "\\t" ++ json(self.current_working_copy()) ++ "\\t" ++ json(self.mine()) ++ "\\t" ++ self.parents().map(|parent| parent.commit_id() ++ ":" ++ json(parent.contained_in("trunk()")) ++ ":" ++ parent.remote_bookmarks().map(|bookmark| bookmark.name() ++ "@" ++ bookmark.remote()).join(",")).join(";") ++ "\\n"';
 
@@ -29,7 +40,7 @@ type JjParent = {
 	trunk: boolean;
 	remoteBookmarks: string[];
 };
-type JjRow = {
+export type JjRow = {
 	commit_id?: string;
 	change_id?: string;
 	description?: string;
@@ -193,7 +204,7 @@ async function findWorkspace(
 	return match;
 }
 
-function validateBookmark(
+export function validateBookmark(
 	bookmark: string | undefined,
 	toolName: string,
 ): void {
@@ -217,7 +228,7 @@ function nonEmpty(value: string): boolean {
 	return value.length > 0;
 }
 
-function parseRows(stdout: string, toolName: string): JjRow[] {
+export function parseRows(stdout: string, toolName: string): JjRow[] {
 	return stdout
 		.split("\n")
 		.filter((line) => line.trim().length > 0)
@@ -228,28 +239,50 @@ function validateSections(
 	firstCommit: boolean,
 	sections: Record<string, string> | undefined,
 	headings: string[],
+	toolName = "vcs_commit",
 ): void {
 	if (!firstCommit && sections !== undefined)
 		throw new Error(
-			"vcs_commit: sections are only allowed on the first commit of a bookmark",
+			`${toolName}: sections are only allowed on the first commit of a bookmark`,
 		);
 	const unknown = Object.keys(sections ?? {}).filter(
 		(heading) => !headings.includes(heading),
 	);
 	if (unknown.length > 0)
 		throw new Error(
-			`vcs_commit: unknown template heading(s): ${unknown.join(", ")}`,
+			`${toolName}: unknown template heading(s): ${unknown.join(", ")}`,
 		);
 	const missing = firstCommit
 		? headings.filter((heading) => sections?.[heading] === undefined)
 		: [];
 	if (missing.length > 0)
 		throw new Error(
-			`vcs_commit: first commit is missing template heading(s): ${missing.join(", ")}`,
+			`${toolName}: first commit is missing template heading(s): ${missing.join(", ")}`,
 		);
 }
 
-function argsForLog(revset: string): string[] {
+/** Checks first-commit sections against the repo PR template and renders them. */
+export async function composeSections(
+	deps: VcsDeps,
+	cwd: string,
+	sections: Record<string, string>,
+	toolName: string,
+): Promise<string> {
+	const headings = parseHeadings(await readTemplate(deps, cwd));
+	validateSections(true, sections, headings, toolName);
+	const authoredWords = Object.values(sections)
+		.join(" ")
+		.trim()
+		.split(/\s+/)
+		.filter((word) => word.length > 0).length;
+	if (authoredWords < 40 || authoredWords > 300)
+		throw new Error(
+			`${toolName}: authored sections must contain 40 to 300 words; found ${authoredWords}`,
+		);
+	return renderSections(sections, headings);
+}
+
+export function argsForLog(revset: string): string[] {
 	return [...JJ_FLAGS, "log", "--no-graph", "-r", revset, "-T", LOG_TEMPLATE];
 }
 
@@ -261,7 +294,7 @@ function failIfJjFailed(toolName: string, result: JjResult): void {
 	}
 }
 
-async function runJj(
+export async function runJj(
 	deps: VcsDeps,
 	toolName: string,
 	args: readonly string[],
@@ -272,7 +305,7 @@ async function runJj(
 	return result;
 }
 
-async function resolveTip(
+export async function resolveTip(
 	deps: VcsDeps,
 	bookmark: string | undefined,
 	toolName: string,
@@ -293,7 +326,11 @@ async function resolveTip(
 export function ownCommits(tip: string): string {
 	return tip === "@"
 		? "::@ ~ ::(trunk() | untracked_remote_bookmarks())"
-		: `::"${tip.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}" ~ ::(trunk() | untracked_remote_bookmarks())`;
+		: `::${quoteRevset(tip)} ~ ::(trunk() | untracked_remote_bookmarks())`;
+}
+
+export function quoteRevset(name: string): string {
+	return `"${name.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
 function parseHeadings(template: string | undefined): string[] {
@@ -415,20 +452,7 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 					throw new Error(
 						"vcs_commit: first commit requires template sections",
 					);
-				const source = await readTemplate(deps, cwd);
-				const headings = parseHeadings(source);
-				validateSections(true, sections, headings);
-				const rendered = renderSections(sections, headings);
-				const authoredWords = Object.values(sections)
-					.join(" ")
-					.trim()
-					.split(/\s+/)
-					.filter((word) => word.length > 0).length;
-				if (authoredWords < 40 || authoredWords > 300)
-					throw new Error(
-						`vcs_commit: authored sections must contain 40 to 300 words; found ${authoredWords}`,
-					);
-				description = rendered;
+				description = await composeSections(deps, cwd, sections, "vcs_commit");
 			} else {
 				validateSections(false, sections, []);
 				description = params.text ?? renderSections(sections, []);
@@ -514,55 +538,23 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 		description:
 			"Fetch origin, then rebase your own commits onto the stack base. Reports conflicts without pushing.",
 		parameters: vcsSyncParameters,
-		execute: async (_toolCallId, params) => {
-			validateBookmark(params.bookmark, "vcs_sync");
-			await runJj(deps, "vcs_sync", [
-				...JJ_FLAGS,
-				"git",
-				"fetch",
-				"--remote",
-				"origin",
-			]);
-			const tip = await resolveTip(deps, params.bookmark, "vcs_sync");
-			const own = ownCommits(tip);
-			const rowsResult = await runJj(deps, "vcs_sync", argsForLog(own));
-			const rows = parseRows(rowsResult.stdout, "vcs_sync");
-			if (rows.length === 0)
-				return {
-					content: [{ type: "text", text: `No own commits for ${tip}.` }],
-				};
-			const ownCommitIds = new Set(rows.flatMap((row) => row.commit_id ?? []));
-			const root = rows.find((row) =>
-				row.parents.some((parent) => !ownCommitIds.has(parent.commit_id)),
+		execute: async (toolCallId, params) => {
+			const synced = await syncOwn(
+				deps,
+				toolCallId,
+				"vcs_sync",
+				params.bookmark,
 			);
-			if (!root)
-				throw new Error("vcs_sync: could not find the own-commit root");
-			const foreign = root.parents
-				.filter((parent) => !parent.trunk)
-				.flatMap((parent) => parent.remoteBookmarks)
-				.find((name) => name.endsWith("@origin"));
-			const rebaseBase = foreign ?? "trunk()";
-			const result = await deps.jj.run(
-				[
-					...JJ_FLAGS,
-					"rebase",
-					"-s",
-					`roots(${own})`,
-					"-o",
-					rebaseBase,
-					"--skip-emptied",
-				],
-				deps.cwd,
-			);
-			failIfJjFailed("vcs_sync", result);
-			const rebased = await runJj(deps, "vcs_sync", argsForLog(own));
-			const conflicts = parseRows(rebased.stdout, "vcs_sync")
-				.filter((row) => row.conflict)
-				.map((row) => row.commit_id ?? row.change_id ?? "unknown commit");
-			if (conflicts.length > 0)
-				throw new Error(`vcs_sync: rebase conflicts: ${conflicts.join(", ")}`);
 			return {
-				content: [{ type: "text", text: `Synced ${tip} onto ${rebaseBase}.` }],
+				content: [
+					{
+						type: "text",
+						text:
+							synced.rows.length === 0
+								? `No own commits for ${synced.tip}.`
+								: `Synced ${synced.tip} onto ${synced.base}.`,
+					},
+				],
 			};
 		},
 	};
@@ -570,6 +562,218 @@ export function createVcsTools(deps: VcsDeps): AgentTool[] {
 	return [status, commit, workspace, sync];
 }
 
+export interface Synced {
+	tip: string;
+	// The rebase destination: `trunk()` or a foreign `<name>@origin`.
+	base: string;
+	// The own commits after the rebase, newest first.
+	rows: JjRow[];
+}
+
+export interface Remote {
+	repo: string;
+	url: string;
+}
+
+/** Reads `owner/name` and the URL of the origin GitHub remote. */
+export async function originRemote(
+	deps: VcsDeps,
+	toolName: string,
+): Promise<Remote> {
+	// git config gives the URL as configured; jj prints it after insteadOf rewrites.
+	const listed = await deps.git.run(
+		["config", "--get", "remote.origin.url"],
+		deps.cwd,
+	);
+	const url = listed.code === 0 ? listed.stdout.trim() : "";
+	const match = url.match(
+		/^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/,
+	);
+	// The URL is never echoed: a remote outside these forms can embed a credential.
+	if (!match)
+		throw new Error(
+			`${toolName}: origin must be a github.com https or ssh remote (owner/name)`,
+		);
+	return { repo: `${match[1]}/${match[2]}`, url };
+}
+
+export async function stackStatus(
+	deps: VcsDeps,
+	toolCallId: string,
+	repo: string,
+	heads: string[],
+	toolName: string,
+): Promise<StackEntryResult[]> {
+	const result = await deps.forge.call(
+		create(ForgeCallRequestSchema, {
+			callId: toolCallId,
+			call: {
+				case: "stackStatus",
+				value: create(StackStatusRequestSchema, { repo, headRefs: heads }),
+			},
+		}),
+	);
+	if (result.result.case !== "stack")
+		throw forgeFailure(result, toolName, "stack");
+	return result.result.value.entries;
+}
+
+/** The untracked `origin` bookmarks on the tip's ancestry above trunk. */
+export async function untrackedBelow(
+	deps: VcsDeps,
+	tip: string,
+	toolName: string,
+): Promise<string[]> {
+	const listed = await runJj(deps, toolName, [
+		...JJ_FLAGS,
+		"bookmark",
+		"list",
+		"--remote",
+		"exact:origin",
+		"-r",
+		`::${quoteRevset(tip)} ~ ::trunk()`,
+		"-T",
+		'if(remote && !tracked, name ++ "\\n")',
+	]);
+	return listed.stdout.split("\n").filter(Boolean);
+}
+
+// A Server push leaves the caller's own remote bookmark untracked, which would read as a foreign base.
+async function trackAuthored(
+	deps: VcsDeps,
+	toolCallId: string,
+	tip: string,
+	toolName: string,
+): Promise<void> {
+	const untracked = await untrackedBelow(deps, tip, toolName);
+	if (untracked.length === 0) return;
+	const { repo } = await originRemote(deps, toolName);
+	const entries = await stackStatus(
+		deps,
+		toolCallId,
+		repo,
+		untracked,
+		toolName,
+	);
+	for (const entry of entries) {
+		if (entry.error)
+			throw new Error(
+				`${toolName}: stack_status for ${entry.headRef}: ${entry.error.message}`,
+			);
+		const own = entry.pullRequest
+			? entry.authored
+			: await isOwnPushWithoutPr(deps, entry.headRef, toolName);
+		if (!own) continue;
+		if (entry.pullRequest)
+			await requireNotDiverged(deps, entry.headRef, toolName);
+		await runJj(deps, toolName, [
+			...JJ_FLAGS,
+			"bookmark",
+			"track",
+			`exact:${entry.headRef}`,
+			"--remote",
+			"exact:origin",
+		]);
+	}
+}
+
+/** A PR-less head is this agent's push whose create failed only when it holds the same commit as the local bookmark. */
+async function isOwnPushWithoutPr(
+	deps: VcsDeps,
+	name: string,
+	toolName: string,
+): Promise<boolean> {
+	const target = async (revset: string): Promise<string | undefined> =>
+		parseRows(
+			(await runJj(deps, toolName, argsForLog(revset))).stdout,
+			toolName,
+		)[0]?.commit_id;
+	const local = await target(`bookmarks(exact:${quoteRevset(name)})`);
+	if (local === undefined) return false;
+	const remote = await target(
+		`remote_bookmarks(exact:${quoteRevset(name)}, remote=exact:"origin")`,
+	);
+	if (local !== remote)
+		throw new Error(
+			`${toolName}: ${name}@origin has no pull request and differs from your ${name}; rename your bookmark and submit again`,
+		);
+	return true;
+}
+
+// Tracking a bookmark whose local and remote targets diverged leaves it conflicted, which blocks every later call.
+async function requireNotDiverged(
+	deps: VcsDeps,
+	name: string,
+	toolName: string,
+): Promise<void> {
+	const local = `bookmarks(exact:${quoteRevset(name)})`;
+	const remote = `remote_bookmarks(exact:${quoteRevset(name)}, remote=exact:"origin")`;
+	const diverged = await runJj(
+		deps,
+		toolName,
+		argsForLog(`${local} ~ ::${remote} ~ ${remote}::`),
+	);
+	if (diverged.stdout.trim())
+		throw new Error(
+			`${toolName}: ${name} and ${name}@origin have diverged; run jj bookmark set ${name} -r ${name}@origin --allow-backwards to take the pushed head, then sync again`,
+		);
+}
+
+/** Fetches, tracks own remote bookmarks, then rebases the own commits onto trunk or their foreign base (D4). */
+export async function syncOwn(
+	deps: VcsDeps,
+	toolCallId: string,
+	toolName: string,
+	bookmark: string | undefined,
+): Promise<Synced> {
+	validateBookmark(bookmark, toolName);
+	await runJj(deps, toolName, [
+		...JJ_FLAGS,
+		"git",
+		"fetch",
+		"--remote",
+		"origin",
+	]);
+	const tip = await resolveTip(deps, bookmark, toolName);
+	await trackAuthored(deps, toolCallId, tip, toolName);
+	const own = ownCommits(tip);
+	const rowsResult = await runJj(deps, toolName, argsForLog(own));
+	const rows = parseRows(rowsResult.stdout, toolName);
+	if (rows.length === 0) return { tip, base: "trunk()", rows };
+	const ownCommitIds = new Set(rows.flatMap((row) => row.commit_id ?? []));
+	const root = rows.find((row) =>
+		row.parents.some((parent) => !ownCommitIds.has(parent.commit_id)),
+	);
+	if (!root) throw new Error(`${toolName}: could not find the own-commit root`);
+	const foreign = root.parents
+		.filter((parent) => !parent.trunk)
+		.flatMap((parent) => parent.remoteBookmarks)
+		.find((name) => name.endsWith("@origin"));
+	const base = foreign ?? "trunk()";
+	const result = await deps.jj.run(
+		[
+			...JJ_FLAGS,
+			"rebase",
+			"-s",
+			`roots(${own})`,
+			"-o",
+			base,
+			"--skip-emptied",
+		],
+		deps.cwd,
+	);
+	failIfJjFailed(toolName, result);
+	const rebased = parseRows(
+		(await runJj(deps, toolName, argsForLog(own))).stdout,
+		toolName,
+	);
+	const conflicts = rebased
+		.filter((row) => row.conflict)
+		.map((row) => row.commit_id ?? row.change_id ?? "unknown commit");
+	if (conflicts.length > 0)
+		throw new Error(`${toolName}: rebase conflicts: ${conflicts.join(", ")}`);
+	return { tip, base, rows: rebased };
+}
 function renderRow(row: JjRow): string {
 	const markers = [row.conflict ? "conflict" : "", row.empty ? "empty" : ""]
 		.filter(Boolean)

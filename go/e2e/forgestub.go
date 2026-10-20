@@ -20,9 +20,8 @@ import (
 )
 
 const (
-	forgeStubIssueNumber       uint64 = 4242
-	forgeStubPullRequestNumber uint64 = 4243
-	forgeStubLogin                    = "forge-stub"
+	forgeStubIssueNumber uint64 = 4242
+	forgeStubLogin              = "forge-stub"
 	// The primary App's installation; the reviewer App is installation 2.
 	forgeStubAuthorInstallation int64 = 1
 )
@@ -173,20 +172,6 @@ func (s *forgeStub) handle(w http.ResponseWriter, r *http.Request) {
 	switch parts[3] {
 	case "issues":
 		s.handleIssue(w, r, parts, body)
-	case "pulls":
-		// Only PR creation is in this leg's scope. Every other pulls route
-		// answers 501 naming itself, so a future test reaching for one reads
-		// "not implemented" instead of debugging an opaque 404.
-		if len(parts) != 4 || r.Method != http.MethodPost {
-			http.Error(w, "forge stub: "+r.Method+" "+r.URL.Path+" not implemented", http.StatusNotImplemented)
-			return
-		}
-		var input map[string]any
-		if err := json.Unmarshal(body, &input); err != nil {
-			http.Error(w, "json", http.StatusBadRequest)
-			return
-		}
-		jsonOut(w, http.StatusCreated, pullRequest(input))
 	default:
 		http.NotFound(w, r)
 	}
@@ -267,24 +252,6 @@ func issue(number uint64, input map[string]any, state, path string) map[string]a
 		}
 		out[key] = value
 	}
-	return out
-}
-
-// pullRequest shapes the GitHub pull-request response: head and base are
-// objects carrying a ref, not the bare strings the create request sends.
-func pullRequest(input map[string]any) map[string]any {
-	ref := func(key string) map[string]any {
-		value, _ := input[key].(string)
-		return map[string]any{"ref": value}
-	}
-	body, _ := input["body"].(string)
-	out := envelope(body, "https://forge.stub/pulls/4243")
-	out["number"] = forgeStubPullRequestNumber
-	out["title"], _ = input["title"].(string)
-	out["state"] = "open"
-	out["draft"], _ = input["draft"].(bool)
-	out["head"] = ref("head")
-	out["base"] = ref("base")
 	return out
 }
 

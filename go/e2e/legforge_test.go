@@ -45,8 +45,6 @@ func registerForgeFixtureOptions() {
 			CannedText("edited"),
 			CannedToolCall("forge_get_issue", args(map[string]any{"repo": forgeLegRepo, "issue_number": forgeStubIssueNumber})),
 			CannedText("verified"),
-			CannedToolCall("forge_create_pull_request", args(map[string]any{"repo": forgeLegRepo, "title": "forge leg pull request", "body": "authored by the forge leg", "head_ref": "forge-leg", "base_ref": "main", "draft": true})),
-			CannedText("opened"),
 		),
 	)
 }
@@ -98,7 +96,6 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 		forgeAgentLoopMarker + " edit the issue title",
 		forgeAgentLoopMarker + " read the closed issue",
 		forgeAgentLoopMarker + " verify the issue",
-		forgeAgentLoopMarker + " create a pull request",
 	} {
 		if _, err := f.PostMessage(ctx, string(agent.Agent.HomeChannelID), "general", prompt); err != nil {
 			t.Fatalf("PostMessage trigger %d: %v", i+1, err)
@@ -111,9 +108,6 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 	requests := f.ForgeStub().Requests()
 
 	assertForgeRequests(t, requests, handle)
-	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, "Created pull request #4243 in owner/repo: https://forge.stub/pulls/4243"); err != nil {
-		t.Fatalf("awaitTranscriptPersisted (pull request response): %v", err)
-	}
 	// These read-back fields are rendered from the DECODED response, never from
 	// a request the agent sent, so a zeroed issue decode reddens them. Entries
 	// are stored as JSON, hence the escaped quotes.
@@ -145,13 +139,6 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 	if authored.AgentAccountID != store.AccountID(agentID) || authored.Number != forgeStubIssueNumber {
 		t.Fatalf("authored artifact agent=%q number=%d", authored.AgentAccountID, authored.Number)
 	}
-	pullRequest, err := st.AuthoredArtifactByCoordinate(ctx, store.ForgeProviderGitHub, f.ForgeStub().Host(), repo, store.ForgeArtifactKindPullRequest, forgeStubPullRequestNumber)
-	if err != nil {
-		t.Fatalf("AuthoredArtifactByCoordinate pull request: %v", err)
-	}
-	if pullRequest.AgentAccountID != store.AccountID(agentID) || pullRequest.Number != forgeStubPullRequestNumber {
-		t.Fatalf("authored pull request agent=%q number=%d", pullRequest.AgentAccountID, pullRequest.Number)
-	}
 	transitionAgent, consumed, err := st.ConsumeStateTransition(ctx, store.ForgeProviderGitHub, f.ForgeStub().Host(), repo, store.ForgeArtifactKindIssue, forgeStubIssueNumber, store.TransitionStateClosed, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("ConsumeStateTransition: %v", err)
@@ -163,12 +150,12 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 
 func assertForgeRequests(t *testing.T, requests []forgeStubRequest, handle string) {
 	t.Helper()
-	if len(requests) != 9 {
+	if len(requests) != 8 {
 		paths := make([]string, 0, len(requests))
 		for _, request := range requests {
 			paths = append(paths, request.Method+" "+request.Path)
 		}
-		t.Fatalf("forge requests = %d, want 9 (one mint plus eight API calls); saw %v", len(requests), paths)
+		t.Fatalf("forge requests = %d, want 8 (one mint plus seven API calls); saw %v", len(requests), paths)
 	}
 	if requests[0].Path != "/api/v3/app/installations/1/access_tokens" || requests[0].Method != http.MethodPost {
 		t.Fatalf("mint request = %#v", requests[0])
@@ -181,9 +168,8 @@ func assertForgeRequests(t *testing.T, requests []forgeStubRequest, handle strin
 		"/api/v3/repos/owner/repo/issues/4242",
 		"/api/v3/repos/owner/repo/issues/4242",
 		"/api/v3/repos/owner/repo/issues/4242",
-		"/api/v3/repos/owner/repo/pulls",
 	}
-	wantMethods := []string{http.MethodPost, http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodGet, http.MethodPatch, http.MethodGet, http.MethodPost}
+	wantMethods := []string{http.MethodPost, http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodGet, http.MethodPatch, http.MethodGet}
 	for i, want := range wantPaths {
 		request := requests[i+1]
 		if request.Path != want {
@@ -234,14 +220,5 @@ func assertForgeRequestBodies(t *testing.T, requests []forgeStubRequest, handle 
 	commentText, commentOK := commentBody["body"].(string)
 	if !commentOK || !strings.Contains(commentText, "forge leg comment") || !strings.Contains(commentText, "compass:owner") || !strings.Contains(commentText, "agent="+handle) {
 		t.Fatalf("comment body = %q", commentBody["body"])
-	}
-	var pullRequestBody map[string]any
-	if err := json.Unmarshal(requests[8].Body, &pullRequestBody); err != nil {
-		t.Fatalf("decode pull request body: %v", err)
-	}
-	pullTitle, pullTitleOK := pullRequestBody["title"].(string)
-	pullText, pullBodyOK := pullRequestBody["body"].(string)
-	if !pullTitleOK || pullTitle != "forge leg pull request" || !pullBodyOK || !strings.Contains(pullText, "authored by the forge leg") || !strings.Contains(pullText, "compass:owner") || !strings.Contains(pullText, "agent="+handle) || pullRequestBody["head"] != "forge-leg" || pullRequestBody["base"] != "main" || pullRequestBody["draft"] != true {
-		t.Fatalf("pull request body = %#v", pullRequestBody)
 	}
 }
