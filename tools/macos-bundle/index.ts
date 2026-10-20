@@ -562,24 +562,27 @@ async function main(): Promise<void> {
 	await mkdir(resourcesDir, { recursive: true });
 	// Outside stageRoot (hdiutil packs everything under it), in a fresh temp dir.
 	const iconTmp = await mkdtemp(join(tmpdir(), "macos-bundle-icon-"));
-	const iconsetDir = join(iconTmp, "AppIcon.iconset");
-	await mkdir(iconsetDir);
-	for (const [filename, size] of [
-		["icon_16x16.png", 16],
-		["icon_16x16@2x.png", 32],
-		["icon_32x32.png", 32],
-		["icon_32x32@2x.png", 64],
-		["icon_128x128.png", 128],
-		["icon_128x128@2x.png", 256],
-		["icon_256x256.png", 256],
-		["icon_256x256@2x.png", 512],
-		["icon_512x512.png", 512],
-	] as const) {
-		await $`sips -z ${size} ${size} ${appIcon} --out ${join(iconsetDir, filename)}`.quiet();
+	try {
+		const iconsetDir = join(iconTmp, "AppIcon.iconset");
+		await mkdir(iconsetDir);
+		for (const [filename, size] of [
+			["icon_16x16.png", 16],
+			["icon_16x16@2x.png", 32],
+			["icon_32x32.png", 32],
+			["icon_32x32@2x.png", 64],
+			["icon_128x128.png", 128],
+			["icon_128x128@2x.png", 256],
+			["icon_256x256.png", 256],
+			["icon_256x256@2x.png", 512],
+			["icon_512x512.png", 512],
+		] as const) {
+			await $`sips -z ${size} ${size} ${appIcon} --out ${join(iconsetDir, filename)}`.quiet();
+		}
+		await cp(appIcon, join(iconsetDir, "icon_512x512@2x.png"));
+		await $`iconutil -c icns ${iconsetDir} -o ${join(resourcesDir, "AppIcon.icns")}`.quiet();
+	} finally {
+		await rm(iconTmp, { recursive: true, force: true });
 	}
-	await cp(appIcon, join(iconsetDir, "icon_512x512@2x.png"));
-	await $`iconutil -c icns ${iconsetDir} -o ${join(resourcesDir, "AppIcon.icns")}`.quiet();
-	await rm(iconTmp, { recursive: true, force: true });
 
 	// Contents/MacOS/compass-app — the darwin shell binary.
 	const stagedBinary = join(macosDir, SHELL_EXECUTABLE_NAME);
