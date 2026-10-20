@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import {
+	checkShellGlobalsScript,
 	createOrThrow,
 	detachStaleAttachments,
 	formatBusyDiagnosis,
@@ -32,6 +33,32 @@ function plistValue(xml: string, key: string): string | undefined {
 	const re = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`);
 	return re.exec(xml)?.[1];
 }
+
+describe("checkShellGlobalsScript — the dist must load shell globals before the bundle", () => {
+	const mod =
+		'<script type="module" crossorigin src="/assets/index.js"></script>';
+	test("a classic sync script passes, whitespace and order aside", () => {
+		expect(
+			checkShellGlobalsScript(
+				`<head><script  src="/compass-shell-globals.js"></script>${mod}</head>`,
+			),
+		).toBeNull();
+	});
+	test("a missing script fails", () => {
+		expect(checkShellGlobalsScript(`<head>${mod}</head>`)).toContain(
+			"no <script",
+		);
+	});
+	for (const attr of ["defer", "async", 'type="module"']) {
+		test(`${attr} fails: it would run after the bundle reads the globals`, () => {
+			expect(
+				checkShellGlobalsScript(
+					`<script ${attr} src="/compass-shell-globals.js"></script>${mod}`,
+				),
+			).toContain("not a classic sync script");
+		});
+	}
+});
 
 describe("renderInfoPlist — required CFBundle keys carry the passed values", () => {
 	test("CFBundleName is the display name", () => {

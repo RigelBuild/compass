@@ -2000,15 +2000,9 @@ jobs:
 
           # The UI dist the .app stages into Contents/Resources/dist.
           moon run compass-ui:build
-          # The shell serves startup globals only to a classic, synchronous script;
-          # async, defer, or type=module would run it after the bundle reads them.
-          tag="$(grep -o '<script[^>]*src="/compass-shell-globals.js"[^>]*>' apps/ui/dist/index.html || true)"
-          if [ -z "$tag" ] || printf '%s' "$tag" | grep -Eq 'async|defer|type='; then
-            echo "::error::darwin: dist/index.html lacks a classic sync /compass-shell-globals.js script (got: '$tag')"
-            exit 1
-          fi
 
-          # Stage + ad-hoc sign the .app and wrap the .dmg.
+          # Stage + ad-hoc sign the .app and wrap the .dmg. The bundler refuses a
+          # dist whose index.html lacks the classic shell-globals script.
           out=/tmp/compass-app-darwin-arm64.dmg
           bun run tools/macos-bundle/index.ts \
             --binary /tmp/compass-app \
