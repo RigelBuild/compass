@@ -695,7 +695,7 @@ export type ForgeCallRequest = Message<"compass.v1.ForgeCallRequest"> & {
    * Whole-chain idempotency key for create and mirror_messages calls. A retry
    * with the same key returns the original result without posting again.
    * Distinct from call_id, which is correlation-only. Field 13 is collision-free:
-   * call_id=1, oneof arms 2-11, 14-19, forge=12.
+   * call_id=1, oneof arms 2-11, 14-20, forge=12.
    *
    * @generated from field: string client_request_id = 13;
    */

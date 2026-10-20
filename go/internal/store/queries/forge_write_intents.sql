@@ -3,14 +3,14 @@
 
 -- name: RecordForgeWriteIntent :one
 INSERT INTO forge_write_intents (
-    id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
+    id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
     agent_account_id, owner_user_id, session_id, client_request_id,
     issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number, state
 )
 VALUES (
     sqlc.arg(id), sqlc.arg(forge_provider), sqlc.arg(forge_host), sqlc.arg(repo),
     sqlc.arg(kind), sqlc.arg(parent_number), sqlc.arg(head_ref), sqlc.narg(base_ref)::text,
-    sqlc.arg(agent_account_id), sqlc.arg(owner_user_id), sqlc.arg(session_id),
+    sqlc.arg(base_is_default), sqlc.arg(agent_account_id), sqlc.arg(owner_user_id), sqlc.arg(session_id),
     sqlc.arg(client_request_id), sqlc.narg(issue_link_forge_provider)::smallint,
     sqlc.narg(issue_link_forge_host)::text, sqlc.narg(issue_link_repo)::text,
     sqlc.narg(issue_link_number)::bigint, 'pending'
@@ -18,13 +18,13 @@ VALUES (
 ON CONFLICT (tenant_id, agent_account_id, client_request_id)
     WHERE state <> 'failed'
 DO UPDATE SET id = forge_write_intents.id
-RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
+RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
           agent_account_id, owner_user_id, session_id, client_request_id,
           issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
           forge_key, forge_url, state, created_at, tenant_id;
 
 -- name: PRWriteIntentByHead :one
-SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
+SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
        forge_key, forge_url, state, created_at, tenant_id
@@ -43,7 +43,7 @@ SET state = sqlc.arg(state)
 WHERE id = sqlc.arg(id) AND state = 'pending';
 
 -- name: WriteIntentByID :one
-SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
+SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
        forge_key, forge_url, state, created_at, tenant_id
@@ -52,19 +52,19 @@ WHERE id = sqlc.arg(id);
 
 -- name: HoldForgeWriteIntent :one
 INSERT INTO forge_write_intents (
-    id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
+    id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
     agent_account_id, owner_user_id, session_id, client_request_id, state
 )
 VALUES (
     sqlc.arg(id), sqlc.arg(forge_provider), sqlc.arg(forge_host), sqlc.arg(repo),
     sqlc.arg(kind), sqlc.arg(parent_number), sqlc.arg(head_ref), sqlc.narg(base_ref)::text,
-    sqlc.arg(agent_account_id), sqlc.arg(owner_user_id), sqlc.arg(session_id),
+    sqlc.arg(base_is_default), sqlc.arg(agent_account_id), sqlc.arg(owner_user_id), sqlc.arg(session_id),
     sqlc.arg(client_request_id), 'held'
 )
 ON CONFLICT (tenant_id, agent_account_id, client_request_id)
     WHERE state <> 'failed'
 DO UPDATE SET id = forge_write_intents.id
-RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
+RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
           agent_account_id, owner_user_id, session_id, client_request_id,
           issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
           forge_key, forge_url, state, created_at, tenant_id;
@@ -73,6 +73,7 @@ RETURNING id, forge_provider, forge_host, repo, kind, parent_number, head_ref, b
 UPDATE forge_write_intents
 SET state = 'pending', created_at = now(),
     base_ref = COALESCE(sqlc.narg(base_ref)::text, base_ref),
+    base_is_default = sqlc.arg(base_is_default),
     issue_link_forge_provider = COALESCE(sqlc.narg(issue_link_forge_provider)::smallint, issue_link_forge_provider),
     issue_link_forge_host = COALESCE(sqlc.narg(issue_link_forge_host)::text, issue_link_forge_host),
     issue_link_repo = COALESCE(sqlc.narg(issue_link_repo)::text, issue_link_repo),
@@ -80,7 +81,7 @@ SET state = 'pending', created_at = now(),
 WHERE id = sqlc.arg(id) AND state = 'held';
 
 -- name: LockWriteIntent :one
-SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
+SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
        forge_key, forge_url, state, created_at, tenant_id
@@ -155,7 +156,7 @@ WHERE forge_write_intents.id = sqlc.arg(id) AND forge_write_intents.state = 'pen
        OR EXISTS (SELECT 1 FROM issue_link));
 
 -- name: PendingForgeWriteIntents :many
-SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref,
+SELECT id, forge_provider, forge_host, repo, kind, parent_number, head_ref, base_ref, base_is_default,
        agent_account_id, owner_user_id, session_id, client_request_id,
        issue_link_forge_provider, issue_link_forge_host, issue_link_repo, issue_link_number,
        forge_key, forge_url, state, created_at, tenant_id

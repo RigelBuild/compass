@@ -479,8 +479,35 @@ func TestForgeCreatePRDefaultBranchMoveStillReplays(t *testing.T) {
 	if res.GetError() != nil || res.GetPullRequest().GetNumber() != 55 {
 		t.Fatalf("replay after default moved = %v, want PR #55", res)
 	}
-	if countCalls(creator, ic.method) != 1 || st.intents[0].BaseRef != "trunk" {
-		t.Fatalf("creates=%d base=%q, want one create on the original trunk", countCalls(creator, ic.method), st.intents[0].BaseRef)
+	if countCalls(creator, ic.method) != 1 || st.intents[0].BaseRef != "trunk" || !st.intents[0].BaseIsDefault {
+		t.Fatalf("creates=%d intent=%+v, want one create on the original default base trunk", countCalls(creator, ic.method), st.intents[0])
+	}
+}
+
+func TestForgeCreatePRExplicitBaseCannotReplayAsDefault(t *testing.T) {
+	ic := intentCases()[1]
+	svc, st, author, creator := newIntentService(t, ic)
+	call := createPRCall("b", "k1")
+	call.GetCreatePullRequest().BaseRef = "release"
+	first := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if first.GetError() != nil || first.GetPullRequest().GetNumber() != 55 {
+		t.Fatalf("first create on explicit base = %v, want PR #55", first)
+	}
+	if got := firstCreatePR(t, creator, ic.method).BaseRef; got != "release" {
+		t.Fatalf("first create base = %q, want release", got)
+	}
+
+	author.DefaultBranchResult = "main"
+	call.GetCreatePullRequest().BaseRef = ""
+	second := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if fe := second.GetError(); fe == nil || fe.GetCode() != "failed_precondition" || !strings.Contains(fe.GetMessage(), "another target") {
+		t.Fatalf("retry without a base = %v, want failed_precondition naming another target", second)
+	}
+	if countCalls(creator, ic.method) != 1 {
+		t.Fatalf("creates = %d, want 1 (the other-target retry makes none)", countCalls(creator, ic.method))
+	}
+	if len(st.intents) != 1 || st.intents[0].BaseIsDefault || st.intents[0].BaseRef != "release" {
+		t.Fatalf("write intents = %+v, want one explicit release-base intent", st.intents)
 	}
 }
 

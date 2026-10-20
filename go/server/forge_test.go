@@ -223,6 +223,7 @@ func (f *fakeForgeStore) PromoteWriteIntent(_ context.Context, in store.WriteInt
 		if f.intents[i].ID == in.ID && f.intents[i].State == store.WriteStateHeld {
 			f.intents[i].State = store.WriteStatePending
 			f.intents[i].BaseRef = in.BaseRef
+			f.intents[i].BaseIsDefault = in.BaseIsDefault
 			f.intents[i].IssueLink = in.IssueLink
 			return nil
 		}

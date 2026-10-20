@@ -109,6 +109,7 @@ func (t writeTarget) intent(id, key string) store.WriteIntent {
 		Parent:         t.parent,
 		HeadRef:        t.headRef,
 		BaseRef:        t.baseRef,
+		BaseIsDefault:  t.defaultBase,
 		IssueLink:      t.issueLink,
 		AgentAccountID: t.caller,
 		OwnerUserID:    t.id.ownerID,
@@ -125,10 +126,13 @@ func sameWriteTarget(in store.WriteIntent, t writeTarget) bool {
 		in.Kind != t.kind || in.Parent != t.parent || in.HeadRef != t.headRef || in.AgentAccountID != t.caller {
 		return false
 	}
-	if t.kind == forge.WriteKindPullRequest &&
-		((!t.defaultBase && t.baseRef != "" && in.BaseRef != "" && in.BaseRef != t.baseRef) ||
-			(t.issueLink != nil && in.IssueLink != nil && !sameForgeCoord(in.IssueLink, t.issueLink))) {
-		return false
+	if t.kind == forge.WriteKindPullRequest {
+		bothBasesDefault := in.BaseIsDefault && t.defaultBase
+		basesDiffer := in.BaseRef != "" && t.baseRef != "" && in.BaseRef != t.baseRef
+		if (!bothBasesDefault && basesDiffer) ||
+			(t.issueLink != nil && in.IssueLink != nil && !sameForgeCoord(in.IssueLink, t.issueLink)) {
+			return false
+		}
 	}
 	return true
 }
