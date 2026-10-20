@@ -298,7 +298,7 @@ matches the exact URL. Paste it once more to save it under the origin
 (`NormalizeServerURL` in `go/internal/appconfig/appconfig.go` and `Store.Read`
 in `go/internal/tokenstore/tokenstore.go`).
 
-Before connecting, open a second window via **Window → New Window** while the
+Before connecting, open a second window via **File → New Window** while the
 first window still shows the chooser. Confirm the second window also shows the
 chooser. In the first window, choose **Connect to a server**.
 
@@ -474,7 +474,7 @@ rm -rf "$CCONFIG" "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
 
 - [ ] with no `app.toml`, `--mode`, or `COMPASS_APP_MODE` override, the app opens
       the first-run chooser (§Part (b), 3)
-- [ ] open **Window → New Window** while both windows show the chooser; complete
+- [ ] open **File → New Window** while both windows show the chooser; complete
       the invalid-URL checks and connect in the first window, then confirm the
       second window leaves the chooser and reaches the board (§Part (b), 3)
 - [ ] before the successful connection, `http://x` and `https://h/p` each show a

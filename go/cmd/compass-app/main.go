@@ -141,23 +141,15 @@ func run(ctx context.Context) error {
 		}
 	})
 
-	// The menu is installed in every mode. The embedded-only quit item is gated
-	// on quitter; setup and client mode have no stack teardown controller.
-	menu := application.NewMenu()
+	actions := appMenuActions{
+		newWindow: func() { newAppWindow(app, svc, nextWindowName(app), "Compass") },
+	}
 	if quitter != nil {
 		quitter.quit = app.Quit
-		fileMenu := menu.AddSubmenu("File")
-		fileMenu.Add("Quit and stop stack").OnClick(func(_ *application.Context) {
-			// stopStackAndQuit derives its bounded teardown deadline from the run root.
-			quitter.stopStackAndQuit(ctx)
-		})
+		// stopStackAndQuit derives its bounded teardown deadline from the run root.
+		actions.stopStackAndQuit = func() { quitter.stopStackAndQuit(ctx) }
 	}
-	windowMenu := menu.AddSubmenu("Window")
-	windowMenu.Add("New Window").OnClick(func(_ *application.Context) {
-		name := nextWindowName(app)
-		newAppWindow(app, svc, name, "Compass")
-	})
-	app.Menu.Set(menu)
+	app.Menu.Set(buildAppMenu(actions))
 
 	// Restore saved windows; each page reads shell state when its script loads.
 	names := windowNamesOrDefault(loadWindowSet(stateDir))
