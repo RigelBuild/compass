@@ -47,6 +47,8 @@ type fakeForgeStore struct {
 
 	prCreates []prCreate
 	recorded  []store.AuthoredArtifact
+	prRows    []store.PullRequestRow
+	prLinks   []store.ForgeCoord
 
 	// Records transition order and can force a memo-write fault.
 	transitions []recordedTransition
@@ -65,7 +67,6 @@ type fakeForgeStore struct {
 	scopeArgs     []string
 	mirrorModes   map[string]store.ForgeMirrorMode
 	mirrorModeErr error
-	prRows        []store.PullRequestRow
 	prErr         error
 }
 
@@ -217,19 +218,22 @@ func (f *fakeForgeStore) HoldWriteIntent(_ context.Context, in store.WriteIntent
 	return in, nil
 }
 
-func (f *fakeForgeStore) PromoteWriteIntent(_ context.Context, id string) error {
+func (f *fakeForgeStore) PromoteWriteIntent(_ context.Context, in store.WriteIntent) error {
 	for i := range f.intents {
-		if f.intents[i].ID == id && f.intents[i].State == store.WriteStateHeld {
+		if f.intents[i].ID == in.ID && f.intents[i].State == store.WriteStateHeld {
 			f.intents[i].State = store.WriteStatePending
+			f.intents[i].BaseRef = in.BaseRef
+			f.intents[i].IssueLink = in.IssueLink
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: write intent %q is not held", store.ErrConflict, id)
+	return fmt.Errorf("%w: write intent %q is not held", store.ErrConflict, in.ID)
 }
 
 // CompleteWriteIntent writes the ownership row (issue, PR) or keeps the forge
 // key (comment, review) and marks the pending attempt done.
-func (f *fakeForgeStore) CompleteWriteIntent(_ context.Context, id string, artifact *store.AuthoredArtifact, forgeKey string) error {
+// It also stores the forge URL for same-key replay.
+func (f *fakeForgeStore) CompleteWriteIntent(_ context.Context, id string, artifact *store.AuthoredArtifact, forgeKey, forgeURL string) error {
 	if f.recErr != nil {
 		return f.recErr
 	}
@@ -246,6 +250,30 @@ func (f *fakeForgeStore) CompleteWriteIntent(_ context.Context, id string, artif
 	}
 	w.State = store.WriteStateDone
 	w.ForgeKey = forgeKey
+	w.ForgeURL = forgeURL
+	return nil
+}
+
+func (f *fakeForgeStore) CompletePullRequestWriteIntent(_ context.Context, id string, artifact store.AuthoredArtifact, pr store.PullRequestRow, forgeURL string) error {
+	if f.recErr != nil {
+		return f.recErr
+	}
+	w, err := f.intent(id)
+	if err != nil {
+		return err
+	}
+	if w.State != store.WriteStatePending {
+		return fmt.Errorf("%w: write intent %q is %s", store.ErrConflict, id, w.State)
+	}
+	f.recordArtifact(artifact)
+	f.prCreates = append(f.prCreates, prCreate{row: pr, link: w.IssueLink})
+	f.prRows = append(f.prRows, pr)
+	if w.IssueLink != nil {
+		f.prLinks = append(f.prLinks, *w.IssueLink)
+	}
+	w.State = store.WriteStateDone
+	w.ForgeKey = strconv.FormatUint(artifact.Number, 10)
+	w.ForgeURL = forgeURL
 	return nil
 }
 

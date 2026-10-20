@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -152,7 +153,7 @@ func TestHoldWriteIntentReservesKeyWithoutClaimingHead(t *testing.T) {
 	if pending, err := s.PendingWriteIntents(t.Context(), time.Now().Add(time.Hour), 10); err != nil || slices.ContainsFunc(pending, func(w WriteIntent) bool { return w.ID == held.ID }) {
 		t.Fatalf("pending = %+v, %v; want the held row excluded", pending, err)
 	}
-	if err := s.PromoteWriteIntent(t.Context(), held.ID); !errors.Is(err, ErrConflict) {
+	if err := s.PromoteWriteIntent(t.Context(), held); !errors.Is(err, ErrConflict) {
 		t.Fatalf("promote onto a claimed head = %v, want ErrConflict", err)
 	}
 }
@@ -164,14 +165,14 @@ func TestPromoteWriteIntentOnlyMovesHeldRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HoldWriteIntent: %v", err)
 	}
-	if err := s.PromoteWriteIntent(t.Context(), held.ID); err != nil {
+	if err := s.PromoteWriteIntent(t.Context(), held); err != nil {
 		t.Fatalf("PromoteWriteIntent: %v", err)
 	}
 	got, err := s.RecordWriteIntent(t.Context(), in)
 	if err != nil || got.ID != held.ID || got.State != WriteStatePending {
 		t.Fatalf("replay after promote = %+v, %v; want the same row pending", got, err)
 	}
-	if err := s.PromoteWriteIntent(t.Context(), held.ID); !errors.Is(err, ErrConflict) {
+	if err := s.PromoteWriteIntent(t.Context(), held); !errors.Is(err, ErrConflict) {
 		t.Fatalf("second promote = %v, want ErrConflict", err)
 	}
 }
@@ -234,7 +235,7 @@ func TestCompleteWriteIntentIsAtomicAndPendingOnly(t *testing.T) {
 		AgentAccountID: in.AgentAccountID, OwnerUserID: in.OwnerUserID,
 		SessionID: in.SessionID, CreatedAtUnixMS: 100,
 	}
-	if err := s.CompleteWriteIntent(t.Context(), intent.ID, &artifact, ""); err != nil {
+	if err := s.CompleteWriteIntent(t.Context(), intent.ID, &artifact, "", ""); err != nil {
 		t.Fatalf("CompleteWriteIntent: %v", err)
 	}
 
@@ -248,7 +249,7 @@ func TestCompleteWriteIntentIsAtomicAndPendingOnly(t *testing.T) {
 
 	secondArtifact := artifact
 	secondArtifact.Number = 43
-	if err := s.CompleteWriteIntent(t.Context(), intent.ID, &secondArtifact, ""); !errors.Is(err, ErrConflict) {
+	if err := s.CompleteWriteIntent(t.Context(), intent.ID, &secondArtifact, "", ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("CompleteWriteIntent(done) = %v, want ErrConflict", err)
 	}
 	if _, err := s.AuthoredArtifactByCoordinateFold(t.Context(), artifact.Provider, artifact.Host, artifact.Repo, artifact.Kind, secondArtifact.Number); !errors.Is(err, ErrNotFound) {
@@ -269,7 +270,7 @@ func TestCompleteCommentIntentStoresForgeKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordWriteIntent: %v", err)
 	}
-	if err := s.CompleteWriteIntent(t.Context(), intent.ID, nil, "comment-123"); err != nil {
+	if err := s.CompleteWriteIntent(t.Context(), intent.ID, nil, "comment-123", "https://github.com/owner/repo/issues/7#issuecomment-123"); err != nil {
 		t.Fatalf("CompleteWriteIntent(comment): %v", err)
 	}
 
@@ -279,6 +280,63 @@ func TestCompleteCommentIntentStoresForgeKey(t *testing.T) {
 	}
 	if state != string(WriteStateDone) || forgeKey != "comment-123" {
 		t.Fatalf("completed comment intent = state %q, forge key %q", state, forgeKey)
+	}
+}
+
+func TestCompletePullRequestWriteIntentRestoresRecoveryState(t *testing.T) {
+	s := newTestStore(t)
+	in := writeIntentFixture(t, s, "intent-pr-recovery", "key-pr-recovery", "feature/recovery")
+	in.BaseRef = "main"
+	in.IssueLink = &ForgeCoord{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "Owner/IssueRepo", Number: 17}
+	intent, err := s.RecordWriteIntent(t.Context(), in)
+	if err != nil {
+		t.Fatalf("RecordWriteIntent: %v", err)
+	}
+	if intent.BaseRef != in.BaseRef || intent.IssueLink == nil || *intent.IssueLink != in.IssueLink.Normalized() {
+		t.Fatalf("recorded recovery metadata = base %q link %+v, want %q and %+v", intent.BaseRef, intent.IssueLink, in.BaseRef, in.IssueLink.Normalized())
+	}
+	pending, err := s.PendingWriteIntents(t.Context(), time.Now().Add(time.Hour), 10)
+	if err != nil {
+		t.Fatalf("PendingWriteIntents: %v", err)
+	}
+	if len(pending) != 1 || pending[0].BaseRef != in.BaseRef || pending[0].IssueLink == nil || *pending[0].IssueLink != in.IssueLink.Normalized() {
+		t.Fatalf("pending recovery metadata = %+v, want base %q and link %+v", pending, in.BaseRef, in.IssueLink.Normalized())
+	}
+
+	artifact := AuthoredArtifact{
+		Provider: in.Provider, Host: in.Host, Repo: in.Repo, Kind: ForgeArtifactKindPullRequest, Number: 55,
+		AgentAccountID: in.AgentAccountID, OwnerUserID: in.OwnerUserID, SessionID: in.SessionID, CreatedAtUnixMS: 100,
+	}
+	pr := PullRequestRow{
+		Coord: ForgeCoord{Provider: in.Provider, Host: in.Host, Repo: "owner/repo", Number: 55},
+		State: "open", CreatedAt: time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(0, 0).UTC(), PR: []byte(`{"number":55}`),
+	}
+	const forgeURL = "https://github.com/owner/repo/pull/55"
+	if err := s.CompletePullRequestWriteIntent(t.Context(), intent.ID, artifact, pr, forgeURL); err != nil {
+		t.Fatalf("CompletePullRequestWriteIntent: %v", err)
+	}
+	gotArtifact, err := s.AuthoredArtifactByCoordinateFold(t.Context(), artifact.Provider, artifact.Host, artifact.Repo, artifact.Kind, artifact.Number)
+	if err != nil || gotArtifact.AgentAccountID != in.AgentAccountID || gotArtifact.OwnerUserID != in.OwnerUserID || gotArtifact.ClientRequestID != "" {
+		t.Fatalf("recovered ownership = %+v, %v", gotArtifact, err)
+	}
+	prs, err := s.PullRequestsByCoords(t.Context(), []ForgeCoord{pr.Coord})
+	if err != nil || len(prs) != 1 || prs[0].Coord.Number != pr.Coord.Number || !prs[0].CreatedAt.Equal(pr.CreatedAt) || !prs[0].UpdatedAt.Equal(pr.UpdatedAt) {
+		t.Fatalf("recovered pull request rows = %+v, %v", prs, err)
+	}
+	var gotPR map[string]json.Number
+	if err := json.Unmarshal(prs[0].PR, &gotPR); err != nil || gotPR["number"] != "55" {
+		t.Fatalf("recovered pull request JSON = %s, %v", prs[0].PR, err)
+	}
+	links, err := s.PullRequestLinks(t.Context(), pr.Coord)
+	if err != nil || len(links) != 1 || links[0] != in.IssueLink.Normalized() {
+		t.Fatalf("recovered explicit links = %+v, %v; want %+v", links, err, in.IssueLink.Normalized())
+	}
+	var state, forgeKey, storedURL string
+	if err := s.pool.QueryRow(t.Context(), "SELECT state, forge_key, forge_url FROM forge_write_intents WHERE id = $1", intent.ID).Scan(&state, &forgeKey, &storedURL); err != nil {
+		t.Fatalf("read completed recovery intent: %v", err)
+	}
+	if state != string(WriteStateDone) || forgeKey != "55" || storedURL != forgeURL {
+		t.Fatalf("completed recovery intent = state %q key %q URL %q", state, forgeKey, storedURL)
 	}
 }
 
@@ -312,7 +370,7 @@ FOR EACH ROW EXECUTE FUNCTION fail_write_intent_completion();`); err != nil {
 		AgentAccountID: in.AgentAccountID, OwnerUserID: in.OwnerUserID,
 		SessionID: in.SessionID, CreatedAtUnixMS: 100,
 	}
-	if err := s.CompleteWriteIntent(t.Context(), intent.ID, &artifact, ""); err == nil {
+	if err := s.CompleteWriteIntent(t.Context(), intent.ID, &artifact, "", ""); err == nil {
 		t.Fatal("CompleteWriteIntent succeeded with failing state trigger")
 	}
 	if _, err := s.AuthoredArtifactByCoordinateFold(t.Context(), artifact.Provider, artifact.Host, artifact.Repo, artifact.Kind, artifact.Number); !errors.Is(err, ErrNotFound) {

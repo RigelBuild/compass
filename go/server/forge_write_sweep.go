@@ -24,8 +24,9 @@ const (
 	// writeSweepMinAge leaves a create in flight alone until it has had time to land.
 	writeSweepMinAge = time.Minute
 	// writeLostAfter is how long the sweep looks for an object before giving up.
-	writeLostAfter  = 24 * time.Hour
-	writeSweepLimit = 100
+	writeLostAfter   = 24 * time.Hour
+	writeSweepLimit  = 100
+	writePRClockSkew = time.Minute
 
 	writePendingMessage = "pending: the Server is still checking the forge; retry later"
 	writeLostMessage    = "the create's outcome is unknown; check the forge before creating it again"
@@ -34,14 +35,16 @@ const (
 
 // writeTarget names one create made for an agent.
 type writeTarget struct {
-	rf      resolvedForge
-	id      callerIdentity
-	caller  store.AccountID
-	session string
-	repo    string
-	kind    forge.WriteKind
-	parent  uint64
-	headRef string
+	rf        resolvedForge
+	id        callerIdentity
+	caller    store.AccountID
+	session   string
+	repo      string
+	kind      forge.WriteKind
+	parent    uint64
+	headRef   string
+	baseRef   string
+	issueLink *store.ForgeCoord
 }
 
 // beginWrite records the create's intent before any forge call. A non-nil ref
@@ -63,10 +66,12 @@ func (s *forgeService) beginWrite(ctx context.Context, key string, t writeTarget
 	switch in.State {
 	case store.WriteStateHeld:
 		// A stack preflight reserved this key for this target and sent nothing; the create is now ours to send.
-		if err := s.store.PromoteWriteIntent(ctx, in.ID); err != nil {
+		if err := s.store.PromoteWriteIntent(ctx, t.intent(in.ID, key)); err != nil {
 			return in, nil, storeForgeError(err)
 		}
 		in.State = store.WriteStatePending
+		in.BaseRef = t.baseRef
+		in.IssueLink = t.issueLink
 		return in, nil, nil
 	case store.WriteStateDone:
 		ref, fe := intentRef(in)
@@ -75,11 +80,11 @@ func (s *forgeService) beginWrite(ctx context.Context, key string, t writeTarget
 		return in, nil, forgeErr(connect.CodeFailedPrecondition, writeLostMessage)
 	case store.WriteStatePending:
 		// An earlier attempt may still be in flight, so look for its object; never resend.
-		ref, found, err := s.findWrite(ctx, in)
+		ref, pr, found, err := s.findWrite(ctx, in)
 		if err != nil || !found {
 			return in, nil, forgeErr(connect.CodeUnavailable, writePendingMessage)
 		}
-		if fe := s.completeFound(ctx, in, ref); fe != nil {
+		if fe := s.completeFound(ctx, in, ref, pr); fe != nil {
 			return in, nil, fe
 		}
 		return in, &ref, nil
@@ -101,6 +106,8 @@ func (t writeTarget) intent(id, key string) store.WriteIntent {
 		Kind:           t.kind,
 		Parent:         t.parent,
 		HeadRef:        t.headRef,
+		BaseRef:        t.baseRef,
+		IssueLink:      t.issueLink,
 		AgentAccountID: t.caller,
 		OwnerUserID:    t.id.ownerID,
 		SessionID:      t.session,
@@ -112,8 +119,22 @@ func (t writeTarget) intent(id, key string) store.WriteIntent {
 func sameWriteTarget(in store.WriteIntent, t writeTarget) bool {
 	provider := store.ForgeProvider(t.rf.provider)
 	fold := func(repo string) string { return store.ForgeCoord{Provider: provider, Repo: repo}.Normalized().Repo }
-	return in.Provider == provider && in.Host == t.rf.host && fold(in.Repo) == fold(t.repo) &&
-		in.Kind == t.kind && in.Parent == t.parent && in.HeadRef == t.headRef && in.AgentAccountID == t.caller
+	if in.Provider != provider || in.Host != t.rf.host || fold(in.Repo) != fold(t.repo) ||
+		in.Kind != t.kind || in.Parent != t.parent || in.HeadRef != t.headRef || in.AgentAccountID != t.caller {
+		return false
+	}
+	if t.kind == forge.WriteKindPullRequest &&
+		((t.baseRef != "" && in.BaseRef != "" && in.BaseRef != t.baseRef) ||
+			(t.issueLink != nil && in.IssueLink != nil && !sameForgeCoord(in.IssueLink, t.issueLink))) {
+		return false
+	}
+	return true
+}
+func sameForgeCoord(a, b *store.ForgeCoord) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Normalized() == b.Normalized()
 }
 
 // requireWriteKey refuses a create with no idempotency key: the intent cannot exist without one.
@@ -164,13 +185,13 @@ func forgeRefused(err error) bool {
 		return false
 	}
 	se, ok := errors.AsType[*forge.StatusError](err)
-	return ok && se.Status >= 400 && se.Status < 500 && se.Status != 429
+	return ok && se.Status >= 400 && se.Status < 500 && se.Status != 408 && se.Status != 429
 }
 
 // completeWrite marks a fresh attempt done. A conflict means the sweep already
 // recorded the same object, so the create still succeeded.
-func (s *forgeService) completeWrite(ctx context.Context, intentID string, artifact *store.AuthoredArtifact, forgeKey string) *compassv1internal.ForgeCallError {
-	if err := s.store.CompleteWriteIntent(ctx, intentID, artifact, forgeKey); err != nil && !errors.Is(err, store.ErrConflict) {
+func (s *forgeService) completeWrite(ctx context.Context, intentID string, artifact *store.AuthoredArtifact, forgeKey, forgeURL string) *compassv1internal.ForgeCallError {
+	if err := s.store.CompleteWriteIntent(ctx, intentID, artifact, forgeKey, forgeURL); err != nil && !errors.Is(err, store.ErrConflict) {
 		return storeForgeError(err)
 	}
 	return nil
@@ -178,49 +199,55 @@ func (s *forgeService) completeWrite(ctx context.Context, intentID string, artif
 
 // findWrite looks for the object a pending intent may have created: a PR by
 // its head, anything else by the intent's marker or id.
-func (s *forgeService) findWrite(ctx context.Context, in store.WriteIntent) (forge.WrittenRef, bool, error) {
+// A found PR is returned too.
+func (s *forgeService) findWrite(ctx context.Context, in store.WriteIntent) (forge.WrittenRef, *forge.PullRequest, bool, error) {
 	rf, ok := s.providers.resolve(&compassv1.ForgeRef{Provider: compassv1.ForgeProvider(in.Provider), Host: in.Host})
 	if !ok {
-		return forge.WrittenRef{}, false, fmt.Errorf("forge: no provider configured for %d/%s", in.Provider, in.Host)
+		return forge.WrittenRef{}, nil, false, fmt.Errorf("forge: no provider configured for %d/%s", in.Provider, in.Host)
 	}
 	switch in.Kind {
 	case forge.WriteKindPullRequest:
 		pr, found, err := rf.author.FindPullRequestByHead(ctx, in.Repo, in.HeadRef)
 		if err != nil || !found {
-			return forge.WrittenRef{}, false, err
+			return forge.WrittenRef{}, nil, false, err
 		}
-		return forge.WrittenRef{Number: pr.Number, URL: pr.URL}, true, nil
+		// A reused head can carry an older PR, so adopt only one created after the intent.
+		// An empty base asked for the default branch, which is not resolved here, so only an explicit base is compared.
+		if (in.BaseRef != "" && pr.BaseRef != in.BaseRef) ||
+			pr.CreatedAt.IsZero() || pr.CreatedAt.Before(in.CreatedAt.Add(-writePRClockSkew)) {
+			return forge.WrittenRef{}, nil, false, nil
+		}
+		return forge.WrittenRef{Number: pr.Number, URL: pr.URL}, &pr, true, nil
 	case forge.WriteKindReview:
-		return rf.reviewer.FindByWriteMarker(ctx, in.Repo, in.Kind, in.Parent, in.ID, in.CreatedAt)
+		ref, found, err := rf.reviewer.FindByWriteMarker(ctx, in.Repo, in.Kind, in.Parent, in.ID, in.CreatedAt)
+		return ref, nil, found, err
 	case forge.WriteKindIssue, forge.WriteKindComment:
-		return rf.author.FindByWriteMarker(ctx, in.Repo, in.Kind, in.Parent, in.ID, in.CreatedAt)
+		ref, found, err := rf.author.FindByWriteMarker(ctx, in.Repo, in.Kind, in.Parent, in.ID, in.CreatedAt)
+		return ref, nil, found, err
 	default:
-		return forge.WrittenRef{}, false, fmt.Errorf("forge: write intent %s has unknown kind %d", in.ID, in.Kind)
+		return forge.WrittenRef{}, nil, false, fmt.Errorf("forge: write intent %s has unknown kind %d", in.ID, in.Kind)
 	}
 }
 
 // completeFound records a recovered object against its pending intent.
-func (s *forgeService) completeFound(ctx context.Context, in store.WriteIntent, ref forge.WrittenRef) *compassv1internal.ForgeCallError {
+func (s *forgeService) completeFound(ctx context.Context, in store.WriteIntent, ref forge.WrittenRef, pr *forge.PullRequest) *compassv1internal.ForgeCallError {
+	a := store.AuthoredArtifact{
+		Provider: in.Provider, Host: in.Host, Repo: in.Repo,
+		AgentAccountID: in.AgentAccountID, OwnerUserID: in.OwnerUserID,
+		SessionID: in.SessionID, CreatedAtUnixMS: s.now().UnixMilli(),
+	}
 	switch in.Kind {
-	case forge.WriteKindIssue, forge.WriteKindPullRequest:
-		kind := store.ForgeArtifactKindIssue
-		if in.Kind == forge.WriteKindPullRequest {
-			kind = store.ForgeArtifactKindPullRequest
+	case forge.WriteKindIssue:
+		a.Kind, a.Number = store.ForgeArtifactKindIssue, ref.Number
+		return s.completeWrite(ctx, in.ID, &a, "", ref.URL)
+	case forge.WriteKindPullRequest:
+		if pr == nil {
+			return forgeErr(connect.CodeInternal, fmt.Sprintf("forge: write intent %s found no pull request", in.ID))
 		}
-		a := store.AuthoredArtifact{
-			Provider:        in.Provider,
-			Host:            in.Host,
-			Repo:            in.Repo,
-			Kind:            kind,
-			Number:          ref.Number,
-			AgentAccountID:  in.AgentAccountID,
-			OwnerUserID:     in.OwnerUserID,
-			SessionID:       in.SessionID,
-			CreatedAtUnixMS: s.now().UnixMilli(),
-		}
-		return s.completeWrite(ctx, in.ID, &a, "")
+		a.Kind, a.Number = store.ForgeArtifactKindPullRequest, ref.Number
+		return s.recordPullRequest(ctx, in.ID, a, *pr, in.IssueLink)
 	case forge.WriteKindComment, forge.WriteKindReview:
-		return s.completeWrite(ctx, in.ID, nil, ref.Key)
+		return s.completeWrite(ctx, in.ID, nil, ref.Key, ref.URL)
 	default:
 		return forgeErr(connect.CodeInternal, fmt.Sprintf("forge: write intent %s has unknown kind %d", in.ID, in.Kind))
 	}
@@ -228,7 +255,7 @@ func (s *forgeService) completeFound(ctx context.Context, in store.WriteIntent, 
 
 // intentRef returns a done attempt's object; the arm renders it with no forge call.
 func intentRef(in store.WriteIntent) (*forge.WrittenRef, *compassv1internal.ForgeCallError) {
-	ref := forge.WrittenRef{Key: in.ForgeKey}
+	ref := forge.WrittenRef{Key: in.ForgeKey, URL: in.ForgeURL}
 	if in.Kind == forge.WriteKindIssue || in.Kind == forge.WriteKindPullRequest {
 		n, err := strconv.ParseUint(in.ForgeKey, 10, 64)
 		if err != nil {
@@ -305,13 +332,13 @@ func (s *forgeService) sweepWriteIntents(ctx context.Context) error {
 	}
 	for _, in := range pending {
 		tctx := store.WithTenant(store.WithoutSystemRole(ctx), in.TenantID)
-		ref, found, err := s.findWrite(tctx, in)
+		ref, pr, found, err := s.findWrite(tctx, in)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("forge: find write intent %s: %w", in.ID, err))
 			continue
 		}
 		if found {
-			if fe := s.completeFound(tctx, in, ref); fe != nil {
+			if fe := s.completeFound(tctx, in, ref, pr); fe != nil {
 				errs = append(errs, fmt.Errorf("forge: complete write intent %s: %s", in.ID, fe.GetMessage()))
 			}
 			continue

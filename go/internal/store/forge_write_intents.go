@@ -28,6 +28,38 @@ const (
 	WriteStateLost    WriteState = "lost"
 )
 
+func nullableText(value string) pgtype.Text {
+	return pgtype.Text{String: value, Valid: value != ""}
+}
+
+func nullableForgeProvider(coord *ForgeCoord) pgtype.Int2 {
+	if coord == nil {
+		return pgtype.Int2{}
+	}
+	return pgtype.Int2{Int16: int16(coord.Provider), Valid: true} //nolint:gosec // G115: normalizedWriteIntent restricts providers to the stored enum.
+}
+
+func nullableIssueLinkHost(coord *ForgeCoord) pgtype.Text {
+	if coord == nil {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: coord.Host, Valid: true}
+}
+
+func nullableIssueLinkRepo(coord *ForgeCoord) pgtype.Text {
+	if coord == nil {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: coord.Repo, Valid: true}
+}
+
+func nullableIssueLinkNumber(coord *ForgeCoord) pgtype.Int8 {
+	if coord == nil {
+		return pgtype.Int8{}
+	}
+	return pgtype.Int8{Int64: int64(coord.Number), Valid: true} //nolint:gosec // G115: validated coordinate numbers fit BIGINT.
+}
+
 // WriteIntent records one forge create attempt and the agent that owns its result.
 type WriteIntent struct {
 	// ID is the attempt id; a caller may set it so it can tell its own new attempt from a replay.
@@ -38,6 +70,8 @@ type WriteIntent struct {
 	Kind           forge.WriteKind
 	Parent         uint64
 	HeadRef        string
+	BaseRef        string
+	IssueLink      *ForgeCoord
 	AgentAccountID AccountID
 	OwnerUserID    AccountID
 	SessionID      string
@@ -45,6 +79,7 @@ type WriteIntent struct {
 	State          WriteState
 	// ForgeKey, CreatedAt, and TenantID are read back; RecordWriteIntent ignores them on input.
 	ForgeKey  string
+	ForgeURL  string
 	CreatedAt time.Time
 	TenantID  TenantID
 }
@@ -57,17 +92,22 @@ func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteInt
 		return WriteIntent{}, err
 	}
 	row, err := s.q.RecordForgeWriteIntent(ctx, db.RecordForgeWriteIntentParams{
-		ID:              in.ID,
-		ForgeProvider:   int16(in.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum.
-		ForgeHost:       in.Host,
-		Repo:            in.Repo,
-		Kind:            int16(in.Kind),
-		ParentNumber:    int64(in.Parent), //nolint:gosec // G115: normalizedWriteIntent bounds Parent to MaxInt64.
-		HeadRef:         in.HeadRef,
-		AgentAccountID:  string(in.AgentAccountID),
-		OwnerUserID:     string(in.OwnerUserID),
-		SessionID:       in.SessionID,
-		ClientRequestID: in.RequestKey,
+		ID:                     in.ID,
+		ForgeProvider:          int16(in.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum.
+		ForgeHost:              in.Host,
+		Repo:                   in.Repo,
+		Kind:                   int16(in.Kind),
+		ParentNumber:           int64(in.Parent), //nolint:gosec // G115: normalizedWriteIntent bounds Parent to MaxInt64.
+		HeadRef:                in.HeadRef,
+		BaseRef:                nullableText(in.BaseRef),
+		IssueLinkForgeProvider: nullableForgeProvider(in.IssueLink),
+		IssueLinkForgeHost:     nullableIssueLinkHost(in.IssueLink),
+		IssueLinkRepo:          nullableIssueLinkRepo(in.IssueLink),
+		IssueLinkNumber:        nullableIssueLinkNumber(in.IssueLink),
+		AgentAccountID:         string(in.AgentAccountID),
+		OwnerUserID:            string(in.OwnerUserID),
+		SessionID:              in.SessionID,
+		ClientRequestID:        in.RequestKey,
 	})
 	if err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
@@ -78,7 +118,14 @@ func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteInt
 		}
 		return WriteIntent{}, fmt.Errorf("store: record forge write intent: %w", err)
 	}
-	return writeIntentFromRow(row), nil
+	return writeIntentFromRow(db.ForgeWriteIntent{
+		ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
+		Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
+		AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
+		ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
+		IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
+		ForgeKey: row.ForgeKey, ForgeUrl: row.ForgeUrl, State: row.State, CreatedAt: row.CreatedAt, TenantID: row.TenantID,
+	}), nil
 }
 
 // HoldWriteIntent reserves the agent's request key for in's target without
@@ -90,17 +137,10 @@ func (s *Store) HoldWriteIntent(ctx context.Context, in WriteIntent) (WriteInten
 		return WriteIntent{}, err
 	}
 	row, err := s.q.HoldForgeWriteIntent(ctx, db.HoldForgeWriteIntentParams{
-		ID:              in.ID,
-		ForgeProvider:   int16(in.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum.
-		ForgeHost:       in.Host,
-		Repo:            in.Repo,
-		Kind:            int16(in.Kind),
-		ParentNumber:    int64(in.Parent), //nolint:gosec // G115: normalizedWriteIntent bounds Parent to MaxInt64.
-		HeadRef:         in.HeadRef,
-		AgentAccountID:  string(in.AgentAccountID),
-		OwnerUserID:     string(in.OwnerUserID),
-		SessionID:       in.SessionID,
-		ClientRequestID: in.RequestKey,
+		ID: in.ID, ForgeProvider: int16(in.Provider), ForgeHost: in.Host, //nolint:gosec // G115: normalizedWriteIntent restricts providers to the stored enum.
+		Repo: in.Repo, Kind: int16(in.Kind), ParentNumber: int64(in.Parent), HeadRef: in.HeadRef, //nolint:gosec // G115: normalizedWriteIntent bounds Parent to MaxInt64.
+		BaseRef: nullableText(in.BaseRef), AgentAccountID: string(in.AgentAccountID),
+		OwnerUserID: string(in.OwnerUserID), SessionID: in.SessionID, ClientRequestID: in.RequestKey,
 	})
 	if err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
@@ -108,16 +148,47 @@ func (s *Store) HoldWriteIntent(ctx context.Context, in WriteIntent) (WriteInten
 		}
 		return WriteIntent{}, fmt.Errorf("store: hold forge write intent: %w", err)
 	}
-	return writeIntentFromRow(row), nil
+	return writeIntentFromRow(db.ForgeWriteIntent{
+		ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
+		Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
+		AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
+		ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
+		IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
+		ForgeKey: row.ForgeKey, ForgeUrl: row.ForgeUrl, State: row.State, CreatedAt: row.CreatedAt, TenantID: row.TenantID,
+	}), nil
 }
 
 // PromoteWriteIntent turns a held attempt pending just before its create is
 // sent. ErrConflict means it is no longer held, or another attempt holds the PR head.
-func (s *Store) PromoteWriteIntent(ctx context.Context, id string) error {
-	if id == "" {
+func (s *Store) PromoteWriteIntent(ctx context.Context, in WriteIntent) error {
+	if in.ID == "" {
 		return fmt.Errorf("%w: write intent id is required", ErrInvalidArgument)
 	}
-	affected, err := s.q.PromoteForgeWriteIntent(ctx, id)
+	if in.BaseRef != "" && in.Kind != forge.WriteKindPullRequest {
+		return fmt.Errorf("%w: base ref is only valid for pull requests", ErrInvalidArgument)
+	}
+	if in.IssueLink != nil && in.Kind != forge.WriteKindPullRequest {
+		return fmt.Errorf("%w: issue link is only valid for pull requests", ErrInvalidArgument)
+	}
+	var link *ForgeCoord
+	if in.IssueLink != nil {
+		normalized := in.IssueLink.Normalized()
+		if normalized.Provider < ForgeProviderGitHub || normalized.Provider > ForgeProviderLinear {
+			return fmt.Errorf("%w: invalid pull request issue link provider", ErrInvalidArgument)
+		}
+		if err := normalized.valid(); err != nil || normalized.Number > math.MaxInt64 {
+			return fmt.Errorf("%w: invalid pull request issue link", ErrInvalidArgument)
+		}
+		link = &normalized
+	}
+	affected, err := s.q.PromoteForgeWriteIntent(ctx, db.PromoteForgeWriteIntentParams{
+		ID:                     in.ID,
+		BaseRef:                nullableText(in.BaseRef),
+		IssueLinkForgeProvider: nullableForgeProvider(link),
+		IssueLinkForgeHost:     nullableIssueLinkHost(link),
+		IssueLinkRepo:          nullableIssueLinkRepo(link),
+		IssueLinkNumber:        nullableIssueLinkNumber(link),
+	})
 	if err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return fmt.Errorf("%w: pull request head is already claimed", ErrConflict)
@@ -125,12 +196,14 @@ func (s *Store) PromoteWriteIntent(ctx context.Context, id string) error {
 		return fmt.Errorf("store: promote forge write intent: %w", err)
 	}
 	if affected != 1 {
-		return fmt.Errorf("%w: write intent %q is not held", ErrConflict, id)
+		return fmt.Errorf("%w: write intent %q is not held", ErrConflict, in.ID)
 	}
 	return nil
 }
-
 func normalizedWriteIntent(in WriteIntent) (WriteIntent, error) {
+	if in.Provider < ForgeProviderGitHub || in.Provider > ForgeProviderLinear {
+		return WriteIntent{}, fmt.Errorf("%w: unsupported forge provider %d", ErrInvalidArgument, in.Provider)
+	}
 	if err := validCoordinate(in.Provider, in.Host, in.Repo); err != nil {
 		return WriteIntent{}, err
 	}
@@ -152,8 +225,18 @@ func normalizedWriteIntent(in WriteIntent) (WriteIntent, error) {
 	if (in.Kind == forge.WriteKindComment || in.Kind == forge.WriteKindReview) && in.Parent == 0 {
 		return WriteIntent{}, fmt.Errorf("%w: parent number is required", ErrInvalidArgument)
 	}
-	if in.Kind != forge.WriteKindPullRequest && in.HeadRef != "" {
-		return WriteIntent{}, fmt.Errorf("%w: head ref is only valid for pull requests", ErrInvalidArgument)
+	if in.Kind != forge.WriteKindPullRequest && (in.HeadRef != "" || in.BaseRef != "" || in.IssueLink != nil) {
+		return WriteIntent{}, fmt.Errorf("%w: PR metadata is only valid for pull requests", ErrInvalidArgument)
+	}
+	if in.IssueLink != nil {
+		normalized := in.IssueLink.Normalized()
+		if normalized.Provider < ForgeProviderGitHub || normalized.Provider > ForgeProviderLinear {
+			return WriteIntent{}, fmt.Errorf("%w: invalid pull request issue link provider", ErrInvalidArgument)
+		}
+		if err := normalized.valid(); err != nil || normalized.Number > math.MaxInt64 {
+			return WriteIntent{}, fmt.Errorf("%w: invalid pull request issue link", ErrInvalidArgument)
+		}
+		in.IssueLink = &normalized
 	}
 	if in.ID == "" {
 		in.ID = uuid.NewString()
@@ -185,12 +268,22 @@ func (s *Store) PRIntentForHead(ctx context.Context, provider ForgeProvider, hos
 		}
 		return WriteIntent{}, fmt.Errorf("store: read forge write intent by head: %w", err)
 	}
-	return writeIntentFromRow(row), nil
+	return writeIntentFromRow(db.ForgeWriteIntent{
+		ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
+		Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
+		AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
+		ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
+		IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
+		ForgeKey: row.ForgeKey, ForgeUrl: row.ForgeUrl, State: row.State, CreatedAt: row.CreatedAt, TenantID: row.TenantID,
+	}), nil
 }
 
 // CompleteWriteIntent records artifact ownership or a comment/review forge key
 // and marks the pending attempt done in one transaction.
-func (s *Store) CompleteWriteIntent(ctx context.Context, id string, artifact *AuthoredArtifact, forgeKey string) (retErr error) {
+// It also stores the forge URL for same-key replay.
+// CompleteWriteIntent writes the ownership row (issue, PR) or keeps the forge
+// key (comment, review) and marks the pending attempt done.
+func (s *Store) CompleteWriteIntent(ctx context.Context, id string, artifact *AuthoredArtifact, forgeKey, forgeURL string) (retErr error) {
 	if id == "" {
 		return fmt.Errorf("%w: write intent id is required", ErrInvalidArgument)
 	}
@@ -250,8 +343,7 @@ func (s *Store) CompleteWriteIntent(ctx context.Context, id string, artifact *Au
 	}
 
 	affected, err := qtx.CompleteForgeWriteIntent(ctx, db.CompleteForgeWriteIntentParams{
-		ID:       id,
-		ForgeKey: forgeKey,
+		ID: id, ForgeKey: forgeKey, ForgeUrl: forgeURL,
 	})
 	if err != nil {
 		return fmt.Errorf("store: complete forge write intent: %w", err)
@@ -261,6 +353,85 @@ func (s *Store) CompleteWriteIntent(ctx context.Context, id string, artifact *Au
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("store: commit complete forge write intent: %w", err)
+	}
+	return nil
+}
+
+// CompletePullRequestWriteIntent atomically persists the PR row and issue link
+// alongside ownership and intent completion.
+func (s *Store) CompletePullRequestWriteIntent(ctx context.Context, id string, artifact AuthoredArtifact, pr PullRequestRow, forgeURL string) (retErr error) {
+	if id == "" {
+		return fmt.Errorf("%w: write intent id is required", ErrInvalidArgument)
+	}
+	pr, err := pr.normalized()
+	if err != nil {
+		return err
+	}
+	if err := artifact.valid(); err != nil {
+		return err
+	}
+	coord := ForgeCoord{Provider: artifact.Provider, Host: artifact.Host, Repo: artifact.Repo, Number: artifact.Number}.Normalized()
+	if artifact.Kind != ForgeArtifactKindPullRequest || coord != pr.Coord || artifact.Number > math.MaxInt64 {
+		return fmt.Errorf("%w: authored artifact does not name the pull request", ErrInvalidArgument)
+	}
+	tx, err := s.beginTenantTx(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin complete pull request intent: %w", err)
+	}
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			retErr = errors.Join(retErr, fmt.Errorf("store: roll back complete pull request intent: %w", err))
+		}
+	}()
+	qtx := s.q.WithTx(tx)
+	row, err := qtx.LockWriteIntent(ctx, id)
+	if err != nil {
+		if noRows(err) {
+			return fmt.Errorf("%w: write intent %q", ErrNotFound, id)
+		}
+		return fmt.Errorf("store: lock forge write intent: %w", err)
+	}
+	if WriteState(row.State) != WriteStatePending || writeKindFromRow(row.Kind) != forge.WriteKindPullRequest {
+		return fmt.Errorf("%w: write intent %q is not a pending pull request", ErrConflict, id)
+	}
+	if artifact.Provider != ForgeProvider(row.ForgeProvider) || artifact.Host != row.ForgeHost ||
+		artifact.AgentAccountID != AccountID(row.AgentAccountID) || artifact.OwnerUserID != AccountID(row.OwnerUserID) ||
+		artifact.SessionID != row.SessionID || coord.Repo != (ForgeCoord{Provider: ForgeProvider(row.ForgeProvider), Repo: row.Repo}).Normalized().Repo {
+		return fmt.Errorf("%w: authored artifact does not match write intent %q", ErrInvalidArgument, id)
+	}
+	issue := row.IssueLinkForgeProvider.Valid
+	if issue {
+		if row.IssueLinkNumber.Int64 <= 0 {
+			return errors.New("store: invalid pull request issue link number in intent")
+		}
+		normalized := ForgeCoord{
+			Provider: ForgeProvider(row.IssueLinkForgeProvider.Int16),
+			Host:     row.IssueLinkForgeHost.String, Repo: row.IssueLinkRepo.String,
+			Number: uint64(row.IssueLinkNumber.Int64),
+		}.Normalized()
+		if err := normalized.valid(); err != nil {
+			return fmt.Errorf("store: read pull request issue link from intent: %w", err)
+		}
+	}
+	if artifact.Number == 0 || artifact.Number > math.MaxInt64 {
+		return fmt.Errorf("%w: pull request number is outside PostgreSQL bigint", ErrInvalidArgument)
+	}
+	prCoord := pr.Coord.db()
+	prNumber := int64(artifact.Number)
+	affected, err := qtx.CompletePullRequestWriteIntent(ctx, db.CompletePullRequestWriteIntentParams{
+		ForgeUrl: forgeURL, ID: id, Number: prNumber, CreatedAtUnixMs: artifact.CreatedAtUnixMS,
+		PrForgeProvider: prCoord.provider, PrForgeHost: prCoord.host, PrRepo: prCoord.repo,
+		ForgeState: pr.State, ForgeCreatedAt: timestamptz(pr.CreatedAt),
+		ForgeUpdatedAt: timestamptz(pr.UpdatedAt), Pr: pr.PR,
+	})
+	if err != nil {
+		return fmt.Errorf("store: complete pull request intent: %w", err)
+	}
+	if affected != 1 {
+		return fmt.Errorf("%w: write intent %q is no longer pending", ErrConflict, id)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit complete pull request intent: %w", err)
 	}
 	return nil
 }
@@ -320,7 +491,14 @@ func (s *Store) PendingWriteIntents(ctx context.Context, olderThan time.Time, li
 	}
 	intents := make([]WriteIntent, 0, len(rows))
 	for _, row := range rows {
-		intents = append(intents, writeIntentFromRow(row))
+		intents = append(intents, writeIntentFromRow(db.ForgeWriteIntent{
+			ID: row.ID, ForgeProvider: row.ForgeProvider, ForgeHost: row.ForgeHost, Repo: row.Repo,
+			Kind: row.Kind, ParentNumber: row.ParentNumber, HeadRef: row.HeadRef, BaseRef: row.BaseRef,
+			AgentAccountID: row.AgentAccountID, OwnerUserID: row.OwnerUserID, SessionID: row.SessionID,
+			ClientRequestID: row.ClientRequestID, IssueLinkForgeProvider: row.IssueLinkForgeProvider,
+			IssueLinkForgeHost: row.IssueLinkForgeHost, IssueLinkRepo: row.IssueLinkRepo, IssueLinkNumber: row.IssueLinkNumber,
+			ForgeKey: row.ForgeKey, ForgeUrl: row.ForgeUrl, State: row.State, CreatedAt: row.CreatedAt, TenantID: row.TenantID,
+		}))
 	}
 	return intents, nil
 }
@@ -370,20 +548,20 @@ func writeKindFromRow(kind int16) forge.WriteKind {
 
 func writeIntentFromRow(row db.ForgeWriteIntent) WriteIntent {
 	return WriteIntent{
-		ID:             row.ID,
-		Provider:       ForgeProvider(row.ForgeProvider),
-		Host:           row.ForgeHost,
-		Repo:           row.Repo,
-		Kind:           writeKindFromRow(row.Kind),
-		Parent:         uint64(row.ParentNumber), //nolint:gosec // G115: parent numbers are stored from canonical non-negative BIGINT values.
-		HeadRef:        row.HeadRef,
-		AgentAccountID: AccountID(row.AgentAccountID),
-		OwnerUserID:    AccountID(row.OwnerUserID),
-		SessionID:      row.SessionID,
-		RequestKey:     row.ClientRequestID,
-		State:          WriteState(row.State),
-		ForgeKey:       row.ForgeKey,
-		CreatedAt:      row.CreatedAt.Time,
-		TenantID:       TenantID(row.TenantID),
+		ID: row.ID, Provider: ForgeProvider(row.ForgeProvider), Host: row.ForgeHost,
+		Repo: row.Repo, Kind: writeKindFromRow(row.Kind), Parent: uint64(row.ParentNumber), //nolint:gosec // G115: parent is nonnegative and bounded before insert.
+		HeadRef: row.HeadRef, BaseRef: row.BaseRef.String,
+		IssueLink:      forgeCoordFromNullable(row.IssueLinkForgeProvider, row.IssueLinkForgeHost, row.IssueLinkRepo, row.IssueLinkNumber),
+		AgentAccountID: AccountID(row.AgentAccountID), OwnerUserID: AccountID(row.OwnerUserID),
+		SessionID: row.SessionID, RequestKey: row.ClientRequestID,
+		State: WriteState(row.State), ForgeKey: row.ForgeKey, ForgeURL: row.ForgeUrl,
+		CreatedAt: row.CreatedAt.Time, TenantID: TenantID(row.TenantID),
 	}
+}
+
+func forgeCoordFromNullable(provider pgtype.Int2, host, repo pgtype.Text, number pgtype.Int8) *ForgeCoord {
+	if !provider.Valid || !host.Valid || !repo.Valid || !number.Valid || number.Int64 <= 0 {
+		return nil
+	}
+	return &ForgeCoord{Provider: ForgeProvider(provider.Int16), Host: host.String, Repo: repo.String, Number: uint64(number.Int64)}
 }
