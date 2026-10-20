@@ -90,6 +90,10 @@ func TestBuildAppMenu(t *testing.T) {
 			if got := menu.FindByRole(application.BringAllToFront) != nil; got != darwin {
 				t.Errorf("BringAllToFront present = %v, want %v", got, darwin)
 			}
+			newWindow := application.NewMenuItem("").SetAccelerator("CmdOrCtrl+n").GetAccelerator()
+			if got := menu.FindByLabel("New Window").GetAccelerator(); got != newWindow {
+				t.Errorf("New Window accelerator = %q, want %q", got, newWindow)
+			}
 		})
 	}
 }
@@ -99,9 +103,11 @@ func checkCloseAndView(t *testing.T, menus map[string][]string) {
 	t.Helper()
 	closeCount := 0
 	for _, items := range menus {
-		closeCount += len(slices.DeleteFunc(slices.Clone(items), func(l string) bool {
-			return l != "Close" && l != "Close Window"
-		}))
+		for _, label := range items {
+			if label == "Close" || label == "Close Window" {
+				closeCount++
+			}
+		}
 	}
 	if closeCount != 1 {
 		t.Errorf("%d Close items, want 1: %v", closeCount, menus)
