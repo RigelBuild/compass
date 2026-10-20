@@ -183,6 +183,48 @@ describe("subagent board synchronization", () => {
 		void h.detach();
 	});
 
+	test("a focus change inside the coalescing window keeps the start's task", async () => {
+		const h = attached("first");
+		h.transport.addTask("second");
+		h.freshness.noteBoard(h.transport.board);
+		h.emit("a", "started");
+		h.transport.focus = "second";
+		h.freshness.noteBoard(h.transport.board);
+		h.emit("b", "started");
+		await h.window();
+		const tasks = h.writes()[0]?.upsertTasks ?? [];
+		expect(
+			tasks.map((t) => [t.key, t.upsertSubagents.map((s) => s.id)]),
+		).toEqual([
+			["first", ["a"]],
+			["second", ["b"]],
+		]);
+		void h.detach();
+	});
+
+	test("a row the store trims from a full task is logged", async () => {
+		const h = attached("parent-task");
+		h.transport.addOpenRows(
+			"parent-task",
+			Array.from({ length: 20 }, (_, i) => `o${i}`),
+		);
+		h.freshness.noteBoard(h.transport.board);
+		const logged: unknown[][] = [];
+		const original = console.error;
+		console.error = (...args: unknown[]) => logged.push(args);
+		try {
+			h.emit("c", "completed");
+			await h.window();
+		} finally {
+			console.error = original;
+		}
+		expect(logged.map((a) => String(a[0]))).toContain(
+			"[compass-agent] subagent board rows trimmed:",
+		);
+		expect(String(logged.at(-1)?.[1])).toContain("dropped c");
+		void h.detach();
+	});
+
 	test("a subagent keeps the task it started on when the focus moves", async () => {
 		const h = attached("first");
 		h.transport.addTask("second");

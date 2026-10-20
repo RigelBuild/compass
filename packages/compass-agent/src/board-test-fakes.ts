@@ -1,5 +1,6 @@
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import type { BatchTimer } from "./batch-window";
+import { subagentSettled } from "./board-freshness";
 import type { CommsTransport } from "./comms";
 import {
 	type AgentBoard,
@@ -141,7 +142,7 @@ export class FakeTransport implements CommsTransport {
 			else rows = [...rows, s];
 		}
 		while (rows.length > 20) {
-			const settled = rows.findIndex((o) => o.endedAtUnixMs !== 0n);
+			const settled = rows.findIndex(subagentSettled);
 			if (settled < 0) return undefined;
 			rows.splice(settled, 1);
 		}

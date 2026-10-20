@@ -8,6 +8,7 @@ import {
 } from "./board-freshness";
 import type { CommsBroker } from "./comms";
 import {
+	type AgentBoard,
 	type BoardSubagent,
 	BoardSubagentSchema,
 	BoardTaskPatchSchema,
@@ -86,6 +87,19 @@ const transient = (result: CommsCallResult): boolean =>
 
 const boardIn = (result: CommsCallResult) =>
 	result.result.case === "updateBoard" ? result.result.value.board : undefined;
+
+function onBoard(board: AgentBoard, key: string, id: string): boolean {
+	const task = board.tasks.find((t) => t.key === key);
+	return task?.subagents.some((s) => s.id === id) === true;
+}
+
+// The id keys the server merge, so one it would refuse cannot be clipped.
+function storableId(id: string): boolean {
+	return (
+		!id.includes("\0") &&
+		clip(id, ID_CHARS + 1).length === clip(id, ID_CHARS).length
+	);
+}
 
 // Reads at most `max` code points, so a huge input costs only what is kept.
 function clip(text: string, max: number): string {
@@ -279,10 +293,19 @@ export function attachSubagentBoardSync(
 			return;
 		}
 		freshness.noteBoard(board);
+		const trimmed: string[] = [];
 		for (const s of sent) {
-			taskById.set(s.id, keys.get(s.id) ?? SUBAGENTS_TASK_KEY);
+			const key = keys.get(s.id) ?? SUBAGENTS_TASK_KEY;
+			taskById.set(s.id, key);
+			if (!onBoard(board, key, s.id)) trimmed.push(s.id);
 			forget(s);
 		}
+		// A task full of open rows from elsewhere makes the store drop the incoming row.
+		if (trimmed.length > 0)
+			logSync(
+				"rows trimmed",
+				new Error(`full task dropped ${trimmed.join(", ")}`),
+			);
 	};
 
 	// The server refuses a task with more than 20 open rows, so a start that would add
@@ -366,37 +389,35 @@ export function attachSubagentBoardSync(
 		return done;
 	}
 
+	const rowFor = (event: LifecycleEvent, starting: boolean): BoardSubagent => {
+		const now = BigInt(Math.trunc(timer.now()));
+		const previous = byId.get(event.id);
+		return create(BoardSubagentSchema, {
+			id: event.id,
+			agent: clip(event.agent, AGENT_CHARS),
+			description: clip(
+				event.description ?? previous?.description ?? "",
+				DESCRIPTION_CHARS,
+			),
+			status: event.status,
+			startedAtUnixMs: starting ? now : (previous?.startedAtUnixMs ?? 0n),
+			endedAtUnixMs: starting ? 0n : now,
+		});
+	};
+
 	const unsubscribe = subagentBus.on(
 		TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 		(data) => {
 			const event = lifecycleEvent(data);
-			// The id keys the server merge, so one it would refuse cannot be clipped.
-			if (
-				event === undefined ||
-				event.id.includes("\0") ||
-				clip(event.id, ID_CHARS + 1).length > clip(event.id, ID_CHARS).length
-			)
-				return;
+			if (event === undefined || !storableId(event.id)) return;
 			const starting = event.status === "started";
 			// A follow-up run reuses its id and starts again; only late settles are stale.
 			if (starting) settled.delete(event.id);
 			else if (settled.has(event.id)) return;
-			const now = BigInt(Math.trunc(timer.now()));
-			const previous = byId.get(event.id);
-			byId.set(
-				event.id,
-				create(BoardSubagentSchema, {
-					id: event.id,
-					agent: clip(event.agent, AGENT_CHARS),
-					description: clip(
-						event.description ?? previous?.description ?? "",
-						DESCRIPTION_CHARS,
-					),
-					status: event.status,
-					startedAtUnixMs: starting ? now : (previous?.startedAtUnixMs ?? 0n),
-					endedAtUnixMs: starting ? 0n : now,
-				}),
-			);
+			// The row belongs to the task focused when it started, not when it is sent.
+			if (starting && !taskById.has(event.id) && freshness.boardKnown())
+				taskById.set(event.id, keyFor(event.id));
+			byId.set(event.id, rowFor(event, starting));
 			// A new state is a new row; an earlier refusal was about the old one.
 			refused.delete(event.id);
 			faults.delete(event.id);

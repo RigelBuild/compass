@@ -79,44 +79,56 @@ const nonBlank = (description: string) =>
 		.narrow((value, ctx) => value.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(`${description}; must not be blank`);
 
+// The server counts characters as code points, so the cap does too.
+const capped = (max: number, description: string) =>
+	type("string")
+		.narrow(
+			(value, ctx) =>
+				[...value].length <= max || ctx.mustBe(`at most ${max} characters`),
+		)
+		.describe(`${description}; at most ${max} characters`);
+
 const boardTaskParameters = type({
 	key: nonBlank("Stable key for the task"),
-	"title?": type("string").describe(
-		"Short task title; required when creating a new task",
-	),
+	"title?": capped(120, "Short task title; required when creating a new task"),
 	"primary_ref?": type("string").describe(
 		"Primary issue or pull-request reference",
 	),
 	"refs?": type("string")
 		.array()
-		.describe("Replace tracked references; [] clears them"),
+		.atMostLength(10)
+		.describe("Replace tracked references, at most 10; [] clears them"),
 	"state?": type("'active'|'blocked'|'waiting'|'parked'|'done'").describe(
 		"Task state",
 	),
-	"note?": type("string").describe("Short task note"),
+	"note?": capped(500, "Short task note"),
 	"waiting?": type({
 		on: type("'operator'|'agent'|'external'").describe(
 			"Who or what blocks progress",
 		),
 		"agent?": type("string").describe("Agent handle when waiting on an agent"),
-		what: type("string").describe("What the task is waiting for"),
+		what: capped(200, "What the task is waiting for"),
 		"ref?": type("string").describe("Related issue or pull-request reference"),
 		"blocks?": type("string")
 			.array()
 			.describe("References blocked by this wait"),
 	})
 		.array()
-		.describe("Replace wait reasons; [] clears them"),
+		.atMostLength(5)
+		.describe("Replace wait reasons, at most 5; [] clears them"),
 });
 
 const haltParameters = type({
 	kind: type("'done'|'blocked'|'awaiting-user'").describe("Why work is halted"),
 	"ref?": type("string").describe("Related issue or pull-request reference"),
-	reason: type("string").describe("Why work is halted"),
+	reason: capped(200, "Why work is halted"),
 });
 
 export const updateAgentBoardParameters = type({
-	"tasks?": boardTaskParameters.array().describe("Tasks to create or patch"),
+	"tasks?": boardTaskParameters
+		.array()
+		.atMostLength(30)
+		.describe("Tasks to create or patch; a board holds at most 30"),
 	"remove?": type("string").array().describe("Task keys to remove"),
 	"focus?": type("string").describe("Focused task key; empty clears focus"),
 	"halt?": haltParameters

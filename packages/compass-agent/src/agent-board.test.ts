@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { createAgentBoardTools } from "./agent-board";
+import {
+	createAgentBoardTools,
+	updateAgentBoardParameters,
+} from "./agent-board";
 import { BoardFreshness } from "./board-freshness";
 import { board, FakeTransport, sequence } from "./board-test-fakes";
 import { CommsBroker } from "./comms";
@@ -252,6 +256,32 @@ describe("board tool errors", () => {
 		const t = tool(new CommsBroker(transport), "compass_boards");
 		await expect(exec(t, "tc-r", {})).rejects.toThrow(
 			"compass_boards failed: invalid_argument: task cap",
+		);
+	});
+});
+
+describe("compass_update_board parameters", () => {
+	test("encode the server's caps, counting characters as code points", () => {
+		const ok = (value: unknown) =>
+			!(updateAgentBoardParameters(value) instanceof type.errors);
+		const task = (fields: Record<string, unknown>) => ({
+			tasks: [{ key: "k", ...fields }],
+		});
+		expect(ok(task({ title: "🙂".repeat(120) }))).toBe(true);
+		expect(ok(task({ title: "t".repeat(121) }))).toBe(false);
+		expect(ok(task({ note: "n".repeat(501) }))).toBe(false);
+		expect(ok(task({ refs: Array.from({ length: 11 }, String) }))).toBe(false);
+		const wait = { on: "external", what: "w" };
+		expect(ok(task({ waiting: Array(5).fill(wait) }))).toBe(true);
+		expect(ok(task({ waiting: Array(6).fill(wait) }))).toBe(false);
+		expect(
+			ok(task({ waiting: [{ on: "external", what: "w".repeat(201) }] })),
+		).toBe(false);
+		expect(
+			ok({ tasks: Array.from({ length: 31 }, (_, i) => ({ key: `k${i}` })) }),
+		).toBe(false);
+		expect(ok({ halt: { kind: "blocked", reason: "r".repeat(201) } })).toBe(
+			false,
 		);
 	});
 });
