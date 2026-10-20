@@ -54,6 +54,8 @@ func registerDuoFixtureOptions() {
 	// settle), then DM the peer (open_dm, dm, settle). A tool-call turn needs a
 	// SECOND round-trip to terminate, so every tool-call turn is paired with a
 	// following turn; the per-marker counter advances one slot per round-trip.
+	// A turn that ran a tool without a board write earns one board re-prompt turn,
+	// which also matches the marker and needs its own text slot.
 	postArgs := fmt.Sprintf(
 		`{"text":%q,"topic":%q,"channel":%q,"create_topic":true}`,
 		duoRoomPost, duoRoomTopic, duoRoomChannel,
@@ -75,6 +77,7 @@ func registerDuoFixtureOptions() {
 	registerSharedFixtureOption(
 		WithCannedMarkerScript(duoMarkerA,
 			CannedToolCall("comms_post_message", postArgs),
+			CannedText(duoSettleARoom),
 			CannedText(duoSettleARoom),
 			CannedToolCall("comms_open_dm", openDMArgs),
 			CannedToolCall("comms_dm", dmArgs),
