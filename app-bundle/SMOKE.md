@@ -306,8 +306,9 @@ Check native text editing in the server-URL field. Type `https://example.test`,
 press Backspace rapidly several times, and confirm the characters delete in
 order. Select the field (Ctrl+A), cut it (Ctrl+X), and paste it back (Ctrl+V);
 confirm the text returns once. The Linux menu bar has no Edit menu, so these keys
-go straight to WebKitGTK. On macOS, repeat the round-trip with Cmd+A, Cmd+X, and
-Cmd+V; those reach the webview only through the **Edit** menu.
+go straight to WebKitGTK. On macOS, repeat the whole check, rapid Backspace
+included, with Cmd+A, Cmd+X, and Cmd+V; those reach the webview only through
+the **Edit** menu, which also binds Backspace to Delete.
 
 Test each rejected URL in the first window's form. Enter `http://x` and a
 temporary non-secret value in the token field, then click **Connect**. Confirm

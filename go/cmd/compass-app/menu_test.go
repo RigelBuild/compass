@@ -47,6 +47,10 @@ func TestBuildAppMenu(t *testing.T) {
 		if got := slices.Contains(menus["File"], "Quit and stop stack"); got != embedded {
 			t.Errorf("embedded=%v: File has stop-stack item = %v", embedded, got)
 		}
+		if !slices.Contains(menus["File"], "New Window") || slices.Contains(menus["Window"], "New Window") {
+			t.Errorf("embedded=%v: New Window must be in File only: File %v, Window %v",
+				embedded, menus["File"], menus["Window"])
+		}
 		// Plain Quit must never be the stack teardown: it stays the standard role.
 		if !slices.Contains(menus[quitMenu], quitLabel) {
 			t.Errorf("embedded=%v: %s menu lacks %q: %v", embedded, quitMenu, quitLabel, menus[quitMenu])
