@@ -44,7 +44,7 @@ jobs:
           # ci.yml's checkout (ci.yml:130-135).
           fetch-depth: 0
 
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
         with:
           # The docsite build runs under moon, whose toolchain (bun/node/moon)
           # comes from nix, not `setup-*` actions — the same posture ci.yml
