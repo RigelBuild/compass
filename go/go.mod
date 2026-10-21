@@ -22,7 +22,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
-	github.com/insomniacslk/dhcp v0.0.0-20260728151720-c308df0fdcef
+	github.com/insomniacslk/dhcp v0.0.0-20261014062924-c6bb46ad3f3a
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/mdlayher/vsock v1.3.0
 	github.com/minio/minio-go/v7 v7.4.1
