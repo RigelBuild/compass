@@ -1,18 +1,18 @@
 # tools/toolchain/versions/node.nix — the node toolchain pin.
 rec {
-  version = "24.22.0";
+  version = "24.22.1";
   srcs = {
     "x86_64-linux" = {
       url = "https://nodejs.org/dist/v${version}/node-v${version}-linux-x64.tar.xz";
-      hash = "sha256-zC9gHO6C2aWiMzAv4werxgBycDX9fSw6NXF1WYnpUAg=";
+      hash = "sha256-bBcqmrZxj3uAH7WnvUhq8u5eMnWAhqBLhPzOKqdwleY=";
     };
     "aarch64-linux" = {
       url = "https://nodejs.org/dist/v${version}/node-v${version}-linux-arm64.tar.xz";
-      hash = "sha256-/vALtNNuHFAQSpd1oQNZvu6Y8WK0EE3RJHLHUGXGoUM=";
+      hash = "sha256-26v3ocv5R+YFn/rSwnuABB25feoeVTtir97n8T/KM24=";
     };
     "aarch64-darwin" = {
       url = "https://nodejs.org/dist/v${version}/node-v${version}-darwin-arm64.tar.gz";
-      hash = "sha256-apck2bUKXyK0gWze1EG1qNndrlRhkaXlt++lpeLuJtU=";
+      hash = "sha256-icaCWT12zUQjP6U7FWMmTn3py7GJytFpE1xbT637wKc=";
     };
   };
 }
