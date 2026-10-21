@@ -86,7 +86,7 @@ let
     };
     subPackages = [ "cmd/compass-guestd" ];
     proxyVendor = true;
-    vendorHash = "sha256-nBIJqT2rTagffAS7t/SrU1OzmUP6N89lvJU2tyJseOg=";
+    vendorHash = "sha256-hTx1g3emTlQrjxI6WCb0SpeQUXg2HHRzA28vRc1KmGQ=";
     env.CGO_ENABLED = 0;
     ldflags = [
       "-s"
