@@ -19,7 +19,7 @@ require (
 	connectrpc.com/cors v0.1.0
 	connectrpc.com/otelconnect v0.12.0
 	github.com/BurntSushi/toml v1.6.0
-	github.com/go-jose/go-jose/v4 v4.1.5
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/insomniacslk/dhcp v0.0.0-20260728151720-c308df0fdcef
@@ -33,7 +33,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/vishvananda/netlink v1.3.1
-	github.com/wailsapp/wails/v3 v3.0.0-beta.29
+	github.com/wailsapp/wails/v3 v3.0.0-beta.32
 	github.com/zalando/go-keyring v0.2.8
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0
 	go.opentelemetry.io/otel v1.47.0
