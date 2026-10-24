@@ -28,7 +28,7 @@
 			"@rigelbuild/comment-scan": "1.0.0",
 			"@rigelbuild/length-gate": "1.0.1",
 			"@rigelbuild/ref-gate": "1.0.1",
-			"@rigelbuild/renovate-preflight": "1.0.0",
+			"@rigelbuild/renovate-preflight": "1.1.1",
 			"@rigelbuild/tsconfig": "1.0.0",
 			"@types/bun": "^1.4.0",
 			"astro": "^7.1.6",
@@ -41,11 +41,11 @@
 	},
 	"overrides": {
 		"@tanstack/virtual-core": "3.19.6",
-		"@tanstack/query-core": "5.104.2",
+		"@tanstack/query-core": "5.104.4",
 		"adm-zip": "0.6.1",
 		"postcss-selector-parser": "7.1.6",
-		"seroval": "1.6.9",
-		"seroval-plugins": "1.6.9"
+		"seroval": "1.6.11",
+		"seroval-plugins": "1.6.11"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "catalog:",
