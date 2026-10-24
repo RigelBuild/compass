@@ -39,7 +39,7 @@
 		"@rigelbuild/tsconfig": "catalog:",
 		"@types/bun": "catalog:",
 		"@types/hast": "3.0.5",
-		"happy-dom": "21.0.1",
+		"happy-dom": "21.0.4",
 		"stylelint": "catalog:",
 		"typescript": "catalog:",
 		"vite": "^8.2.0",
