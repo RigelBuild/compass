@@ -27,13 +27,13 @@ require (
 	github.com/mdlayher/vsock v1.3.0
 	github.com/minio/minio-go/v7 v7.4.1
 	github.com/nats-io/nats-server/v2 v2.15.1
-	github.com/nats-io/nats.go v1.54.0
+	github.com/nats-io/nats.go v1.55.0
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/vishvananda/netlink v1.3.1
-	github.com/wailsapp/wails/v3 v3.0.0-beta.29
+	github.com/wailsapp/wails/v3 v3.0.0-beta.34
 	github.com/zalando/go-keyring v0.2.8
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0
 	go.opentelemetry.io/otel v1.47.0
@@ -51,7 +51,7 @@ require (
 )
 
 require (
-	connectrpc.com/connect/v2 v2.0.1
+	connectrpc.com/connect/v2 v2.0.2
 	connectrpc.com/grpchealth/v2 v2.0.0
 	golang.org/x/sys v0.49.0
 )
