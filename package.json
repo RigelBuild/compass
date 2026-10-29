@@ -44,7 +44,7 @@
 		"@tanstack/query-core": "5.104.2",
 		"adm-zip": "0.6.1",
 		"postcss-selector-parser": "7.1.6",
-		"seroval": "1.6.9",
+		"seroval": "1.6.11",
 		"seroval-plugins": "1.6.9"
 	},
 	"devDependencies": {
