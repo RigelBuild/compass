@@ -85,7 +85,7 @@ let
     dontFixup = true;
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-KeGbLqcWebq9PQ07yxXVKEMDVYXYj2BBjTwW9WGptMk=";
+    outputHash = "sha256-WtZ0x/aS9P4DuM7MlmRBS3B3SoPSiCR5/UaH7jHhn1U=";
   };
 
   # Denylist source exclusions; dotenv filtering is needed because filesets ignore gitignore.
